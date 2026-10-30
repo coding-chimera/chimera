@@ -1,0 +1,700 @@
+{
+  "format": "chimera.oracle.provider-fixture",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "profile": "native-tool-search",
+  "case": "client-execution",
+  "description": "OpenAI Responses provider-defined tool_search in client execution mode: reveal a deferred tool, replay tool_search_output, call the revealed function, then replay its output.",
+  "capabilities": {
+    "genai_verdict": "uncovered",
+    "transport": "sse",
+    "auth": "api-key",
+    "native_tool_search": true,
+    "remote_compaction": false,
+    "hosted_tools_exercised": [
+      "tool_search"
+    ],
+    "retry_owner": "chimera",
+    "auth_refresh_owner": "chimera"
+  },
+  "turns": [
+    {
+      "turn": 1,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:API_KEY>",
+          "content-type": "application/json",
+          "x-session-affinity": "session-placeholder"
+        },
+        "body": {
+          "model": "gpt-5.6",
+          "instructions": "You are a synthetic fixture assistant.",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Open the browser."
+                }
+              ]
+            }
+          ],
+          "tools": [
+            {
+              "type": "tool_search",
+              "execution": "client",
+              "description": "Search deferred tools.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "query"
+                ]
+              }
+            }
+          ],
+          "tool_choice": "auto",
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder"
+        }
+      },
+      "auth": {
+        "kind": "api-key",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:API_KEY>",
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "none",
+          "dedupe_key": "none"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "response.created",
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_ts_1"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "ts_item_1",
+                "type": "tool_search_call",
+                "call_id": "call_ts_1",
+                "arguments": "{\"query\":\"browser\"}"
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "ts_item_1",
+                "type": "tool_search_call",
+                "call_id": "call_ts_1",
+                "arguments": "{\"query\":\"browser\"}"
+              }
+            }
+          },
+          {
+            "seq": 4,
+            "event": "response.completed",
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_ts_1",
+                "usage": {
+                  "input_tokens": 8,
+                  "output_tokens": 4,
+                  "total_tokens": 12
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "tool-input-start",
+            "id": "call_ts_1",
+            "name": "tool_search"
+          },
+          {
+            "seq": 3,
+            "type": "tool-input-delta",
+            "id": "call_ts_1",
+            "name": "tool_search",
+            "text": "{\"query\":\"browser\"}"
+          },
+          {
+            "seq": 4,
+            "type": "tool-input-end",
+            "id": "call_ts_1",
+            "name": "tool_search"
+          },
+          {
+            "seq": 5,
+            "type": "tool-call",
+            "id": "call_ts_1",
+            "name": "tool_search",
+            "input": {
+              "query": "browser"
+            }
+          },
+          {
+            "seq": 6,
+            "type": "tool-result",
+            "id": "call_ts_1",
+            "name": "tool_search",
+            "result": {
+              "tools": [
+                {
+                  "type": "function",
+                  "name": "browser_open",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "url"
+                    ]
+                  },
+                  "defer_loading": true
+                }
+              ]
+            }
+          },
+          {
+            "seq": 7,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "tool-calls",
+            "usage": {
+              "inputTokens": 8,
+              "outputTokens": 4,
+              "totalTokens": 12
+            }
+          },
+          {
+            "seq": 8,
+            "type": "finish",
+            "reason": "tool-calls",
+            "usage": {
+              "inputTokens": 8,
+              "outputTokens": 4,
+              "totalTokens": 12
+            }
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "call_ts_1",
+            "name": "tool_search",
+            "input": {
+              "query": "browser"
+            },
+            "executed_by": "host"
+          }
+        ],
+        "tool_results": [
+          {
+            "id": "call_ts_1",
+            "status": "ok"
+          }
+        ]
+      }
+    },
+    {
+      "turn": 2,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:API_KEY>",
+          "content-type": "application/json",
+          "x-session-affinity": "session-placeholder"
+        },
+        "body": {
+          "model": "gpt-5.6",
+          "instructions": "You are a synthetic fixture assistant.",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Open the browser."
+                }
+              ]
+            },
+            {
+              "type": "tool_search_call",
+              "id": "ts_item_1",
+              "call_id": "call_ts_1",
+              "arguments": "{\"query\":\"browser\"}"
+            },
+            {
+              "type": "tool_search_output",
+              "call_id": "call_ts_1",
+              "tools": [
+                {
+                  "type": "function",
+                  "name": "browser_open",
+                  "description": "Open a browser tab.",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "url"
+                    ]
+                  },
+                  "defer_loading": true
+                }
+              ]
+            }
+          ],
+          "tools": [
+            {
+              "type": "tool_search",
+              "execution": "client",
+              "description": "Search deferred tools.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "query"
+                ]
+              }
+            }
+          ],
+          "tool_choice": "auto",
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder"
+        }
+      },
+      "auth": {
+        "kind": "api-key",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:API_KEY>",
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "none",
+          "dedupe_key": "none"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "response.created",
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_ts_2"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "fc_browser_1",
+                "type": "function_call",
+                "call_id": "call_browser_1",
+                "name": "browser_open",
+                "arguments": ""
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "event": "response.function_call_arguments.delta",
+            "data": {
+              "type": "response.function_call_arguments.delta",
+              "output_index": 0,
+              "item_id": "fc_browser_1",
+              "delta": "{\"url\":\"synthetic://browser/page\"}"
+            }
+          },
+          {
+            "seq": 4,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "fc_browser_1",
+                "type": "function_call",
+                "call_id": "call_browser_1",
+                "name": "browser_open",
+                "arguments": "{\"url\":\"synthetic://browser/page\"}"
+              }
+            }
+          },
+          {
+            "seq": 5,
+            "event": "response.completed",
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_ts_2",
+                "usage": {
+                  "input_tokens": 18,
+                  "output_tokens": 7,
+                  "total_tokens": 25
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "tool-input-start",
+            "id": "call_browser_1",
+            "name": "browser_open"
+          },
+          {
+            "seq": 3,
+            "type": "tool-input-delta",
+            "id": "call_browser_1",
+            "name": "browser_open",
+            "text": "{\"url\":\"synthetic://browser/page\"}"
+          },
+          {
+            "seq": 4,
+            "type": "tool-input-end",
+            "id": "call_browser_1",
+            "name": "browser_open"
+          },
+          {
+            "seq": 5,
+            "type": "tool-call",
+            "id": "call_browser_1",
+            "name": "browser_open",
+            "input": {
+              "url": "synthetic://browser/page"
+            }
+          },
+          {
+            "seq": 6,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "tool-calls",
+            "usage": {
+              "inputTokens": 18,
+              "outputTokens": 7,
+              "totalTokens": 25
+            }
+          },
+          {
+            "seq": 7,
+            "type": "finish",
+            "reason": "tool-calls",
+            "usage": {
+              "inputTokens": 18,
+              "outputTokens": 7,
+              "totalTokens": 25
+            }
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "call_browser_1",
+            "name": "browser_open",
+            "input": {
+              "url": "synthetic://browser/page"
+            },
+            "executed_by": "host"
+          }
+        ]
+      }
+    },
+    {
+      "turn": 3,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:API_KEY>",
+          "content-type": "application/json",
+          "x-session-affinity": "session-placeholder"
+        },
+        "body": {
+          "model": "gpt-5.6",
+          "instructions": "You are a synthetic fixture assistant.",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Open the browser."
+                }
+              ]
+            },
+            {
+              "type": "tool_search_call",
+              "id": "ts_item_1",
+              "call_id": "call_ts_1",
+              "arguments": "{\"query\":\"browser\"}"
+            },
+            {
+              "type": "tool_search_output",
+              "call_id": "call_ts_1",
+              "tools": [
+                {
+                  "type": "function",
+                  "name": "browser_open",
+                  "description": "Open a browser tab.",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "url"
+                    ]
+                  },
+                  "defer_loading": true
+                }
+              ]
+            },
+            {
+              "type": "function_call",
+              "call_id": "call_browser_1",
+              "name": "browser_open",
+              "arguments": "{\"url\":\"synthetic://browser/page\"}"
+            },
+            {
+              "type": "function_call_output",
+              "call_id": "call_browser_1",
+              "output": "{\"status\":\"opened\"}"
+            }
+          ],
+          "tools": [
+            {
+              "type": "tool_search",
+              "execution": "client",
+              "description": "Search deferred tools.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "query"
+                ]
+              }
+            }
+          ],
+          "tool_choice": "auto",
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder"
+        }
+      },
+      "auth": {
+        "kind": "api-key",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:API_KEY>",
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "none",
+          "dedupe_key": "none"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "response.created",
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_ts_3"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "msg_ts_3",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "event": "response.output_text.delta",
+            "data": {
+              "type": "response.output_text.delta",
+              "item_id": "msg_ts_3",
+              "delta": "Opened."
+            }
+          },
+          {
+            "seq": 4,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "msg_ts_3",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "Opened."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "seq": 5,
+            "event": "response.completed",
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_ts_3",
+                "usage": {
+                  "input_tokens": 24,
+                  "output_tokens": 2,
+                  "total_tokens": 26
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "text-start",
+            "id": "msg_ts_3"
+          },
+          {
+            "seq": 3,
+            "type": "text-delta",
+            "id": "msg_ts_3",
+            "text": "Opened."
+          },
+          {
+            "seq": 4,
+            "type": "text-end",
+            "id": "msg_ts_3"
+          },
+          {
+            "seq": 5,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 24,
+              "outputTokens": 2,
+              "totalTokens": 26
+            }
+          },
+          {
+            "seq": 6,
+            "type": "finish",
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 24,
+              "outputTokens": 2,
+              "totalTokens": 26
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

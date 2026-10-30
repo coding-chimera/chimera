@@ -1,0 +1,70 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "tool-search",
+  "title": "tool_search 评分、权限过滤与压缩边界提升",
+  "owner_role": "tool-search owner",
+  "scope": "deferred catalog 的关键词评分、tie-break、上限、permission/subagent 过滤、reveal 持久化与压缩边界提升；不覆盖 OpenAI-native provider tool 的真实 wire 形状。",
+  "fixtures": [
+    {
+      "id": "tool-search/score-and-reveal",
+      "path": "fixtures/tool-search/score-and-reveal.json",
+      "kind": "behavior",
+      "covers": ["CP-TSEARCH-001", "CP-TSEARCH-004"]
+    },
+    {
+      "id": "tool-search/denied-candidate",
+      "path": "fixtures/tool-search/denied-candidate.json",
+      "kind": "negative",
+      "covers": ["CP-TSEARCH-002"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-TSEARCH-001",
+      "title": "评分 3×id + 1×description + 1×prefix；同分按 id 升序；limit 上限 20",
+      "owner_role": "tool-search owner",
+      "fixture": { "status": "existing-domain", "ref": "tool-search/score-and-reveal" },
+      "evidence": ["src/session/tool-search.ts:199-230"]
+    },
+    {
+      "id": "CP-TSEARCH-002",
+      "title": "permission deny 与 subagent-hidden 工具不进入候选，也不会被 reveal",
+      "owner_role": "tool-search owner",
+      "fixture": { "status": "existing-domain", "ref": "tool-search/denied-candidate" },
+      "evidence": ["src/session/tool-search.ts:233-247"]
+    },
+    {
+      "id": "CP-TSEARCH-003",
+      "title": "reveal 持久化到 tool_reveal，按 session 级联删除，LRU 缓存上限 256",
+      "owner_role": "tool-search owner",
+      "fixture": { "status": "pending", "ref": "pending:tool-search/reveal-persistence" },
+      "evidence": ["src/session/tool-search.ts:373-420", "src/session/tool-search.ts:471-495"],
+      "note": "需要 DB 行与进程重启；当前只覆盖纯评分与提升。"
+    },
+    {
+      "id": "CP-TSEARCH-004",
+      "title": "reveal 时间早于最近完成压缩摘要的 tool 在压缩边界提升回 wire 数组",
+      "owner_role": "tool-search owner",
+      "fixture": { "status": "existing-domain", "ref": "tool-search/score-and-reveal" },
+      "evidence": ["src/session/tool-search.ts:386-399"]
+    },
+    {
+      "id": "CP-TSEARCH-005",
+      "title": "OpenAI-native tool_search 只在 OAI-native Responses 后端启用，其他 provider 保留 function tool",
+      "owner_role": "tool-search owner",
+      "fixture": { "status": "pending", "ref": "pending:tool-search/native-gate" },
+      "evidence": ["src/session/tool-search.ts:249-290"],
+      "note": "需要 provider wire 形状；WP-08 已有 native tool_search fixture，本包不重复。"
+    }
+  ],
+  "new_capabilities": [
+    "tool_search 评分/tie-break/上限与压缩边界提升的合成 fixture。",
+    "denied 候选不得出现在结果与候选计数的负例。"
+  ],
+  "known_differences": [
+    "fixture 不读写 tool_reveal 表、不构造真实 provider wire；持久化与 native gate 仍是待补点。",
+    "alias 归一化（tool-search → tool_search）只在代码证据中记录，未做行为 fixture。"
+  ]
+}

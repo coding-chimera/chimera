@@ -1,0 +1,354 @@
+{
+  "format": "chimera.oracle.provider-fixture",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "profile": "responses-websocket",
+  "case": "incremental-turn",
+  "description": "Codex 后端 Responses WebSocket JSON: a full first turn, then an incremental turn that reuses previous_response_id and carries turn state.",
+  "capabilities": {
+    "genai_verdict": "uncovered",
+    "transport": "websocket-json",
+    "auth": "oauth",
+    "native_tool_search": false,
+    "remote_compaction": false,
+    "hosted_tools_exercised": [],
+    "retry_owner": "chimera",
+    "auth_refresh_owner": "chimera"
+  },
+  "turns": [
+    {
+      "turn": 1,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/ws/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:OAUTH_ACCESS>",
+          "chatgpt-account-id": "acct-placeholder",
+          "content-type": "application/json",
+          "user-agent": "chimera-oracle"
+        },
+        "body": {
+          "type": "response.create",
+          "model": "codex 后端",
+          "instructions": "You are a synthetic fixture assistant.",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Say hello."
+                }
+              ]
+            }
+          ],
+          "tools": [],
+          "tool_choice": "auto",
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder",
+          "client_metadata": {
+            "x-codex-turn-state": "turn-state-placeholder"
+          }
+        }
+      },
+      "auth": {
+        "kind": "oauth",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:OAUTH_ACCESS>",
+        "account_header": {
+          "name": "ChatGPT-Account-ID",
+          "value": "acct-placeholder"
+        },
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "before-expiry",
+          "dedupe_key": "credential+session"
+        }
+      },
+      "stream": {
+        "transport": "websocket-json",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_ws_1"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "msg_ws_1",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "data": {
+              "type": "response.output_text.delta",
+              "item_id": "msg_ws_1",
+              "delta": "Hello."
+            }
+          },
+          {
+            "seq": 4,
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "msg_ws_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "Hello."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "seq": 5,
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_ws_1",
+                "usage": {
+                  "input_tokens": 4,
+                  "output_tokens": 2,
+                  "total_tokens": 6
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "text-start",
+            "id": "msg_ws_1"
+          },
+          {
+            "seq": 3,
+            "type": "text-delta",
+            "id": "msg_ws_1",
+            "text": "Hello."
+          },
+          {
+            "seq": 4,
+            "type": "text-end",
+            "id": "msg_ws_1"
+          },
+          {
+            "seq": 5,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 4,
+              "outputTokens": 2,
+              "totalTokens": 6
+            }
+          },
+          {
+            "seq": 6,
+            "type": "finish",
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 4,
+              "outputTokens": 2,
+              "totalTokens": 6
+            }
+          }
+        ]
+      }
+    },
+    {
+      "turn": 2,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/ws/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:OAUTH_ACCESS>",
+          "chatgpt-account-id": "acct-placeholder",
+          "content-type": "application/json",
+          "user-agent": "chimera-oracle"
+        },
+        "body": {
+          "type": "response.create",
+          "model": "codex 后端",
+          "previous_response_id": "resp_ws_1",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Again."
+                }
+              ]
+            }
+          ],
+          "tools": [],
+          "tool_choice": "auto",
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder",
+          "client_metadata": {
+            "x-codex-turn-state": "turn-state-placeholder-2"
+          }
+        }
+      },
+      "auth": {
+        "kind": "oauth",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:OAUTH_ACCESS>",
+        "account_header": {
+          "name": "ChatGPT-Account-ID",
+          "value": "acct-placeholder"
+        },
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "before-expiry",
+          "dedupe_key": "credential+session"
+        }
+      },
+      "stream": {
+        "transport": "websocket-json",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_ws_2"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "msg_ws_2",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "data": {
+              "type": "response.output_text.delta",
+              "item_id": "msg_ws_2",
+              "delta": "Hello again."
+            }
+          },
+          {
+            "seq": 4,
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "msg_ws_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "Hello again."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "seq": 5,
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_ws_2",
+                "usage": {
+                  "input_tokens": 6,
+                  "output_tokens": 3,
+                  "total_tokens": 9
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "text-start",
+            "id": "msg_ws_2"
+          },
+          {
+            "seq": 3,
+            "type": "text-delta",
+            "id": "msg_ws_2",
+            "text": "Hello again."
+          },
+          {
+            "seq": 4,
+            "type": "text-end",
+            "id": "msg_ws_2"
+          },
+          {
+            "seq": 5,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 6,
+              "outputTokens": 3,
+              "totalTokens": 9
+            }
+          },
+          {
+            "seq": 6,
+            "type": "finish",
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 6,
+              "outputTokens": 3,
+              "totalTokens": 9
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

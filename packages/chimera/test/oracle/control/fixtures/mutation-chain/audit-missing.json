@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "mutation-chain/audit-missing",
+  "domain": "mutation-chain",
+  "kind": "negative",
+  "rule": "mutation.chain",
+  "title": "负例：mutation 成功但自动 audit 记录缺失时 closeout 必须要求手动审计",
+  "description": "mutation 成功、oracle pass、无 pending obligation，但 auditRecorded=false；断言 blocked 且 code=AUDIT_MISSING。",
+  "input": {
+    "graphInitialized": true,
+    "predesignToolAvailable": true,
+    "files": ["src/example.ts"],
+    "risky": false,
+    "freshPredesign": true,
+    "claimConflict": false,
+    "mutationSuccess": true,
+    "auditRecorded": false,
+    "oracle": { "status": "pass", "trusted": true, "linked": true },
+    "obligations": []
+  },
+  "expect": {
+    "verdict": "blocked",
+    "code": "AUDIT_MISSING",
+    "assertions": [
+      { "path": "code", "equals": "AUDIT_MISSING" },
+      { "path": "closeoutReasons", "includes": "audit-missing" }
+    ],
+    "must_not": ["pass closeout when the auto audit record is missing"]
+  },
+  "provenance": {
+    "evidence": ["src/chimera/prompt-context.ts:242-286", "src/chimera/provenance.ts:1238-1256"],
+    "derivation": "closeoutGate 在 latest mutation 存在但无对应 AuditRunRecord 时要求手动审计；合成输入去掉 auditRecorded。",
+    "executed": true
+  }
+}

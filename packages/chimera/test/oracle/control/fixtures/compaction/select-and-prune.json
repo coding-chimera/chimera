@@ -1,0 +1,113 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "compaction/select-and-prune",
+  "domain": "compaction",
+  "kind": "behavior",
+  "rule": "compaction.select",
+  "title": "compaction 保留最近 turn 预算，并按 PRUNE_PROTECT/PRUNE_MINIMUM 裁剪旧工具输出",
+  "description": "合成 3 个 turn 与 2 个旧工具输出；断言 tail 从 m5 开始、仅 t2 被裁剪、裁剪量 30000 超过最小阈值。",
+  "input": {
+    "messages": [
+      {
+        "id": "m1",
+        "role": "user",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m2",
+        "role": "assistant",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m3",
+        "role": "user",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m4",
+        "role": "assistant",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m5",
+        "role": "user",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m6",
+        "role": "assistant",
+        "tokens": 1000,
+        "summary": false
+      }
+    ],
+    "tailTurns": 2,
+    "preserveRecentTokens": 2500,
+    "prune": true,
+    "toolParts": [
+      {
+        "id": "t1",
+        "messageId": "m2",
+        "tool": "read",
+        "tokens": 30000,
+        "completed": true,
+        "compacted": false
+      },
+      {
+        "id": "t2",
+        "messageId": "m2",
+        "tool": "bash",
+        "tokens": 30000,
+        "completed": true,
+        "compacted": false
+      }
+    ],
+    "pruneProtect": 40000,
+    "pruneMinimum": 20000,
+    "protectedTools": [
+      "skill"
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      {
+        "path": "tail_start_id",
+        "equals": "m5"
+      },
+      {
+        "path": "pruned",
+        "equals": [
+          "t2"
+        ]
+      },
+      {
+        "path": "pruneApplied",
+        "equals": true
+      },
+      {
+        "path": "prunedTokens",
+        "equals": 30000
+      }
+    ],
+    "must_not": [
+      "prune t1 before PRUNE_PROTECT is exceeded",
+      "start the tail at m3"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "src/session/compaction.ts:145-155",
+      "src/session/compaction.ts:284-333",
+      "src/session/compaction.ts:340-384"
+    ],
+    "derivation": "按 select() 的 tail_turns/preserve_recent_tokens 与 prune() 的 2-turn 起扫、PRUNE_PROTECT=40000、PRUNE_MINIMUM=20000 构造合成输入。",
+    "executed": true
+  }
+}

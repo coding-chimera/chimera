@@ -1,0 +1,108 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "mutation-chain",
+  "title": "mutation 链：predesign → claim → audit → oracle → obligation",
+  "owner_role": "mutation owner",
+  "scope": "风险 mutation 的 predesign 门、edit-intent claim 门、mutation 后自动 audit、oracle 证据链接、obligation 生命周期与 closeout；不覆盖真实图分类、LSP 诊断与跨进程 claim 唤醒。",
+  "fixtures": [
+    {
+      "id": "mutation-chain/predesign-gate",
+      "path": "fixtures/mutation-chain/predesign-gate.json",
+      "kind": "behavior",
+      "covers": ["CP-MUT-001"]
+    },
+    {
+      "id": "mutation-chain/claim-conflict",
+      "path": "fixtures/mutation-chain/claim-conflict.json",
+      "kind": "behavior",
+      "covers": ["CP-MUT-002"]
+    },
+    {
+      "id": "mutation-chain/auto-audit-pass",
+      "path": "fixtures/mutation-chain/auto-audit-pass.json",
+      "kind": "behavior",
+      "covers": ["CP-MUT-003", "CP-MUT-005"]
+    },
+    {
+      "id": "mutation-chain/closeout-obligation",
+      "path": "fixtures/mutation-chain/closeout-obligation.json",
+      "kind": "negative",
+      "covers": ["CP-MUT-005"]
+    },
+    {
+      "id": "mutation-chain/oracle-fail-closeout",
+      "path": "fixtures/mutation-chain/oracle-fail-closeout.json",
+      "kind": "negative",
+      "covers": ["CP-MUT-004"]
+    },
+    {
+      "id": "mutation-chain/audit-missing",
+      "path": "fixtures/mutation-chain/audit-missing.json",
+      "kind": "negative",
+      "covers": ["CP-MUT-003"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-MUT-001",
+      "title": "高风险文件 mutation 在图已初始化且 predesign 工具可用时必须有新鲜 predesign；否则 blockedBy=predesign",
+      "owner_role": "mutation owner",
+      "fixture": { "status": "existing-domain", "ref": "mutation-chain/predesign-gate" },
+      "evidence": ["src/chimera/provenance.ts:1353-1420"]
+    },
+    {
+      "id": "CP-MUT-002",
+      "title": "edit-intent claim 对所有声明文件生效，与风险分类/图初始化无关；同 family 豁免，冲突时 blockedBy=edit-intent-claim",
+      "owner_role": "mutation owner",
+      "fixture": { "status": "existing-domain", "ref": "mutation-chain/claim-conflict" },
+      "evidence": ["src/chimera/provenance.ts:1366-1390", "src/chimera/edit-intent.ts:112-143"]
+    },
+    {
+      "id": "CP-MUT-003",
+      "title": "mutation 成功后自动写 provenance + change facts + AuditRunRecord(source=track-tool-mutation)",
+      "owner_role": "mutation owner",
+      "fixture": { "status": "existing-domain", "ref": "mutation-chain/auto-audit-pass" },
+      "evidence": ["src/chimera/provenance.ts:1153-1256"]
+    },
+    {
+      "id": "CP-MUT-004",
+      "title": "linked failing/unknown oracle 进入 closeout 信号，必须处理或显式驳回后才可完成",
+      "owner_role": "mutation owner",
+      "fixture": { "status": "existing-domain", "ref": "mutation-chain/oracle-fail-closeout" },
+      "evidence": ["src/chimera/prompt-context.ts:249-270", "src/chimera/prompt-context.ts:345-362"]
+    },
+    {
+      "id": "CP-MUT-005",
+      "title": "obligation 生命周期 pending/claimed/resolved/ignored/stale；resolve 可选 note，ignore 必须带 reason，active obligation 阻断 closeout",
+      "owner_role": "obligation owner",
+      "fixture": { "status": "existing-domain", "ref": "mutation-chain/closeout-obligation" },
+      "evidence": ["src/tool/chimera.ts:2132-2276", "src/tool/chimera.ts:3485-3625"]
+    },
+    {
+      "id": "CP-MUT-006",
+      "title": "证据压缩不得删除被 active obligation 引用的 change fact/event",
+      "owner_role": "obligation owner",
+      "fixture": { "status": "existing-domain", "ref": "retention/evidence-compaction" },
+      "evidence": ["src/chimera/store.ts:2700-2788"],
+      "note": "跨域引用：行为 fixture 在 retention 域。"
+    },
+    {
+      "id": "CP-MUT-007",
+      "title": "图未初始化时 predesign 门降级关闭，但 edit-intent claim 仍然执行",
+      "owner_role": "mutation owner",
+      "fixture": { "status": "pending", "ref": "pending:mutation-chain/degraded-graph" },
+      "evidence": ["src/chimera/provenance.ts:1391-1400"],
+      "note": "需要未初始化图 + claim store 的组合；当前只记录代码证据。"
+    }
+  ],
+  "new_capabilities": [
+    "predesign/claim/audit/oracle/obligation 五个 gate 的合成行为 fixture。",
+    "把“自动 audit”与“模型手动 audit”区分开：fixture 断言 auto-record 后 closeout 通过。"
+  ],
+  "known_differences": [
+    "fixture 不执行真实图分类、LSP 诊断、跨进程 claim 唤醒；只验证 gate 判定与 closeout 理由。",
+    "obligation stale 重放生命周期与 claim 队列公平性仍是待补点。"
+  ]
+}

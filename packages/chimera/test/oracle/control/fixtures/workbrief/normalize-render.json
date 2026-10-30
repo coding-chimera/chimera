@@ -1,0 +1,39 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "workbrief/normalize-render",
+  "domain": "workbrief",
+  "kind": "behavior",
+  "rule": "workbrief.normalize",
+  "title": "workbrief 归一化空白、按上限截断条目并保持渲染段顺序",
+  "description": "合成含多余空白的 intent 与两条决策；断言归一化文本、条目数、首条与八个渲染段顺序。",
+  "input": {
+    "brief": {
+      "intent": "  build   the control plane  ",
+      "confirmedDecisions": ["  keep   30 days  ", "second"],
+      "constraints": [],
+      "acceptanceCriteria": ["fixtures pass"],
+      "openQuestions": [],
+      "relevantEvidence": [],
+      "closeout": []
+    },
+    "limits": { "maxItems": 12, "maxItemChars": 300 }
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "normalized.intent", "equals": "build the control plane" },
+      { "path": "firstItem", "equals": "keep 30 days" },
+      { "path": "itemCount", "equals": 2 },
+      { "path": "renderSections.0", "equals": "## Current Work Brief" },
+      { "path": "renderSections.7", "equals": "Closeout:" }
+    ],
+    "must_not": ["preserve repeated whitespace", "reorder sections"]
+  },
+  "provenance": {
+    "evidence": ["src/session/work-brief.ts:55-74", "src/session/work-brief.ts:92-118"],
+    "derivation": "按 normalize() 的 compact/compactItems 与 format() 的固定段顺序构造合成输入。",
+    "executed": true
+  }
+}

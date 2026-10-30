@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "workbrief/empty-clears",
+  "domain": "workbrief",
+  "kind": "negative",
+  "rule": "workbrief.normalize",
+  "title": "边界：空 workbrief 归一化为空并清空渲染，不产生空段",
+  "description": "所有字段为空；判定必须返回 noop、rendered=null，表示 update() 会删除该会话的 brief 行。",
+  "input": {
+    "brief": {
+      "intent": "   ",
+      "confirmedDecisions": [],
+      "constraints": [],
+      "acceptanceCriteria": [],
+      "openQuestions": [],
+      "relevantEvidence": [],
+      "closeout": []
+    },
+    "limits": { "maxItems": 12, "maxItemChars": 300 }
+  },
+  "expect": {
+    "verdict": "noop",
+    "assertions": [
+      { "path": "empty", "equals": true },
+      { "path": "rendered", "equals": null },
+      { "path": "itemCount", "equals": 0 }
+    ],
+    "must_not": ["render an empty Current Work Brief section"]
+  },
+  "provenance": {
+    "evidence": ["src/session/work-brief.ts:76-90", "src/session/work-brief.ts:132-143"],
+    "derivation": "format() 对 isEmpty 返回 undefined；update() 在 isEmpty 时先 delete 再跳过 insert。",
+    "executed": true
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "workbrief",
+  "title": "workbrief 归一化、空值清除与渲染",
+  "owner_role": "workbrief owner",
+  "scope": "workbrief 字段归一化、条目上限、空 brief 清除、渲染段顺序与默认 closeout；不覆盖 DB 行生命周期与事件订阅。",
+  "fixtures": [
+    {
+      "id": "workbrief/normalize-render",
+      "path": "fixtures/workbrief/normalize-render.json",
+      "kind": "behavior",
+      "covers": ["CP-WORKBRIEF-001", "CP-WORKBRIEF-003"]
+    },
+    {
+      "id": "workbrief/empty-clears",
+      "path": "fixtures/workbrief/empty-clears.json",
+      "kind": "negative",
+      "covers": ["CP-WORKBRIEF-002"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-WORKBRIEF-001",
+      "title": "normalize 压缩空白、截断超长 intent/条目、最多保留 12 条、每条最多 300 字符",
+      "owner_role": "workbrief owner",
+      "fixture": { "status": "existing-domain", "ref": "workbrief/normalize-render" },
+      "evidence": ["src/session/work-brief.ts:11-13", "src/session/work-brief.ts:55-74"]
+    },
+    {
+      "id": "CP-WORKBRIEF-002",
+      "title": "空 brief 归一化为空；update 删除行且不写空记录",
+      "owner_role": "workbrief owner",
+      "fixture": { "status": "existing-domain", "ref": "workbrief/empty-clears" },
+      "evidence": ["src/session/work-brief.ts:76-90", "src/session/work-brief.ts:132-143"]
+    },
+    {
+      "id": "CP-WORKBRIEF-003",
+      "title": "渲染固定 8 段顺序，closeout 为空时使用默认 closeout 文案",
+      "owner_role": "workbrief owner",
+      "fixture": { "status": "existing-domain", "ref": "workbrief/normalize-render" },
+      "evidence": ["src/session/work-brief.ts:88-118"]
+    },
+    {
+      "id": "CP-WORKBRIEF-004",
+      "title": "update 后发布 Event.Updated，供 prompt 装配刷新",
+      "owner_role": "workbrief owner",
+      "fixture": { "status": "pending", "ref": "pending:workbrief/event-publish" },
+      "evidence": ["src/session/work-brief.ts:136-145"],
+      "note": "需要 Bus 订阅与事件顺序；当前只冻结纯函数行为。"
+    }
+  ],
+  "new_capabilities": [
+    "workbrief 归一化与渲染顺序的合成 fixture。",
+    "空 brief 清除的边界 fixture。"
+  ],
+  "known_differences": [
+    "fixture 不写 SQLite、不订阅 Bus；update 的持久化与事件发布仍是待补点。"
+  ]
+}

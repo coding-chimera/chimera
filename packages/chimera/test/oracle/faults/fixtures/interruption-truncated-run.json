@@ -1,0 +1,12 @@
+{
+  "id": "interruption-truncated-run",
+  "fault_class": "interruption",
+  "label_zh": "中断",
+  "base_golden": "causality.jsonl",
+  "description": "模拟进程在事件 9 后中断：保留前缀事件并标记 envelope=interrupted。",
+  "envelope_status": "interrupted",
+  "injections": [
+    { "op": "truncate-events", "keep": 9 }
+  ],
+  "expected": { "status": "fail", "code": "FAULT_INTERRUPTION" }
+}

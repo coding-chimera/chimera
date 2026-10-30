@@ -1,0 +1,62 @@
+{
+  "format": "chimera.oracle.baseline",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "environment": {
+    "runtime": "bun 1.4.0",
+    "platform": "darwin-arm64",
+    "note": "受管端点同环境单机重复测量；不含主机名、路径或凭据"
+  },
+  "runs": 5,
+  "samples_ms": [
+    11,
+    13,
+    17,
+    15,
+    11
+  ],
+  "duration": {
+    "runs": 5,
+    "samples_ms": [
+      11,
+      13,
+      17,
+      15,
+      11
+    ],
+    "min_ms": 11,
+    "max_ms": 17,
+    "median_ms": 13,
+    "mean_ms": 13.4,
+    "stdev_ms": 2.61,
+    "mad_ms": 2,
+    "cv": 0.1946,
+    "noise_band_ms": {
+      "low_ms": 0,
+      "high_ms": 33,
+      "half_width_ms": 20,
+      "method": "median ± max(3×MAD, 20%×median, 20ms)"
+    }
+  },
+  "hashes": [
+    {
+      "scenario": "deterministic-four-classes",
+      "sha256": "ed59ce7e331884853d600ecf2a2c37ddc5d5172646a0f5700be5c2d3664c0ac7",
+      "bytes": 2604
+    },
+    {
+      "scenario": "causal-order-four-classes",
+      "sha256": "3a5983c97620d1e33d01cd7a80b0c29811fe35919e6750c91d99d099cb278046",
+      "bytes": 3007
+    }
+  ],
+  "checks": {
+    "total": 24,
+    "passed": 24
+  },
+  "method": {
+    "noise_band": "median ± max(3×MAD, 20%×median, 20ms)，样本为每次完整 WP-02 suite 的墙钟毫秒（1 次 warm-up 不计入）",
+    "hash_stability": "每次运行对每个 scenario 的 transcript 取 sha256；全部运行必须逐 scenario 相同",
+    "gate": "候选测量 runs≥5、checks 全通过、hashes 与基线一致、duration.median_ms 不高于噪声带上沿（单侧）"
+  }
+}

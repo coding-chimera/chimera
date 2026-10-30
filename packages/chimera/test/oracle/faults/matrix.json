@@ -1,0 +1,87 @@
+{
+  "format": "chimera.oracle.fault-matrix",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "classes": [
+    {
+      "id": "loss-dropped-db-write",
+      "fault_class": "loss",
+      "label_zh": "丢失",
+      "fixture": "fixtures/loss-dropped-db-write.json",
+      "base_golden": "determinism.jsonl",
+      "injection": "drop-event(db.write #2)",
+      "expected_code": "FAULT_LOSS",
+      "detection": "golden 事件身份多重集：候选缺少基线事件身份"
+    },
+    {
+      "id": "reorder-swapped-db-writes",
+      "fault_class": "reorder",
+      "label_zh": "乱序",
+      "fixture": "fixtures/reorder-swapped-db-writes.json",
+      "base_golden": "causality.jsonl",
+      "injection": "swap-events(db.write #1, #2)",
+      "expected_code": "FAULT_REORDER",
+      "detection": "golden 事件身份多重集相同但物理顺序不同"
+    },
+    {
+      "id": "duplicate-db-write",
+      "fault_class": "duplicate",
+      "label_zh": "重复",
+      "fixture": "fixtures/duplicate-db-write.json",
+      "base_golden": "determinism.jsonl",
+      "injection": "duplicate-event(db.write #2)",
+      "expected_code": "FAULT_DUPLICATE",
+      "detection": "候选事件身份计数大于基线计数"
+    },
+    {
+      "id": "interruption-truncated-run",
+      "fault_class": "interruption",
+      "label_zh": "中断",
+      "fixture": "fixtures/interruption-truncated-run.json",
+      "base_golden": "causality.jsonl",
+      "injection": "truncate-events(keep=9) + envelope=interrupted",
+      "expected_code": "FAULT_INTERRUPTION",
+      "detection": "envelope 终态为 interrupted，先于内容比较判定"
+    },
+    {
+      "id": "partial-write-missing-snapshot-row",
+      "fault_class": "partial_write",
+      "label_zh": "部分写",
+      "fixture": "fixtures/partial-write-missing-snapshot-row.json",
+      "base_golden": "determinism.jsonl",
+      "injection": "remove-snapshot-row(id=3)",
+      "expected_code": "FAULT_PARTIAL_WRITE",
+      "detection": "db.write 已记录的行未出现在结束 db.snapshot"
+    },
+    {
+      "id": "timeout-run",
+      "fault_class": "timeout",
+      "label_zh": "超时",
+      "fixture": "fixtures/timeout-run.json",
+      "base_golden": "causality.jsonl",
+      "injection": "drop-event(tool.result #1) + envelope=timed_out",
+      "expected_code": "FAULT_TIMEOUT",
+      "detection": "envelope 终态为 timed_out；transcript 中 tool.call 无对应 tool.result（in-flight 截断）"
+    },
+    {
+      "id": "cancel-run",
+      "fault_class": "cancel",
+      "label_zh": "取消",
+      "fixture": "fixtures/cancel-run.json",
+      "base_golden": "determinism.jsonl",
+      "injection": "insert-cancel-event(at=12) + envelope=cancelled",
+      "expected_code": "FAULT_CANCEL",
+      "detection": "envelope 终态为 cancelled；transcript 中 cancel 标记后仍有后续事件"
+    },
+    {
+      "id": "replay-tool-output-drift",
+      "fault_class": "replay",
+      "label_zh": "重放",
+      "fixture": "fixtures/replay-tool-output-drift.json",
+      "base_golden": "causality.jsonl",
+      "injection": "set-tool-output(call-0001)",
+      "expected_code": "FAULT_REPLAY",
+      "detection": "transcript 自洽但重放状态与基线重放状态不同"
+    }
+  ]
+}

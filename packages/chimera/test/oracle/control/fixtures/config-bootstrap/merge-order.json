@@ -1,0 +1,53 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "config-bootstrap/merge-order",
+  "domain": "config-bootstrap",
+  "kind": "behavior",
+  "rule": "config.merge",
+  "title": "配置源按 global → project 顺序合并，标量后写覆盖、数组拼接、plugin 去重",
+  "description": "合成两个配置源；断言生效值、源顺序、plugin 去重与 bootstrap 顺序（config 先于 plugin）。",
+  "input": {
+    "sources": [
+      {
+        "source": "global",
+        "category": "global",
+        "patch": {
+          "model": "alpha",
+          "plugin": ["p1"],
+          "instructions": ["i1"],
+          "nested": { "a": 1 }
+        }
+      },
+      {
+        "source": "project",
+        "category": "project",
+        "patch": {
+          "model": "beta",
+          "plugin": ["p1", "p2"],
+          "instructions": ["i2"],
+          "nested": { "b": 2 }
+        }
+      }
+    ],
+    "bootstrapOrder": ["config", "plugin", "services"]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "order", "equals": ["global", "project"] },
+      { "path": "effective.model", "equals": "beta" },
+      { "path": "effective.plugin", "equals": ["p1", "p2"] },
+      { "path": "effective.instructions", "equals": ["i1", "i2"] },
+      { "path": "effective.nested.b", "equals": 2 },
+      { "path": "bootstrapOrder.0", "equals": "config" }
+    ],
+    "must_not": ["plugin before config", "global overrides project scalar"]
+  },
+  "provenance": {
+    "evidence": ["src/config/config.ts:742-775", "src/project/bootstrap.ts:43-52"],
+    "derivation": "按 config.loadInstanceState 的 merge 顺序与 bootstrap.run 的 config→plugin→services 顺序构造合成输入。",
+    "executed": true
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "config-bootstrap/plugin-before-config",
+  "domain": "config-bootstrap",
+  "kind": "negative",
+  "rule": "config.merge",
+  "title": "负例：plugin 初始化早于 config 加载必须被拒绝",
+  "description": "bootstrap 顺序被故意改成 plugin → config；判定必须返回 BOOTSTRAP_ORDER，而不是接受该顺序。",
+  "input": {
+    "sources": [
+      {
+        "source": "global",
+        "category": "global",
+        "patch": { "model": "alpha", "plugin": ["p1"] }
+      }
+    ],
+    "bootstrapOrder": ["plugin", "config", "services"]
+  },
+  "expect": {
+    "verdict": "error",
+    "code": "BOOTSTRAP_ORDER",
+    "assertions": [
+      { "path": "code", "equals": "BOOTSTRAP_ORDER" }
+    ],
+    "must_not": ["accept plugin before config"]
+  },
+  "provenance": {
+    "evidence": ["src/project/bootstrap.ts:44-47"],
+    "derivation": "bootstrap.run 先 await config.get()，再 plugin.init()；顺序反转视为契约违反。",
+    "executed": true
+  }
+}

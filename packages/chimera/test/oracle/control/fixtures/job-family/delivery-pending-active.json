@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "job-family/delivery-pending-active",
+  "domain": "job-family",
+  "kind": "negative",
+  "rule": "job.family",
+  "title": "边界：completed 但 delivery=pending 的 job 仍算活跃，markDelivered 后才静默",
+  "description": "child 已 idle，job 已 completed 但结果尚未注入；断言 active=true、quiescent=false；同代次 markDelivered 后 delivered=j1、quiescent=true。",
+  "input": {
+    "sessions": [
+      { "id": "root", "parent": null, "status": "idle" },
+      { "id": "child", "parent": "root", "status": "idle" }
+    ],
+    "jobs": [
+      { "id": "j1", "owner": "child", "status": "completed", "delivery": "pending", "generation": 2 }
+    ],
+    "cancelSession": "root",
+    "markDelivered": { "id": "j1", "generation": 2 }
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "active", "equals": true },
+      { "path": "markApplied", "equals": true },
+      { "path": "delivered", "equals": "j1" },
+      { "path": "quiescent", "equals": true }
+    ],
+    "must_not": ["treat delivery-pending as quiescent before markDelivered"]
+  },
+  "provenance": {
+    "evidence": ["src/session/activity.ts:74-95", "src/agent/background-job.ts:590-645"],
+    "derivation": "SessionActivity.activeJobsIn 把 running 或 delivery=pending 都计入活跃；waitOwnerQuiescent 同样等到 markDelivered。",
+    "executed": true
+  }
+}

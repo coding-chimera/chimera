@@ -1,0 +1,12 @@
+{
+  "id": "duplicate-db-write",
+  "fault_class": "duplicate",
+  "label_zh": "重复",
+  "base_golden": "determinism.jsonl",
+  "description": "重复第 2 条 db.write；候选比基线多一个相同事件身份。",
+  "envelope_status": "complete",
+  "injections": [
+    { "op": "duplicate-event", "kind": "db.write", "ordinal": 2 }
+  ],
+  "expected": { "status": "fail", "code": "FAULT_DUPLICATE" }
+}

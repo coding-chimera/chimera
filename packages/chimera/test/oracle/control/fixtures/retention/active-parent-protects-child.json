@@ -1,0 +1,32 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "retention/active-parent-protects-child",
+  "domain": "retention",
+  "kind": "negative",
+  "rule": "retention.session-prune",
+  "title": "负例：活跃子会话保护其祖先，祖先即使过 cutoff 也不得删除",
+  "description": "parent 与 child 都早于 cutoff，child 非 idle；断言 selected 为空、parent 与 child 都在 protected。",
+  "input": {
+    "now": "2026-10-30T00:00:00Z",
+    "cutoffDays": 30,
+    "sessions": [
+      { "id": "parent", "timeUpdated": "2026-09-01T00:00:00Z", "parent": null, "status": "idle" },
+      { "id": "child", "timeUpdated": "2026-09-01T00:00:00Z", "parent": "parent", "status": "busy" }
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "selected", "length": 0 },
+      { "path": "protected", "equals": ["child", "parent"] }
+    ],
+    "must_not": ["delete an ancestor whose descendant is active"]
+  },
+  "provenance": {
+    "evidence": ["src/session/session.ts:873-895"],
+    "derivation": "protectedIDs 从每个 active 会话沿 parent 链上溯；remove() 向下级联，因此删除活跃子会话的祖先会杀死活跃工作。",
+    "executed": true
+  }
+}

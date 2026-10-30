@@ -1,0 +1,71 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "config-bootstrap",
+  "title": "config 加载与 bootstrap 顺序",
+  "owner_role": "config/bootstrap owner",
+  "scope": "config 源合并、plugin 初始化顺序、bootstrap 服务初始化失败隔离；不覆盖真实文件系统、远程 well-known 配置与 provider 鉴权。",
+  "fixtures": [
+    {
+      "id": "config-bootstrap/merge-order",
+      "path": "fixtures/config-bootstrap/merge-order.json",
+      "kind": "behavior",
+      "covers": ["CP-CONFIG-001", "CP-CONFIG-002"]
+    },
+    {
+      "id": "config-bootstrap/plugin-before-config",
+      "path": "fixtures/config-bootstrap/plugin-before-config.json",
+      "kind": "negative",
+      "covers": ["CP-CONFIG-002"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-CONFIG-001",
+      "title": "配置源按 global → environment → project → managed 合并；标量后写覆盖、数组拼接、plugin 去重",
+      "owner_role": "config owner",
+      "fixture": { "status": "existing-domain", "ref": "config-bootstrap/merge-order" },
+      "evidence": ["src/config/config.ts:737-775", "src/config/config.ts:630-640"]
+    },
+    {
+      "id": "CP-CONFIG-002",
+      "title": "plugin.init 必须晚于 config.get，bootstrap 先加载 config 再初始化插件",
+      "owner_role": "bootstrap owner",
+      "fixture": { "status": "existing-domain", "ref": "config-bootstrap/plugin-before-config" },
+      "evidence": ["src/project/bootstrap.ts:43-52"]
+    },
+    {
+      "id": "CP-CONFIG-003",
+      "title": "配置来源追踪：resolve(path) 返回 effective/inherited/source/writeTarget",
+      "owner_role": "config owner",
+      "fixture": { "status": "pending", "ref": "pending:config-bootstrap/source-provenance" },
+      "evidence": ["src/config/config.ts:953-975", "src/config/config.ts:407-450"],
+      "note": "需要真实 config 目录夹具；本包只冻结合并结果，未逐项断言 provenance 四元组。"
+    },
+    {
+      "id": "CP-CONFIG-004",
+      "title": "环境开关覆盖：禁用项目配置、禁用自动压缩、禁用 prune",
+      "owner_role": "config owner",
+      "fixture": { "status": "pending", "ref": "pending:config-bootstrap/env-flags" },
+      "evidence": ["src/config/config.ts:912-921"],
+      "note": "需要隔离进程环境；fixture 化会引入 env 全局污染，留待 G0 环境项。"
+    },
+    {
+      "id": "CP-CONFIG-005",
+      "title": "bootstrap 服务初始化并发且单服务失败只记 warning，不阻断实例启动",
+      "owner_role": "bootstrap owner",
+      "fixture": { "status": "pending", "ref": "pending:config-bootstrap/init-failure-isolation" },
+      "evidence": ["src/project/bootstrap.ts:53-64"],
+      "note": "需要真实服务层与故障注入；当前只做代码级证据，未做行为 fixture。"
+    }
+  ],
+  "new_capabilities": [
+    "版本化 config 合并顺序 fixture：标量覆盖、数组拼接、plugin 去重、bootstrap 顺序一次断言。",
+    "把 plugin-before-config 作为显式负例，防止后续 Rust host 把插件初始化提前到 config 之前。"
+  ],
+  "known_differences": [
+    "fixture 不读取真实 chimera.json / 环境变量 / well-known 远程配置；只验证合并规则与顺序。",
+    "bootstrap 并发初始化与失败隔离尚无行为 fixture，只记录代码证据。"
+  ]
+}

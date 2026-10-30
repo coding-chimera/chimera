@@ -1,0 +1,475 @@
+{
+  "format": "chimera.oracle.provider-fixture",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "profile": "chat-api-key",
+  "case": "text-and-tool-call",
+  "description": "OpenAI-compatible Chat Completions over SSE: text delta, one host function call, then a replayed tool result and a final text turn.",
+  "capabilities": {
+    "genai_verdict": "takeover",
+    "transport": "sse",
+    "auth": "api-key",
+    "native_tool_search": false,
+    "remote_compaction": false,
+    "hosted_tools_exercised": [],
+    "retry_owner": "chimera",
+    "auth_refresh_owner": "chimera"
+  },
+  "turns": [
+    {
+      "turn": 1,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/chat/completions",
+        "headers": {
+          "authorization": "Bearer <REDACTED:API_KEY>",
+          "content-type": "application/json",
+          "x-session-affinity": "session-placeholder"
+        },
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are a synthetic fixture assistant."
+            },
+            {
+              "role": "user",
+              "content": "Read the fixture file."
+            }
+          ],
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read",
+                "description": "Read a synthetic file.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "filePath": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "filePath"
+                  ]
+                }
+              }
+            }
+          ],
+          "tool_choice": "auto",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          }
+        }
+      },
+      "auth": {
+        "kind": "api-key",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:API_KEY>",
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "none",
+          "dedupe_key": "none"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "done_marker": "[DONE]",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "chat.completion.chunk",
+            "data": {
+              "id": "chatcmpl-fixture-1",
+              "object": "chat.completion.chunk",
+              "created": 0,
+              "model": "gpt-4o-mini",
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "role": "assistant",
+                    "content": "I will read it."
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "seq": 2,
+            "event": "chat.completion.chunk",
+            "data": {
+              "id": "chatcmpl-fixture-1",
+              "object": "chat.completion.chunk",
+              "created": 0,
+              "model": "gpt-4o-mini",
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "tool_calls": [
+                      {
+                        "index": 0,
+                        "id": "call_read_1",
+                        "type": "function",
+                        "function": {
+                          "name": "read",
+                          "arguments": "{\"filePath\":\""
+                        }
+                      }
+                    ]
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "seq": 3,
+            "event": "chat.completion.chunk",
+            "data": {
+              "id": "chatcmpl-fixture-1",
+              "object": "chat.completion.chunk",
+              "created": 0,
+              "model": "gpt-4o-mini",
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "tool_calls": [
+                      {
+                        "index": 0,
+                        "function": {
+                          "arguments": "fixture.txt\"}"
+                        }
+                      }
+                    ]
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "seq": 4,
+            "event": "chat.completion.chunk",
+            "data": {
+              "id": "chatcmpl-fixture-1",
+              "object": "chat.completion.chunk",
+              "created": 0,
+              "model": "gpt-4o-mini",
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {},
+                  "finish_reason": "tool_calls"
+                }
+              ]
+            }
+          },
+          {
+            "seq": 5,
+            "event": "chat.completion.chunk",
+            "data": {
+              "id": "chatcmpl-fixture-1",
+              "object": "chat.completion.chunk",
+              "created": 0,
+              "model": "gpt-4o-mini",
+              "choices": [],
+              "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 8,
+                "total_tokens": 20
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "text-start",
+            "id": "msg_chat_1"
+          },
+          {
+            "seq": 3,
+            "type": "text-delta",
+            "id": "msg_chat_1",
+            "text": "I will read it."
+          },
+          {
+            "seq": 4,
+            "type": "text-end",
+            "id": "msg_chat_1"
+          },
+          {
+            "seq": 5,
+            "type": "tool-input-start",
+            "id": "call_read_1",
+            "name": "read"
+          },
+          {
+            "seq": 6,
+            "type": "tool-input-delta",
+            "id": "call_read_1",
+            "name": "read",
+            "text": "{\"filePath\":\""
+          },
+          {
+            "seq": 7,
+            "type": "tool-input-delta",
+            "id": "call_read_1",
+            "name": "read",
+            "text": "fixture.txt\"}"
+          },
+          {
+            "seq": 8,
+            "type": "tool-input-end",
+            "id": "call_read_1",
+            "name": "read"
+          },
+          {
+            "seq": 9,
+            "type": "tool-call",
+            "id": "call_read_1",
+            "name": "read",
+            "input": {
+              "filePath": "fixture.txt"
+            }
+          },
+          {
+            "seq": 10,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "tool-calls",
+            "usage": {
+              "inputTokens": 12,
+              "outputTokens": 8,
+              "totalTokens": 20
+            }
+          },
+          {
+            "seq": 11,
+            "type": "finish",
+            "reason": "tool-calls",
+            "usage": {
+              "inputTokens": 12,
+              "outputTokens": 8,
+              "totalTokens": 20
+            }
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "call_read_1",
+            "name": "read",
+            "input": {
+              "filePath": "fixture.txt"
+            },
+            "executed_by": "host"
+          }
+        ]
+      }
+    },
+    {
+      "turn": 2,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/chat/completions",
+        "headers": {
+          "authorization": "Bearer <REDACTED:API_KEY>",
+          "content-type": "application/json",
+          "x-session-affinity": "session-placeholder"
+        },
+        "body": {
+          "model": "gpt-4o-mini",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are a synthetic fixture assistant."
+            },
+            {
+              "role": "user",
+              "content": "Read the fixture file."
+            },
+            {
+              "role": "assistant",
+              "content": "I will read it.",
+              "tool_calls": [
+                {
+                  "id": "call_read_1",
+                  "type": "function",
+                  "function": {
+                    "name": "read",
+                    "arguments": "{\"filePath\":\"fixture.txt\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "call_read_1",
+              "content": "synthetic fixture content"
+            }
+          ],
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read",
+                "description": "Read a synthetic file.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "filePath": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "filePath"
+                  ]
+                }
+              }
+            }
+          ],
+          "tool_choice": "auto",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          }
+        }
+      },
+      "auth": {
+        "kind": "api-key",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:API_KEY>",
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "none",
+          "dedupe_key": "none"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "done_marker": "[DONE]",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "chat.completion.chunk",
+            "data": {
+              "id": "chatcmpl-fixture-2",
+              "object": "chat.completion.chunk",
+              "created": 0,
+              "model": "gpt-4o-mini",
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "role": "assistant",
+                    "content": "Done."
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "seq": 2,
+            "event": "chat.completion.chunk",
+            "data": {
+              "id": "chatcmpl-fixture-2",
+              "object": "chat.completion.chunk",
+              "created": 0,
+              "model": "gpt-4o-mini",
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {},
+                  "finish_reason": "stop"
+                }
+              ]
+            }
+          },
+          {
+            "seq": 3,
+            "event": "chat.completion.chunk",
+            "data": {
+              "id": "chatcmpl-fixture-2",
+              "object": "chat.completion.chunk",
+              "created": 0,
+              "model": "gpt-4o-mini",
+              "choices": [],
+              "usage": {
+                "prompt_tokens": 24,
+                "completion_tokens": 2,
+                "total_tokens": 26
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "text-start",
+            "id": "msg_chat_2"
+          },
+          {
+            "seq": 3,
+            "type": "text-delta",
+            "id": "msg_chat_2",
+            "text": "Done."
+          },
+          {
+            "seq": 4,
+            "type": "text-end",
+            "id": "msg_chat_2"
+          },
+          {
+            "seq": 5,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 24,
+              "outputTokens": 2,
+              "totalTokens": 26
+            }
+          },
+          {
+            "seq": 6,
+            "type": "finish",
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 24,
+              "outputTokens": 2,
+              "totalTokens": 26
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

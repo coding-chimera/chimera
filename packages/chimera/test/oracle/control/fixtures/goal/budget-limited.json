@@ -1,0 +1,31 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "goal/budget-limited",
+  "domain": "goal",
+  "kind": "negative",
+  "rule": "goal.transitions",
+  "title": "边界：预算耗尽后用户 resume 不得越过 budget_limited",
+  "description": "create 预算 100，account 150 → budget_limited；随后 user resume；判定必须保持 budget_limited。",
+  "input": {
+    "events": [
+      { "type": "create", "objective": "budget test", "tokenBudget": 100 },
+      { "type": "account", "tokens": 150 },
+      { "type": "resume", "by": "user" }
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "status", "equals": "budget_limited" },
+      { "path": "canAutoContinue", "equals": false }
+    ],
+    "must_not": ["resume past the budget cap"]
+  },
+  "provenance": {
+    "evidence": ["src/session/goal.ts:293-348", "src/session/goal.ts:426-450"],
+    "derivation": "account() 在 tokensUsed >= tokenBudget 时置 budget_limited；resume() 对 budget_limited 直接返回当前值。",
+    "executed": true
+  }
+}

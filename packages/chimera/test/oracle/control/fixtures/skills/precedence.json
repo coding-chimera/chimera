@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "skills/precedence",
+  "domain": "skills",
+  "kind": "behavior",
+  "rule": "skills.precedence",
+  "title": "同名 skill：非内置覆盖内置；可用列表按请求顺序且跳过缺失项",
+  "description": "合成内置 alpha、外部 alpha 与配置 beta；断言外部 alpha 胜出、beta 可用、missing 被跳过。",
+  "input": {
+    "skills": [
+      { "name": "alpha", "location": "builtin://alpha", "builtin": true },
+      { "name": "alpha", "location": "external://alpha", "builtin": false },
+      { "name": "beta", "location": "config://beta", "builtin": false }
+    ],
+    "permission": { "skill": "allow" },
+    "requested": ["alpha", "beta", "missing"]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "resolved.0.name", "equals": "alpha" },
+      { "path": "resolved.0.location", "equals": "external://alpha" },
+      { "path": "available", "length": 2 },
+      { "path": "available.0.name", "equals": "alpha" },
+      { "path": "available.1.name", "equals": "beta" },
+      { "path": "warnings", "length": 0 }
+    ],
+    "must_not": ["builtin://alpha wins over external", "missing appears in available"]
+  },
+  "provenance": {
+    "evidence": ["src/skill/index.ts:100-117", "src/skill/index.ts:203-250"],
+    "derivation": "按 add() 的同名覆盖规则与 available() 的请求顺序构造合成技能表。",
+    "executed": true
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "job-family/cancel-cascade",
+  "domain": "job-family",
+  "kind": "behavior",
+  "rule": "job.family",
+  "title": "取消按 family BFS 级联；过期 generation 的 markDelivered 不生效",
+  "description": "root → child → grandchild，job 属于 grandchild；断言 family BFS 顺序，且 generation 1 的 mark 对 generation 3 的 job 是 no-op。限制：cancelOrder 与 family BFS 同源（judge 直接复用 BFS 输出），未独立验证 parent-before-child / cancel-once；must_not 仅为文档字段，judge 不执行。独立顺序断言列为待补 fixture。",
+  "input": {
+    "sessions": [
+      { "id": "root", "parent": null, "status": "idle" },
+      { "id": "child", "parent": "root", "status": "busy" },
+      { "id": "grandchild", "parent": "child", "status": "idle" }
+    ],
+    "jobs": [
+      { "id": "j1", "owner": "grandchild", "status": "running", "delivery": "pending", "generation": 3 }
+    ],
+    "cancelSession": "root",
+    "markDelivered": { "id": "j1", "generation": 1 }
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "family", "equals": ["root", "child", "grandchild"] },
+      { "path": "cancelOrder", "equals": ["root", "child", "grandchild"] },
+      { "path": "active", "equals": true },
+      { "path": "markApplied", "equals": false },
+      { "path": "delivered", "equals": null }
+    ],
+    "must_not": ["mark a stale generation as delivered", "cancel a child before its parent"]
+  },
+  "provenance": {
+    "evidence": ["src/session/activity.ts:49-70", "src/agent/background-job.ts:590-645"],
+    "derivation": "familyIDs 为 BFS + visited + 256 cap；markDelivered 带 generation 时只在当前 entry 同代次生效。注意：cancelOrder 由同一 BFS 列表导出，因此本 fixture 只证明 BFS 成员顺序，不独立证明真实取消顺序或每个 job 只取消一次；独立顺序断言待补。",
+    "executed": true
+  }
+}

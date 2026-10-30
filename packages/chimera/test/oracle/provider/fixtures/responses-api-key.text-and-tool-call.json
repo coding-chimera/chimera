@@ -1,0 +1,481 @@
+{
+  "format": "chimera.oracle.provider-fixture",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "profile": "responses-api-key",
+  "case": "text-and-tool-call",
+  "description": "OpenAI Responses over SSE with an API key: message output, one host function call, then a replayed function_call_output and a final text turn.",
+  "capabilities": {
+    "genai_verdict": "takeover",
+    "transport": "sse",
+    "auth": "api-key",
+    "native_tool_search": false,
+    "remote_compaction": false,
+    "hosted_tools_exercised": [],
+    "retry_owner": "chimera",
+    "auth_refresh_owner": "chimera"
+  },
+  "turns": [
+    {
+      "turn": 1,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:API_KEY>",
+          "content-type": "application/json",
+          "x-session-affinity": "session-placeholder"
+        },
+        "body": {
+          "model": "gpt-5.6",
+          "instructions": "You are a synthetic fixture assistant.",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Read the fixture file."
+                }
+              ]
+            }
+          ],
+          "tools": [
+            {
+              "type": "function",
+              "name": "read",
+              "description": "Read a synthetic file.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "filePath": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filePath"
+                ]
+              },
+              "strict": false
+            }
+          ],
+          "tool_choice": "auto",
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder"
+        }
+      },
+      "auth": {
+        "kind": "api-key",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:API_KEY>",
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "none",
+          "dedupe_key": "none"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "response.created",
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_fixture_1",
+                "service_tier": "default"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "msg_resp_1",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "event": "response.output_text.delta",
+            "data": {
+              "type": "response.output_text.delta",
+              "item_id": "msg_resp_1",
+              "delta": "I will read it."
+            }
+          },
+          {
+            "seq": 4,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "msg_resp_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "I will read it."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "seq": 5,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 1,
+              "item": {
+                "id": "fc_resp_1",
+                "type": "function_call",
+                "call_id": "call_read_2",
+                "name": "read",
+                "arguments": ""
+              }
+            }
+          },
+          {
+            "seq": 6,
+            "event": "response.function_call_arguments.delta",
+            "data": {
+              "type": "response.function_call_arguments.delta",
+              "output_index": 1,
+              "item_id": "fc_resp_1",
+              "delta": "{\"filePath\":\"fixture.txt\"}"
+            }
+          },
+          {
+            "seq": 7,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 1,
+              "item": {
+                "id": "fc_resp_1",
+                "type": "function_call",
+                "call_id": "call_read_2",
+                "name": "read",
+                "arguments": "{\"filePath\":\"fixture.txt\"}"
+              }
+            }
+          },
+          {
+            "seq": 8,
+            "event": "response.completed",
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_fixture_1",
+                "usage": {
+                  "input_tokens": 10,
+                  "output_tokens": 6,
+                  "total_tokens": 16
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "text-start",
+            "id": "msg_resp_1"
+          },
+          {
+            "seq": 3,
+            "type": "text-delta",
+            "id": "msg_resp_1",
+            "text": "I will read it."
+          },
+          {
+            "seq": 4,
+            "type": "text-end",
+            "id": "msg_resp_1"
+          },
+          {
+            "seq": 5,
+            "type": "tool-input-start",
+            "id": "call_read_2",
+            "name": "read"
+          },
+          {
+            "seq": 6,
+            "type": "tool-input-delta",
+            "id": "call_read_2",
+            "name": "read",
+            "text": "{\"filePath\":\"fixture.txt\"}"
+          },
+          {
+            "seq": 7,
+            "type": "tool-input-end",
+            "id": "call_read_2",
+            "name": "read"
+          },
+          {
+            "seq": 8,
+            "type": "tool-call",
+            "id": "call_read_2",
+            "name": "read",
+            "input": {
+              "filePath": "fixture.txt"
+            }
+          },
+          {
+            "seq": 9,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "tool-calls",
+            "usage": {
+              "inputTokens": 10,
+              "outputTokens": 6,
+              "totalTokens": 16
+            }
+          },
+          {
+            "seq": 10,
+            "type": "finish",
+            "reason": "tool-calls",
+            "usage": {
+              "inputTokens": 10,
+              "outputTokens": 6,
+              "totalTokens": 16
+            }
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "call_read_2",
+            "name": "read",
+            "input": {
+              "filePath": "fixture.txt"
+            },
+            "executed_by": "host"
+          }
+        ]
+      }
+    },
+    {
+      "turn": 2,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:API_KEY>",
+          "content-type": "application/json",
+          "x-session-affinity": "session-placeholder"
+        },
+        "body": {
+          "model": "gpt-5.6",
+          "instructions": "You are a synthetic fixture assistant.",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Read the fixture file."
+                }
+              ]
+            },
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "I will read it."
+                }
+              ]
+            },
+            {
+              "type": "function_call",
+              "call_id": "call_read_2",
+              "name": "read",
+              "arguments": "{\"filePath\":\"fixture.txt\"}"
+            },
+            {
+              "type": "function_call_output",
+              "call_id": "call_read_2",
+              "output": "synthetic fixture content"
+            }
+          ],
+          "tools": [
+            {
+              "type": "function",
+              "name": "read",
+              "description": "Read a synthetic file.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "filePath": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filePath"
+                ]
+              },
+              "strict": false
+            }
+          ],
+          "tool_choice": "auto",
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder"
+        }
+      },
+      "auth": {
+        "kind": "api-key",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:API_KEY>",
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "none",
+          "dedupe_key": "none"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "response.created",
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_fixture_2"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "msg_resp_2",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "event": "response.output_text.delta",
+            "data": {
+              "type": "response.output_text.delta",
+              "item_id": "msg_resp_2",
+              "delta": "Done."
+            }
+          },
+          {
+            "seq": 4,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "msg_resp_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "Done."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "seq": 5,
+            "event": "response.completed",
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_fixture_2",
+                "usage": {
+                  "input_tokens": 18,
+                  "output_tokens": 2,
+                  "total_tokens": 20
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "text-start",
+            "id": "msg_resp_2"
+          },
+          {
+            "seq": 3,
+            "type": "text-delta",
+            "id": "msg_resp_2",
+            "text": "Done."
+          },
+          {
+            "seq": 4,
+            "type": "text-end",
+            "id": "msg_resp_2"
+          },
+          {
+            "seq": 5,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 18,
+              "outputTokens": 2,
+              "totalTokens": 20
+            }
+          },
+          {
+            "seq": 6,
+            "type": "finish",
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 18,
+              "outputTokens": 2,
+              "totalTokens": 20
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

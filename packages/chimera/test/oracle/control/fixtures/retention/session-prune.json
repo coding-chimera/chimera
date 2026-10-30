@@ -1,0 +1,35 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "retention/session-prune",
+  "domain": "retention",
+  "kind": "behavior",
+  "rule": "retention.session-prune",
+  "title": "session prune 选择 30 天前非活跃会话并级联其较新后代",
+  "description": "old 与 active 均早于 cutoff，child/grandchild 较新；断言 active 受保护、old 连同后代被选中。",
+  "input": {
+    "now": "2026-10-30T00:00:00Z",
+    "cutoffDays": 30,
+    "sessions": [
+      { "id": "old", "timeUpdated": "2026-09-01T00:00:00Z", "parent": null, "status": "idle" },
+      { "id": "active", "timeUpdated": "2026-09-01T00:00:00Z", "parent": null, "status": "busy" },
+      { "id": "child", "timeUpdated": "2026-10-29T00:00:00Z", "parent": "old", "status": "idle" },
+      { "id": "grandchild", "timeUpdated": "2026-10-29T00:00:00Z", "parent": "child", "status": "idle" }
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "selected", "equals": ["old", "child", "grandchild"] },
+      { "path": "protected", "equals": ["active"] },
+      { "path": "selected", "excludes": "active" }
+    ],
+    "must_not": ["prune an active session", "leave an old root's descendants behind"]
+  },
+  "provenance": {
+    "evidence": ["src/session/session.ts:847-940", "src/cli/cmd/session.ts:93-113"],
+    "derivation": "prune() 先保护非 idle 会话及其祖先，再按 time_updated < cutoff 选择并向下级联。",
+    "executed": true
+  }
+}

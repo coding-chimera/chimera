@@ -1,0 +1,62 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "instructions",
+  "title": "instruction 发现、首个匹配与本地/远程分流",
+  "owner_role": "instruction owner",
+  "scope": "全局/项目 instruction 的首个匹配、config.instructions 本地与远程分流、按文件读取去重；不覆盖真实文件系统 findUp 与 HTTP 拉取。",
+  "fixtures": [
+    {
+      "id": "instructions/first-match",
+      "path": "fixtures/instructions/first-match.json",
+      "kind": "behavior",
+      "covers": ["CP-INSTR-001", "CP-INSTR-002", "CP-INSTR-003"]
+    },
+    {
+      "id": "instructions/remote-as-file",
+      "path": "fixtures/instructions/remote-as-file.json",
+      "kind": "negative",
+      "covers": ["CP-INSTR-003"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-INSTR-001",
+      "title": "全局 instruction 只取第一个存在的文件（AGENTS.md/CLAUDE.md/CONTEXT.md 顺序）",
+      "owner_role": "instruction owner",
+      "fixture": { "status": "existing-domain", "ref": "instructions/first-match" },
+      "evidence": ["src/session/instruction.ts:106-119"]
+    },
+    {
+      "id": "CP-INSTR-002",
+      "title": "项目 instruction 只取第一个命中的文件族，不叠加所有祖先",
+      "owner_role": "instruction owner",
+      "fixture": { "status": "existing-domain", "ref": "instructions/first-match" },
+      "evidence": ["src/session/instruction.ts:120-128"]
+    },
+    {
+      "id": "CP-INSTR-003",
+      "title": "config.instructions 的本地路径与远程 URL 分开处理，远程项不得当本地文件读",
+      "owner_role": "instruction owner",
+      "fixture": { "status": "existing-domain", "ref": "instructions/remote-as-file" },
+      "evidence": ["src/session/instruction.ts:130-166"]
+    },
+    {
+      "id": "CP-INSTR-004",
+      "title": "读取文件时按 message 去重向上发现 instruction，并避免重复注入",
+      "owner_role": "instruction owner",
+      "fixture": { "status": "pending", "ref": "pending:instructions/per-message-dedupe" },
+      "evidence": ["src/session/instruction.ts:168-220"],
+      "note": "需要真实文件树与消息序列；当前只覆盖 systemPaths 层。"
+    }
+  ],
+  "new_capabilities": [
+    "首个匹配与本地/远程分流的合成 fixture。",
+    "remote-as-file 负例，防止 Rust host 把远程 instruction 误当本地文件。"
+  ],
+  "known_differences": [
+    "fixture 不执行 findUp/glob/HTTP；路径与存在性由合成输入给出。",
+    "per-message 去重与向上发现仍是待补点。"
+  ]
+}

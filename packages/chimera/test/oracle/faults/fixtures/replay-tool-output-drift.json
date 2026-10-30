@@ -1,0 +1,16 @@
+{
+  "id": "replay-tool-output-drift",
+  "fault_class": "replay",
+  "label_zh": "重放",
+  "base_golden": "causality.jsonl",
+  "description": "改写 tool.result 输出但保持 transcript 自洽；重放状态与基线不同，判为重放漂移。",
+  "envelope_status": "complete",
+  "injections": [
+    {
+      "op": "set-tool-output",
+      "call_id": "call-0001",
+      "output": { "bytes": 42, "summary": "synthetic file body (replayed)" }
+    }
+  ],
+  "expected": { "status": "fail", "code": "FAULT_REPLAY" }
+}

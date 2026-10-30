@@ -1,0 +1,38 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "mutation-chain/closeout-obligation",
+  "domain": "mutation-chain",
+  "kind": "negative",
+  "rule": "mutation.chain",
+  "title": "负例：pending obligation 未 resolve/ignore 时 closeout 不得通过",
+  "description": "mutation 与 audit 均成功、oracle pass，但存在 pending obligation；断言 blocked 且 code=OBLIGATION_PENDING。",
+  "input": {
+    "graphInitialized": true,
+    "predesignToolAvailable": true,
+    "files": ["src/example.ts"],
+    "risky": false,
+    "freshPredesign": true,
+    "claimConflict": false,
+    "mutationSuccess": true,
+    "auditRecorded": true,
+    "oracle": { "status": "pass", "trusted": true, "linked": true },
+    "obligations": [{ "id": "o1", "status": "pending" }]
+  },
+  "expect": {
+    "verdict": "blocked",
+    "code": "OBLIGATION_PENDING",
+    "assertions": [
+      { "path": "code", "equals": "OBLIGATION_PENDING" },
+      { "path": "activeObligations", "equals": ["o1"] },
+      { "path": "closeoutReasons", "includes": "obligation-pending" }
+    ],
+    "must_not": ["pass closeout with an active obligation"]
+  },
+  "provenance": {
+    "evidence": ["src/chimera/prompt-context.ts:249-270", "src/tool/chimera.ts:2267-2276"],
+    "derivation": "activeObligations 过滤 resolved/ignored；closeoutSignals 对剩余项要求 review/resolve/ignore。",
+    "executed": true
+  }
+}

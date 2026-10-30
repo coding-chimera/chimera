@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "mutation-chain/oracle-fail-closeout",
+  "domain": "mutation-chain",
+  "kind": "negative",
+  "rule": "mutation.chain",
+  "title": "负例：linked oracle fail 时 closeout 必须要求处理验证证据",
+  "description": "mutation 与 audit 成功、无 pending obligation，但 linked oracle 为 fail；断言 blocked 且 code=ORACLE_NOT_PASS。",
+  "input": {
+    "graphInitialized": true,
+    "predesignToolAvailable": true,
+    "files": ["src/example.ts"],
+    "risky": false,
+    "freshPredesign": true,
+    "claimConflict": false,
+    "mutationSuccess": true,
+    "auditRecorded": true,
+    "oracle": { "status": "fail", "trusted": true, "linked": true },
+    "obligations": []
+  },
+  "expect": {
+    "verdict": "blocked",
+    "code": "ORACLE_NOT_PASS",
+    "assertions": [
+      { "path": "code", "equals": "ORACLE_NOT_PASS" },
+      { "path": "closeoutReasons", "includes": "oracle-not-pass" }
+    ],
+    "must_not": ["pass closeout with a failing linked oracle"]
+  },
+  "provenance": {
+    "evidence": ["src/chimera/prompt-context.ts:249-270", "src/chimera/prompt-context.ts:345-362"],
+    "derivation": "closeoutSignals 对 linked failing/unknown oracle 生成必须处理的信号；linkedOracleLines 只展示非 pass 结果。",
+    "executed": true
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "mcp-transports/auth-stops-fallback",
+  "domain": "mcp-transports",
+  "kind": "negative",
+  "rule": "mcp.transports",
+  "title": "负例：remote 首个 transport 返回 auth 错误后不得继续尝试 SSE",
+  "description": "StreamableHTTP 返回 auth、SSE 本可成功；断言最终 needs_auth、只尝试一次、不产生 SSE 连接。",
+  "input": {
+    "servers": [
+      { "key": "remote-synthetic", "type": "remote", "enabled": true }
+    ],
+    "remoteAttempts": [
+      { "transport": "StreamableHTTP", "result": "auth" },
+      { "transport": "SSE", "result": "ok" }
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "servers.0.status", "equals": "needs_auth" },
+      { "path": "servers.0.transport", "equals": null },
+      { "path": "servers.0.attempts", "length": 1 },
+      { "path": "servers.0.attempts", "excludes": "SSE" }
+    ],
+    "must_not": ["fall back to SSE after auth", "report connected"]
+  },
+  "provenance": {
+    "evidence": ["src/mcp/index.ts:303-358"],
+    "derivation": "connectRemote 在 lastStatus 为 needs_auth/needs_client_registration 时 break，不再尝试后续 transport。",
+    "executed": true
+  }
+}

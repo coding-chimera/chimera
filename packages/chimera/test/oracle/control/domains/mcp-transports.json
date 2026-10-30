@@ -1,0 +1,79 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "mcp-transports",
+  "title": "MCP 三 transport：local stdio / remote StreamableHTTP / remote SSE",
+  "owner_role": "mcp owner",
+  "scope": "local stdio、remote StreamableHTTP→SSE 回退、auth 错误停止回退、disabled 状态、finalizer 关闭与子进程清理、tool catalog/instructions 注入；不覆盖真实网络、OAuth 回调与 server 实现。",
+  "fixtures": [
+    {
+      "id": "mcp-transports/streamable-then-sse",
+      "path": "fixtures/mcp-transports/streamable-then-sse.json",
+      "kind": "behavior",
+      "covers": ["CP-MCP-001", "CP-MCP-002"]
+    },
+    {
+      "id": "mcp-transports/auth-stops-fallback",
+      "path": "fixtures/mcp-transports/auth-stops-fallback.json",
+      "kind": "negative",
+      "covers": ["CP-MCP-003"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-MCP-001",
+      "title": "local server 固定 StdioClientTransport，stderr 进入日志，cwd 相对 instance directory",
+      "owner_role": "mcp owner",
+      "fixture": { "status": "existing-domain", "ref": "mcp-transports/streamable-then-sse" },
+      "evidence": ["src/mcp/index.ts:364-393"]
+    },
+    {
+      "id": "CP-MCP-002",
+      "title": "remote server 先尝试 StreamableHTTP，失败后再尝试 SSE；成功即停止",
+      "owner_role": "mcp owner",
+      "fixture": { "status": "existing-domain", "ref": "mcp-transports/streamable-then-sse" },
+      "evidence": ["src/mcp/index.ts:282-303", "src/mcp/index.ts:340-358"]
+    },
+    {
+      "id": "CP-MCP-003",
+      "title": "auth 错误（needs_auth / needs_client_registration）停止后续 transport 回退",
+      "owner_role": "mcp owner",
+      "fixture": { "status": "existing-domain", "ref": "mcp-transports/auth-stops-fallback" },
+      "evidence": ["src/mcp/index.ts:303-358"]
+    },
+    {
+      "id": "CP-MCP-004",
+      "title": "enabled=false 返回 disabled 状态，不建立 transport",
+      "owner_role": "mcp owner",
+      "fixture": { "status": "pending", "ref": "pending:mcp-transports/disabled" },
+      "evidence": ["src/mcp/index.ts:402-410"],
+      "note": "简单状态分支，当前未单独建 fixture。"
+    },
+    {
+      "id": "CP-MCP-005",
+      "title": "实例 finalizer 关闭所有 client；stdio transport 先 SIGTERM 后代进程，再 close",
+      "owner_role": "mcp owner",
+      "fixture": { "status": "pending", "ref": "pending:mcp-transports/finalizer-cleanup" },
+      "evidence": ["src/mcp/index.ts:558-584"],
+      "note": "需要真实子进程与信号观测；受管端点不执行可执行体，留待 G0 环境项。"
+    },
+    {
+      "id": "CP-MCP-006",
+      "title": "server instructions 仅在相关工具仍可见时注入；tool catalog 按 server 能力发现",
+      "owner_role": "mcp owner",
+      "fixture": { "status": "pending", "ref": "pending:mcp-transports/instructions-gating" },
+      "evidence": ["src/mcp/index.ts:424-440", "src/session/system.ts:247-265"],
+      "note": "需要 permission ruleset 与 catalog；当前只记录代码证据。"
+    }
+  ],
+  "new_capabilities": [
+    "MCP 三 transport 的顺序与 auth 短路行为 fixture。",
+    "local/remote 状态映射一次断言。"
+  ],
+  "known_differences": [
+    "fixture 不建立真实连接、不执行 OAuth；transport 选择以合成 attempts 表达。",
+    "finalizer 子进程清理与 instructions 门控仍是待补点。",
+    "当前实现没有 WebSocket MCP transport；三 transport 指 stdio / StreamableHTTP / SSE。"
+  ]
+}

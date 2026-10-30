@@ -1,0 +1,36 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "mutation-chain/auto-audit-pass",
+  "domain": "mutation-chain",
+  "kind": "behavior",
+  "rule": "mutation.chain",
+  "title": "mutation 成功自动记录 audit、oracle pass、obligation 已解决时 closeout 通过",
+  "description": "合成完整闭环：predesign 新鲜、mutation 成功、audit 自动记录、oracle pass 且 linked、唯一 obligation 已 resolved。",
+  "input": {
+    "graphInitialized": true,
+    "predesignToolAvailable": true,
+    "files": ["src/example.ts"],
+    "risky": true,
+    "freshPredesign": true,
+    "claimConflict": false,
+    "mutationSuccess": true,
+    "auditRecorded": true,
+    "oracle": { "status": "pass", "trusted": true, "linked": true },
+    "obligations": [{ "id": "o1", "status": "resolved" }]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "closeoutReasons", "length": 0 },
+      { "path": "activeObligations", "length": 0 }
+    ],
+    "must_not": ["require a model-invoked audit after the auto-record", "block on a resolved obligation"]
+  },
+  "provenance": {
+    "evidence": ["src/chimera/provenance.ts:1238-1256", "src/chimera/prompt-context.ts:233-286"],
+    "derivation": "trackToolMutation 在 mutation 成功后写 recordAuditRun(source=track-tool-mutation)；closeout 只对缺失 audit/失败 oracle/active obligation 报警。",
+    "executed": true
+  }
+}

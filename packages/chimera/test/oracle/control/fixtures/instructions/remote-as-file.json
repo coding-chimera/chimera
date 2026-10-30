@@ -1,0 +1,29 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "instructions/remote-as-file",
+  "domain": "instructions",
+  "kind": "negative",
+  "rule": "instructions.first-match",
+  "title": "负例：远程 instruction 被当作本地文件必须被拒绝",
+  "description": "配置项 kind=remote 但 url 不含 synthetic:// 前缀；判定必须返回 INSTRUCTION_REMOTE_AS_FILE。",
+  "input": {
+    "globalFiles": [],
+    "projectMatches": {},
+    "configInstructions": [
+      { "kind": "remote", "url": "remote-instructions.md" }
+    ]
+  },
+  "expect": {
+    "verdict": "error",
+    "code": "INSTRUCTION_REMOTE_AS_FILE",
+    "assertions": [{ "path": "code", "equals": "INSTRUCTION_REMOTE_AS_FILE" }],
+    "must_not": ["treat remote instruction as local path"]
+  },
+  "provenance": {
+    "evidence": ["src/session/instruction.ts:149-166"],
+    "derivation": "system() 把 https/http 项交给 fetch、其余项走 read；合成输入把远程项伪装成本地路径。",
+    "executed": true
+  }
+}

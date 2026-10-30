@@ -1,0 +1,39 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "tool-search/denied-candidate",
+  "domain": "tool-search",
+  "kind": "negative",
+  "rule": "tool-search.score",
+  "title": "负例：permission deny 的候选不得出现在 tool_search 结果中",
+  "description": "browser_open 被 deny；查询 browser 仍命中 browser_click，但结果与候选数必须排除 browser_open。",
+  "input": {
+    "query": "browser",
+    "limit": 8,
+    "candidates": [
+      { "id": "browser_open", "description": "open a url" },
+      { "id": "browser_click", "description": "click a snapshot ref" }
+    ],
+    "denied": ["browser_open"],
+    "agentMode": "subagent",
+    "subagentHidden": [],
+    "revealed": [],
+    "revealTimes": {},
+    "compactionSummaryAt": 0
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "matches", "length": 1 },
+      { "path": "matches.0.id", "equals": "browser_click" },
+      { "path": "candidateCount", "equals": 1 }
+    ],
+    "must_not": ["browser_open in matches", "denied candidate in candidateCount"]
+  },
+  "provenance": {
+    "evidence": ["src/session/tool-search.ts:233-247"],
+    "derivation": "deferredCandidates() 先用 Permission.disabled 过滤 deny，再按 agentMode 过滤 subagent-hidden。",
+    "executed": true
+  }
+}

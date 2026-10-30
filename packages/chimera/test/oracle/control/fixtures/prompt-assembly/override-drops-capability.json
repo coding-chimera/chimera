@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "prompt-assembly/override-drops-capability",
+  "domain": "prompt-assembly",
+  "kind": "negative",
+  "rule": "prompt.assembly",
+  "title": "负例：agent.prompt override 替换 provider 栈并抑制能力层",
+  "description": "agentPrompt 非空且工具含 chimera/workbrief；overlay 为空、small=true、有 parentSessionID、variant=ultra；断言只剩 agent/system 与 policy 段。",
+  "input": {
+    "agentPrompt": "agent override",
+    "modelLayer": "synthetic",
+    "overlay": "",
+    "tools": { "read": {}, "workbrief": {}, "chimera_search": {} },
+    "multiAgent": "policy",
+    "small": true,
+    "parentSessionID": "parent-synthetic",
+    "variant": "ultra",
+    "ultraLayer": "synthetic",
+    "system": [],
+    "userSystem": ""
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "keys", "equals": ["agent/system", "policy/multi-agent"] },
+      { "path": "capabilityIncluded", "equals": false }
+    ],
+    "must_not": ["core/default with agent override", "variant/ultra in a subagent"]
+  },
+  "provenance": {
+    "evidence": ["src/session/llm.ts:241-251"],
+    "derivation": "systemSegments 在 agent.prompt 分支跳过 provider/capability 层；ultra 段要求 !small && !parentSessionID。overlay 是独立层，fixture 置空以隔离 override 行为。",
+    "executed": true
+  }
+}

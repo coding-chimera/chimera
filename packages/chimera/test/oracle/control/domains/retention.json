@@ -1,0 +1,85 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "retention",
+  "title": "retention：session 30 天、证据 30 天与 WP-05 矩阵衔接",
+  "owner_role": "retention owner",
+  "scope": "session prune 30 天、committed evidence 30 天压缩、active obligation 保护、process registry 24h / turn lease 30min / claim 2h 等 TTL；不执行真实删除/压缩。",
+  "fixtures": [
+    {
+      "id": "retention/session-prune",
+      "path": "fixtures/retention/session-prune.json",
+      "kind": "behavior",
+      "covers": ["CP-RET-001"]
+    },
+    {
+      "id": "retention/active-parent-protects-child",
+      "path": "fixtures/retention/active-parent-protects-child.json",
+      "kind": "negative",
+      "covers": ["CP-RET-001"]
+    },
+    {
+      "id": "retention/evidence-compaction",
+      "path": "fixtures/retention/evidence-compaction.json",
+      "kind": "negative",
+      "covers": ["CP-RET-002", "CP-RET-003"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-RET-001",
+      "title": "session prune 30 天：保护非 idle 会话及其祖先，删除旧会话并级联较新后代；默认 dry-run",
+      "owner_role": "retention owner",
+      "fixture": { "status": "existing-domain", "ref": "retention/session-prune" },
+      "evidence": ["src/session/session.ts:847-940", "src/cli/cmd/session.ts:93-113"]
+    },
+    {
+      "id": "CP-RET-002",
+      "title": "证据压缩 30 天：只处理已提交、pass+trusted oracle、非 active session 的 committed change evidence",
+      "owner_role": "retention owner",
+      "fixture": { "status": "existing-domain", "ref": "retention/evidence-compaction" },
+      "evidence": ["src/chimera/store.ts:2700-2788", "src/chimera/store.ts:2794-2830"]
+    },
+    {
+      "id": "CP-RET-003",
+      "title": "被 active obligation 引用的 change fact/event 不得被证据压缩删除；pending obligation 永不自动清理",
+      "owner_role": "retention owner",
+      "fixture": { "status": "existing-domain", "ref": "retention/evidence-compaction" },
+      "evidence": ["src/chimera/store.ts:2704-2788"]
+    },
+    {
+      "id": "CP-RET-004",
+      "title": "短 TTL：process registry 24h、turn lease 30min、edit-intent claim 2h、wake-priority 10min",
+      "owner_role": "retention owner",
+      "fixture": { "status": "pending", "ref": "pending:retention/short-ttls" },
+      "evidence": ["src/chimera/store.ts:190,2152", "src/session/turn-lease.ts:104-110", "src/chimera/edit-intent.ts:62"],
+      "note": "需要真实 store/时钟；当前只记录常量证据。"
+    },
+    {
+      "id": "CP-RET-005",
+      "title": "图库审计证据 30 天压缩与 WP-05 表级保留列一致：session/message/part 30 天，chimera_* 30 天，obligation 不自动删",
+      "owner_role": "retention owner",
+      "fixture": { "status": "pending", "ref": "pending:retention/wp05-matrix-link" },
+      "evidence": ["specs/rust-host/authority/table-authority-matrix.md:20-58", "src/chimera/store.ts:290-294"],
+      "note": "WP-05 矩阵是权威来源；本域 fixture 只覆盖选择规则，矩阵逐行对齐留待 G0 交叉检查。"
+    },
+    {
+      "id": "CP-RET-006",
+      "title": "model telemetry 持久化移除范围（D-R3）未拍板；当前 compact 窗口由调用方决定",
+      "owner_role": "retention owner",
+      "fixture": { "status": "pending", "ref": "pending:retention/model-telemetry-decision" },
+      "evidence": ["specs/rust-host/authority/table-authority-matrix.md:70-75"],
+      "note": "待 parent 拍板，不在本包擅自定 TTL。"
+    }
+  ],
+  "new_capabilities": [
+    "session prune 的 active/ancestor 保护与后代级联 fixture。",
+    "证据压缩的 30 天/committed/trusted/active-session/obligation 五重门控 fixture。"
+  ],
+  "known_differences": [
+    "fixture 不执行真实 SQLite 删除/VACUUM；只验证候选选择规则。",
+    "process registry / turn lease / claim TTL 与 WP-05 矩阵逐行对齐仍是待补点。",
+    "session prune 目前是显式 CLI（默认 dry-run），没有自动定时任务。"
+  ]
+}

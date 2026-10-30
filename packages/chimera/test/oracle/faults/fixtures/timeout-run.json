@@ -1,0 +1,12 @@
+{
+  "id": "timeout-run",
+  "fault_class": "timeout",
+  "label_zh": "超时",
+  "base_golden": "causality.jsonl",
+  "description": "transcript 级：删除 call-0001 的 tool.result，留下无结果的 in-flight tool.call（截断标记）；envelope 级附加 timed_out。",
+  "envelope_status": "timed_out",
+  "injections": [
+    { "op": "drop-event", "kind": "tool.result", "ordinal": 1 }
+  ],
+  "expected": { "status": "fail", "code": "FAULT_TIMEOUT" }
+}

@@ -1,0 +1,68 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "goal",
+  "title": "session goal 状态机、预算与自动续跑",
+  "owner_role": "goal owner",
+  "scope": "goal 状态迁移、连续空转/工具失败断路器、token 预算、自动续跑上限、用户侧 resume；不覆盖真实 LLM 轮次与 DB 恢复。",
+  "fixtures": [
+    {
+      "id": "goal/transitions",
+      "path": "fixtures/goal/transitions.json",
+      "kind": "behavior",
+      "covers": ["CP-GOAL-001", "CP-GOAL-002", "CP-GOAL-004"]
+    },
+    {
+      "id": "goal/budget-limited",
+      "path": "fixtures/goal/budget-limited.json",
+      "kind": "negative",
+      "covers": ["CP-GOAL-003", "CP-GOAL-005"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-GOAL-001",
+      "title": "模型侧状态迁移：active→complete|blocked|paused，paused→active；其他迁移拒绝",
+      "owner_role": "goal owner",
+      "fixture": { "status": "existing-domain", "ref": "goal/transitions" },
+      "evidence": ["src/session/goal.ts:101-106", "src/session/goal.ts:250-291"]
+    },
+    {
+      "id": "CP-GOAL-002",
+      "title": "连续 3 次空转或连续 3 次工具失败把 active goal 置 blocked",
+      "owner_role": "goal owner",
+      "fixture": { "status": "existing-domain", "ref": "goal/transitions" },
+      "evidence": ["src/session/goal.ts:23-25", "src/session/goal.ts:147-170"]
+    },
+    {
+      "id": "CP-GOAL-003",
+      "title": "token 预算按会话子树累计；达到预算置 budget_limited 且优先于 resume",
+      "owner_role": "goal owner",
+      "fixture": { "status": "existing-domain", "ref": "goal/budget-limited" },
+      "evidence": ["src/session/goal.ts:107-145", "src/session/goal.ts:293-348"]
+    },
+    {
+      "id": "CP-GOAL-004",
+      "title": "canAutoContinue 要求 active 且连续续跑 < 25",
+      "owner_role": "goal owner",
+      "fixture": { "status": "existing-domain", "ref": "goal/transitions" },
+      "evidence": ["src/session/goal.ts:24-25", "src/session/goal.ts:169-171"]
+    },
+    {
+      "id": "CP-GOAL-005",
+      "title": "blocked/paused 只能由用户侧 resume 恢复；budget_limited 需新建 goal",
+      "owner_role": "goal owner",
+      "fixture": { "status": "existing-domain", "ref": "goal/budget-limited" },
+      "evidence": ["src/session/goal.ts:426-450"]
+    }
+  ],
+  "new_capabilities": [
+    "goal 状态机 + 断路器 + 预算的合成事件序列 fixture。",
+    "budget_limited 不得被用户 resume 越过的负例。"
+  ],
+  "known_differences": [
+    "fixture 不执行真实 LLM 轮次、不读 goal DB；token 累计与恢复路径仍是待补点。",
+    "goal 与 SessionActivity/family quiescence 的联动只在 job-family 域覆盖。"
+  ]
+}

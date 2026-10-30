@@ -1,0 +1,70 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "skills",
+  "title": "skill 发现、同名覆盖、可用性过滤",
+  "owner_role": "skill owner",
+  "scope": "skill 目录发现顺序、同名覆盖、frontmatter name 校验、permission 过滤；不覆盖真实 npm/URL 拉取与 builtin 内容演进。",
+  "fixtures": [
+    {
+      "id": "skills/precedence",
+      "path": "fixtures/skills/precedence.json",
+      "kind": "behavior",
+      "covers": ["CP-SKILL-001", "CP-SKILL-002"]
+    },
+    {
+      "id": "skills/name-mismatch",
+      "path": "fixtures/skills/name-mismatch.json",
+      "kind": "negative",
+      "covers": ["CP-SKILL-003"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-SKILL-001",
+      "title": "发现顺序：外部 .claude/.agents → 配置目录 → skills.paths → skills.urls；非内置同名覆盖内置",
+      "owner_role": "skill owner",
+      "fixture": { "status": "existing-domain", "ref": "skills/precedence" },
+      "evidence": ["src/skill/index.ts:142-203"]
+    },
+    {
+      "id": "CP-SKILL-002",
+      "title": "同名非内置 skill 覆盖时记录 duplicate warning，但最终后写者生效",
+      "owner_role": "skill owner",
+      "fixture": { "status": "existing-domain", "ref": "skills/precedence" },
+      "evidence": ["src/skill/index.ts:100-117"]
+    },
+    {
+      "id": "CP-SKILL-003",
+      "title": "frontmatter name 与路径不一致必须拒绝并报 NameMismatch",
+      "owner_role": "skill owner",
+      "fixture": { "status": "existing-domain", "ref": "skills/name-mismatch" },
+      "evidence": ["src/skill/index.ts:28-40", "src/skill/index.ts:118-140"]
+    },
+    {
+      "id": "CP-SKILL-004",
+      "title": "available(agent) 受 permission 过滤；skill 工具被 deny 时系统提示不注入 skill 索引",
+      "owner_role": "skill owner",
+      "fixture": { "status": "pending", "ref": "pending:skills/permission-filter" },
+      "evidence": ["src/session/system.ts:230-242", "src/skill/index.ts:220-250"],
+      "note": "需要 Agent.Info + permission ruleset 组合；当前 fixture 只覆盖 allow 分支。"
+    },
+    {
+      "id": "CP-SKILL-005",
+      "title": "builtin skill 位置不可被外部同名覆盖，且 builtin 内容随版本升级",
+      "owner_role": "skill owner",
+      "fixture": { "status": "pending", "ref": "pending:skills/builtin-immutability" },
+      "evidence": ["src/skill/builtin.ts", "src/skill/index.ts:100-117"],
+      "note": "builtin 内容属于产品资产，需单独版本化基线。"
+    }
+  ],
+  "new_capabilities": [
+    "同名覆盖与 duplicate warning 的行为 fixture。",
+    "frontmatter name mismatch 的显式负例。"
+  ],
+  "known_differences": [
+    "fixture 不执行真实目录扫描、npm 包下载或 URL pull；发现顺序以合成 skill 列表表达。",
+    "permission 过滤与 builtin 不可覆盖仍是待补点。"
+  ]
+}

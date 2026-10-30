@@ -1,0 +1,12 @@
+{
+  "id": "loss-dropped-db-write",
+  "fault_class": "loss",
+  "label_zh": "丢失",
+  "base_golden": "determinism.jsonl",
+  "description": "删除第 2 条 db.write；footer 重算后结构合法，但相对基线丢失一个事件身份。",
+  "envelope_status": "complete",
+  "injections": [
+    { "op": "drop-event", "kind": "db.write", "ordinal": 2 }
+  ],
+  "expected": { "status": "fail", "code": "FAULT_LOSS" }
+}

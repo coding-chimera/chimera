@@ -1,0 +1,87 @@
+{"contract_rev":"cr-2026-10-30-r1","description":"Synthetic one-session hook trace: config/bootstrap, tool.definition, chat.params, chat.headers, tool.execute.before/after, auth.loader+refresh. Derived from current TS call sites; not a live capture.","format":"chimera.oracle.plugin.hook-trace","record":"header","synthetic":true,"trajectory":"session-six-hooks","version":1,"work_id":"WP-09"}
+{"detail":{"directory":"synthetic://workspace"},"kind":"operation.start","op":"bootstrap","op_id":"op-bootstrap","seq":1}
+{"hooks":["auth.loader","chat.params","chat.headers"],"kind":"plugin.registered","order":0,"origin":"internal","plugin_id":"builtin.codex-auth","seq":2}
+{"hooks":["config","tool.definition","chat.params","chat.headers","tool.execute.before","tool.execute.after"],"kind":"plugin.registered","order":1,"origin":"config","plugin_id":"demo.alpha","seq":3}
+{"hooks":["config","tool.definition","chat.params","chat.headers","tool.execute.before","tool.execute.after"],"kind":"plugin.registered","order":2,"origin":"config","plugin_id":"demo.beta","seq":4}
+{"hook":"config","hook_class":"config-bootstrap","input":{"source":"synthetic://workspace/chimera.json"},"kind":"hook.start","output":{"provider":{"demoProvider":{"name":"Demo","options":{"timeout":5000}}}},"plugin_id":"demo.alpha","scope":"config:bootstrap","seq":5}
+{"after":"Demo Provider","before":"Demo","hook":"config","kind":"hook.mutate","path":"provider.demoProvider.name","plugin_id":"demo.alpha","scope":"config:bootstrap","seq":6}
+{"error_code":null,"hook":"config","kind":"hook.end","plugin_id":"demo.alpha","scope":"config:bootstrap","seq":7,"status":"ok"}
+{"hook":"config","hook_class":"config-bootstrap","input":{"source":"synthetic://workspace/chimera.json"},"kind":"hook.start","output":{"provider":{"demoProvider":{"name":"Demo Provider","options":{"timeout":5000}}}},"plugin_id":"demo.beta","scope":"config:bootstrap","seq":8}
+{"after":15000,"before":5000,"hook":"config","kind":"hook.mutate","path":"provider.demoProvider.options.timeout","plugin_id":"demo.beta","scope":"config:bootstrap","seq":9}
+{"error_code":null,"hook":"config","kind":"hook.end","plugin_id":"demo.beta","scope":"config:bootstrap","seq":10,"status":"ok"}
+{"kind":"snapshot","name":"final","scope":"config:bootstrap","seq":11,"value":{"provider":{"demoProvider":{"name":"Demo Provider","options":{"timeout":15000}}}}}
+{"error_code":null,"kind":"operation.end","op":"bootstrap","op_id":"op-bootstrap","seq":12,"status":"ok"}
+{"detail":{"provider_id":"openai"},"kind":"operation.start","op":"provider.init","op_id":"op-provider","seq":13}
+{"hook":"auth.loader","hook_class":"auth-refresh","input":{"auth_type":"oauth","provider_id":"openai"},"kind":"hook.start","output":{"options":{}},"plugin_id":"builtin.codex-auth","scope":"auth:openai","seq":14}
+{"after":"oauth","before":null,"hook":"auth.loader","kind":"hook.mutate","path":"options.auth_mode","plugin_id":"builtin.codex-auth","scope":"auth:openai","seq":15}
+{"after":true,"before":null,"hook":"auth.loader","kind":"hook.mutate","path":"options.fetch_override","plugin_id":"builtin.codex-auth","scope":"auth:openai","seq":16}
+{"error_code":null,"hook":"auth.loader","kind":"hook.end","plugin_id":"builtin.codex-auth","scope":"auth:openai","seq":17,"status":"ok"}
+{"kind":"snapshot","name":"final","scope":"auth:openai","seq":18,"value":{"options":{"auth_mode":"oauth","fetch_override":true}}}
+{"error_code":null,"kind":"operation.end","op":"provider.init","op_id":"op-provider","seq":19,"status":"ok"}
+{"detail":{"tool_count":2},"kind":"operation.start","op":"tool.list","op_id":"op-tools","seq":20}
+{"hook":"tool.definition","hook_class":"tool-definition","input":{"tool_id":"read"},"kind":"hook.start","output":{"description":"Read a file","parameters":{"properties":{"path":{"type":"string"}},"required":["path"],"type":"object"}},"plugin_id":"demo.alpha","scope":"tool:read","seq":21}
+{"after":"Read a file (alpha)","before":"Read a file","hook":"tool.definition","kind":"hook.mutate","path":"description","plugin_id":"demo.alpha","scope":"tool:read","seq":22}
+{"error_code":null,"hook":"tool.definition","kind":"hook.end","plugin_id":"demo.alpha","scope":"tool:read","seq":23,"status":"ok"}
+{"hook":"tool.definition","hook_class":"tool-definition","input":{"tool_id":"bash"},"kind":"hook.start","output":{"description":"Run a shell command","parameters":{"properties":{"command":{"type":"string"},"timeout":{"minimum":0,"type":"integer"}},"required":["command"],"type":"object"}},"plugin_id":"demo.alpha","scope":"tool:bash","seq":24}
+{"after":"Run a shell command (alpha)","before":"Run a shell command","hook":"tool.definition","kind":"hook.mutate","path":"description","plugin_id":"demo.alpha","scope":"tool:bash","seq":25}
+{"error_code":null,"hook":"tool.definition","kind":"hook.end","plugin_id":"demo.alpha","scope":"tool:bash","seq":26,"status":"ok"}
+{"hook":"tool.definition","hook_class":"tool-definition","input":{"tool_id":"read"},"kind":"hook.start","output":{"description":"Read a file (alpha)","parameters":{"properties":{"path":{"type":"string"}},"required":["path"],"type":"object"}},"plugin_id":"demo.beta","scope":"tool:read","seq":27}
+{"after":"Read a file (alpha) (beta)","before":"Read a file (alpha)","hook":"tool.definition","kind":"hook.mutate","path":"description","plugin_id":"demo.beta","scope":"tool:read","seq":28}
+{"error_code":null,"hook":"tool.definition","kind":"hook.end","plugin_id":"demo.beta","scope":"tool:read","seq":29,"status":"ok"}
+{"hook":"tool.definition","hook_class":"tool-definition","input":{"tool_id":"bash"},"kind":"hook.start","output":{"description":"Run a shell command (alpha)","parameters":{"properties":{"command":{"type":"string"},"timeout":{"minimum":0,"type":"integer"}},"required":["command"],"type":"object"}},"plugin_id":"demo.beta","scope":"tool:bash","seq":30}
+{"after":1,"before":0,"hook":"tool.definition","kind":"hook.mutate","path":"parameters.properties.timeout.minimum","plugin_id":"demo.beta","scope":"tool:bash","seq":31}
+{"error_code":null,"hook":"tool.definition","kind":"hook.end","plugin_id":"demo.beta","scope":"tool:bash","seq":32,"status":"ok"}
+{"kind":"snapshot","name":"final","scope":"tool:read","seq":33,"value":{"description":"Read a file (alpha) (beta)","parameters":{"properties":{"path":{"type":"string"}},"required":["path"],"type":"object"}}}
+{"kind":"snapshot","name":"final","scope":"tool:bash","seq":34,"value":{"description":"Run a shell command (alpha)","parameters":{"properties":{"command":{"type":"string"},"timeout":{"minimum":1,"type":"integer"}},"required":["command"],"type":"object"}}}
+{"error_code":null,"kind":"operation.end","op":"tool.list","op_id":"op-tools","seq":35,"status":"ok"}
+{"detail":{"model_id":"claude-sonnet-4-6","provider_id":"openai"},"kind":"operation.start","op":"llm.request","op_id":"op-llm","seq":36}
+{"hook":"chat.params","hook_class":"chat-params-headers","input":{"agent":"build","session_id":"ses_synthetic"},"kind":"hook.start","output":{"frequencyPenalty":0,"maxOutputTokens":4096,"options":{"reasoningEffort":"low"},"presencePenalty":0,"temperature":1,"topK":40,"topP":1},"plugin_id":"builtin.codex-auth","scope":"params:op-llm","seq":37}
+{"after":null,"before":4096,"hook":"chat.params","kind":"hook.mutate","path":"maxOutputTokens","plugin_id":"builtin.codex-auth","scope":"params:op-llm","seq":38}
+{"error_code":null,"hook":"chat.params","kind":"hook.end","plugin_id":"builtin.codex-auth","scope":"params:op-llm","seq":39,"status":"ok"}
+{"hook":"chat.params","hook_class":"chat-params-headers","input":{"agent":"build","session_id":"ses_synthetic"},"kind":"hook.start","output":{"frequencyPenalty":0,"maxOutputTokens":null,"options":{"reasoningEffort":"low"},"presencePenalty":0,"temperature":1,"topK":40,"topP":1},"plugin_id":"demo.alpha","scope":"params:op-llm","seq":40}
+{"after":0.5,"before":1,"hook":"chat.params","kind":"hook.mutate","path":"temperature","plugin_id":"demo.alpha","scope":"params:op-llm","seq":41}
+{"error_code":null,"hook":"chat.params","kind":"hook.end","plugin_id":"demo.alpha","scope":"params:op-llm","seq":42,"status":"ok"}
+{"hook":"chat.params","hook_class":"chat-params-headers","input":{"agent":"build","session_id":"ses_synthetic"},"kind":"hook.start","output":{"frequencyPenalty":0,"maxOutputTokens":null,"options":{"reasoningEffort":"low"},"presencePenalty":0,"temperature":0.5,"topK":40,"topP":1},"plugin_id":"demo.beta","scope":"params:op-llm","seq":43}
+{"after":"medium","before":"low","hook":"chat.params","kind":"hook.mutate","path":"options.reasoningEffort","plugin_id":"demo.beta","scope":"params:op-llm","seq":44}
+{"error_code":null,"hook":"chat.params","kind":"hook.end","plugin_id":"demo.beta","scope":"params:op-llm","seq":45,"status":"ok"}
+{"kind":"snapshot","name":"final","scope":"params:op-llm","seq":46,"value":{"frequencyPenalty":0,"maxOutputTokens":null,"options":{"reasoningEffort":"medium"},"presencePenalty":0,"temperature":0.5,"topK":40,"topP":1}}
+{"hook":"chat.headers","hook_class":"chat-params-headers","input":{"agent":"build","session_id":"ses_synthetic"},"kind":"hook.start","output":{"headers":{}},"plugin_id":"builtin.codex-auth","scope":"headers:op-llm","seq":47}
+{"after":"oauth","before":null,"hook":"chat.headers","kind":"hook.mutate","path":"headers.x-synthetic-auth","plugin_id":"builtin.codex-auth","scope":"headers:op-llm","seq":48}
+{"error_code":null,"hook":"chat.headers","kind":"hook.end","plugin_id":"builtin.codex-auth","scope":"headers:op-llm","seq":49,"status":"ok"}
+{"hook":"chat.headers","hook_class":"chat-params-headers","input":{"agent":"build","session_id":"ses_synthetic"},"kind":"hook.start","output":{"headers":{"x-synthetic-auth":"oauth"}},"plugin_id":"demo.alpha","scope":"headers:op-llm","seq":50}
+{"error_code":null,"hook":"chat.headers","kind":"sdk.call","method":"session.message","plugin_id":"demo.alpha","scope":"headers:op-llm","seq":51,"status":"ok"}
+{"after":"1","before":null,"hook":"chat.headers","kind":"hook.mutate","path":"headers.x-alpha-trace","plugin_id":"demo.alpha","scope":"headers:op-llm","seq":52}
+{"error_code":null,"hook":"chat.headers","kind":"hook.end","plugin_id":"demo.alpha","scope":"headers:op-llm","seq":53,"status":"ok"}
+{"hook":"chat.headers","hook_class":"chat-params-headers","input":{"agent":"build","session_id":"ses_synthetic"},"kind":"hook.start","output":{"headers":{"x-alpha-trace":"1","x-synthetic-auth":"oauth"}},"plugin_id":"demo.beta","scope":"headers:op-llm","seq":54}
+{"after":"1","before":null,"hook":"chat.headers","kind":"hook.mutate","path":"headers.x-beta-trace","plugin_id":"demo.beta","scope":"headers:op-llm","seq":55}
+{"error_code":null,"hook":"chat.headers","kind":"hook.end","plugin_id":"demo.beta","scope":"headers:op-llm","seq":56,"status":"ok"}
+{"kind":"snapshot","name":"final","scope":"headers:op-llm","seq":57,"value":{"headers":{"x-alpha-trace":"1","x-beta-trace":"1","x-synthetic-auth":"oauth"}}}
+{"concurrent_requests":2,"expires_delta_s":3600,"kind":"auth.refresh","persist":"auth.set","provider_id":"openai","scope":"request:op-llm","seq":58,"single_flight":true,"trigger":"expires_lt_now"}
+{"error_code":null,"hook":"auth.refresh","kind":"sdk.call","method":"auth.set","plugin_id":"builtin.codex-auth","scope":"request:op-llm","seq":59,"status":"ok"}
+{"error_code":null,"kind":"operation.end","op":"llm.request","op_id":"op-llm","seq":60,"status":"ok"}
+{"detail":{"model_id":"claude-sonnet-4-6","provider_id":"openai","small":true},"kind":"operation.start","op":"llm.request","op_id":"op-llm-2","seq":61}
+{"error_code":null,"kind":"operation.end","op":"llm.request","op_id":"op-llm-2","seq":62,"status":"ok"}
+{"detail":{"call_id":"call-1","session_id":"ses_synthetic","tool":"read"},"kind":"operation.start","op":"tool.execute","op_id":"op-tool-1","seq":63}
+{"hook":"tool.execute.before","hook_class":"tool-execute-before","input":{"call_id":"call-1","session_id":"ses_synthetic","tool":"read"},"kind":"hook.start","output":{"args":{"path":"synthetic://input.txt"}},"plugin_id":"demo.alpha","scope":"before:call-1","seq":64}
+{"after":"synthetic://input-alpha.txt","before":"synthetic://input.txt","hook":"tool.execute.before","kind":"hook.mutate","path":"args.path","plugin_id":"demo.alpha","scope":"before:call-1","seq":65}
+{"error_code":null,"hook":"tool.execute.before","kind":"hook.end","plugin_id":"demo.alpha","scope":"before:call-1","seq":66,"status":"ok"}
+{"hook":"tool.execute.before","hook_class":"tool-execute-before","input":{"call_id":"call-1","session_id":"ses_synthetic","tool":"read"},"kind":"hook.start","output":{"args":{"path":"synthetic://input-alpha.txt"}},"plugin_id":"demo.beta","scope":"before:call-1","seq":67}
+{"after":"synthetic://input-beta.txt","before":"synthetic://input-alpha.txt","hook":"tool.execute.before","kind":"hook.mutate","path":"args.path","plugin_id":"demo.beta","scope":"before:call-1","seq":68}
+{"error_code":null,"hook":"tool.execute.before","kind":"hook.end","plugin_id":"demo.beta","scope":"before:call-1","seq":69,"status":"ok"}
+{"kind":"snapshot","name":"final","scope":"before:call-1","seq":70,"value":{"args":{"path":"synthetic://input-beta.txt"}}}
+{"hook":"tool.execute.after","hook_class":"tool-execute-after","input":{"args":{"path":"synthetic://input-beta.txt"},"call_id":"call-1","session_id":"ses_synthetic","tool":"read"},"kind":"hook.start","output":{"metadata":{},"output":"synthetic file contents","title":"read"},"plugin_id":"demo.alpha","scope":"after:call-1","seq":71}
+{"after":"synthetic file contents\n[alpha]","before":"synthetic file contents","hook":"tool.execute.after","kind":"hook.mutate","path":"output","plugin_id":"demo.alpha","scope":"after:call-1","seq":72}
+{"error_code":null,"hook":"tool.execute.after","kind":"hook.end","plugin_id":"demo.alpha","scope":"after:call-1","seq":73,"status":"ok"}
+{"hook":"tool.execute.after","hook_class":"tool-execute-after","input":{"args":{"path":"synthetic://input-beta.txt"},"call_id":"call-1","session_id":"ses_synthetic","tool":"read"},"kind":"hook.start","output":{"metadata":{},"output":"synthetic file contents\n[alpha]","title":"read"},"plugin_id":"demo.beta","scope":"after:call-1","seq":74}
+{"after":true,"before":null,"hook":"tool.execute.after","kind":"hook.mutate","path":"metadata.alpha","plugin_id":"demo.beta","scope":"after:call-1","seq":75}
+{"error_code":null,"hook":"tool.execute.after","kind":"hook.end","plugin_id":"demo.beta","scope":"after:call-1","seq":76,"status":"ok"}
+{"kind":"snapshot","name":"final","scope":"after:call-1","seq":77,"value":{"metadata":{"alpha":true},"output":"synthetic file contents\n[alpha]","title":"read"}}
+{"error_code":null,"kind":"operation.end","op":"tool.execute","op_id":"op-tool-1","seq":78,"status":"ok"}
+{"detail":{"call_id":"call-2","session_id":"ses_synthetic","tool":"bash"},"kind":"operation.start","op":"tool.execute","op_id":"op-tool-2","seq":79}
+{"hook":"tool.execute.before","hook_class":"tool-execute-before","input":{"call_id":"call-2","session_id":"ses_synthetic","tool":"bash"},"kind":"hook.start","output":{"args":{"command":"synthetic-command"}},"plugin_id":"demo.alpha","scope":"before:call-2","seq":80}
+{"after":"synthetic-command --dry-run","before":"synthetic-command","hook":"tool.execute.before","kind":"hook.mutate","path":"args.command","plugin_id":"demo.alpha","scope":"before:call-2","seq":81}
+{"kind":"snapshot","name":"final","scope":"before:call-2","seq":82,"value":{"args":{"command":"synthetic-command --dry-run"}}}
+{"error_code":"user_abort","kind":"operation.end","op":"tool.execute","op_id":"op-tool-2","seq":83,"status":"cancelled"}
+{"detail":{},"kind":"operation.start","op":"session.dispose","op_id":"op-dispose","seq":84}
+{"error_code":null,"kind":"operation.end","op":"session.dispose","op_id":"op-dispose","seq":85,"status":"ok"}
+{"body_sha256":"8160b91ec9c15eb4eb7d0ee97dbfcff291fa23220518b2d547760ee2351070c7","event_count":85,"record":"footer"}

@@ -1,0 +1,12 @@
+{
+  "id": "partial-write-missing-snapshot-row",
+  "fault_class": "partial_write",
+  "label_zh": "部分写",
+  "base_golden": "determinism.jsonl",
+  "description": "db.write 已记录 id=3，但结束 snapshot 缺少该行；判定为部分写。",
+  "envelope_status": "complete",
+  "injections": [
+    { "op": "remove-snapshot-row", "table": "transcript_items", "id": 3 }
+  ],
+  "expected": { "status": "fail", "code": "FAULT_PARTIAL_WRITE" }
+}

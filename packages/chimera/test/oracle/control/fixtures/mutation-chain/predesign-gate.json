@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "mutation-chain/predesign-gate",
+  "domain": "mutation-chain",
+  "kind": "behavior",
+  "rule": "mutation.chain",
+  "title": "高风险 mutation 缺少新鲜 predesign 时必须被 predesign gate 阻断",
+  "description": "图已初始化、predesign 工具可用、文件高风险、无新鲜 predesign；断言 blockedBy=predesign，且不产生 mutation 事实。",
+  "input": {
+    "graphInitialized": true,
+    "predesignToolAvailable": true,
+    "files": ["src/example.ts"],
+    "risky": true,
+    "freshPredesign": false,
+    "claimConflict": false,
+    "mutationSuccess": false,
+    "auditRecorded": false,
+    "oracle": { "status": "unknown", "trusted": false, "linked": false },
+    "obligations": []
+  },
+  "expect": {
+    "verdict": "blocked",
+    "code": "PREDESIGN_REQUIRED",
+    "assertions": [
+      { "path": "blockedBy", "equals": "predesign" },
+      { "path": "code", "equals": "PREDESIGN_REQUIRED" }
+    ],
+    "must_not": ["write provenance without predesign", "allow a risky edit"]
+  },
+  "provenance": {
+    "evidence": ["src/chimera/provenance.ts:1353-1420"],
+    "derivation": "requirePredesignForMutation 在 graph 初始化、risky、predesign 可用且无新鲜记录时返回 blockedBy=predesign。",
+    "executed": true
+  }
+}

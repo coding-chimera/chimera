@@ -1,0 +1,38 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "goal/transitions",
+  "domain": "goal",
+  "kind": "behavior",
+  "rule": "goal.transitions",
+  "title": "goal 状态迁移与连续空转断路器",
+  "description": "create → paused → active → 一次有效续跑 → 三次空转；断言最终 blocked 且不再自动续跑。",
+  "input": {
+    "events": [
+      { "type": "create", "objective": "ship control fixtures", "tokenBudget": 1000 },
+      { "type": "status", "to": "paused" },
+      { "type": "status", "to": "active" },
+      { "type": "outcome", "productive": true, "toolOutcomes": [true] },
+      { "type": "account", "tokens": 400 },
+      { "type": "outcome", "productive": false },
+      { "type": "outcome", "productive": false },
+      { "type": "outcome", "productive": false }
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "status", "equals": "blocked" },
+      { "path": "blockedReason", "equals": "continuation circuit breaker" },
+      { "path": "canAutoContinue", "equals": false },
+      { "path": "consecutiveContinuations", "equals": 4 }
+    ],
+    "must_not": ["auto-continue a blocked goal"]
+  },
+  "provenance": {
+    "evidence": ["src/session/goal.ts:101-106", "src/session/goal.ts:147-170"],
+    "derivation": "按 isAllowedTransition、continuationOutcome 的 MAX_EMPTY_CONTINUATIONS=3 与 canAutoContinue 构造合成事件序列。",
+    "executed": true
+  }
+}

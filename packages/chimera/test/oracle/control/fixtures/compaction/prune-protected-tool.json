@@ -1,0 +1,102 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "compaction/prune-protected-tool",
+  "domain": "compaction",
+  "kind": "negative",
+  "rule": "compaction.select",
+  "title": "负例：PRUNE_PROTECTED_TOOLS 中的 skill 输出不得被裁剪",
+  "description": "同一 assistant 消息含 skill 50000 与 read 50000；断言只裁剪 read，skill 永不进入 pruned。",
+  "input": {
+    "messages": [
+      {
+        "id": "m1",
+        "role": "user",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m2",
+        "role": "assistant",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m3",
+        "role": "user",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m4",
+        "role": "assistant",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m5",
+        "role": "user",
+        "tokens": 1000,
+        "summary": false
+      },
+      {
+        "id": "m6",
+        "role": "assistant",
+        "tokens": 1000,
+        "summary": false
+      }
+    ],
+    "tailTurns": 1,
+    "preserveRecentTokens": 1000,
+    "prune": true,
+    "toolParts": [
+      {
+        "id": "t1",
+        "messageId": "m2",
+        "tool": "skill",
+        "tokens": 50000,
+        "completed": true,
+        "compacted": false
+      },
+      {
+        "id": "t2",
+        "messageId": "m2",
+        "tool": "read",
+        "tokens": 50000,
+        "completed": true,
+        "compacted": false
+      }
+    ],
+    "pruneProtect": 40000,
+    "pruneMinimum": 20000,
+    "protectedTools": [
+      "skill"
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      {
+        "path": "pruned",
+        "equals": [
+          "t2"
+        ]
+      },
+      {
+        "path": "pruned",
+        "excludes": "t1"
+      }
+    ],
+    "must_not": [
+      "t1 in pruned"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "src/session/compaction.ts:346-383"
+    ],
+    "derivation": "prune() 对 PRUNE_PROTECTED_TOOLS（源码为 skill）中的工具直接 continue；合成输入把 skill 与 read 放在同一消息内验证。",
+    "executed": true
+  }
+}

@@ -1,0 +1,4449 @@
+{
+  "format": "chimera.oracle.control.semantic-points",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "source": {
+    "plan": "RUST_FULL_MIGRATION_PLAN.md:264,320",
+    "archive": "tool-output/tool_1817c7215001Jj52Lh6h4U02cg",
+    "archive_date": "2026-10-28",
+    "total": 343,
+    "enumerated": 223,
+    "mechanical_buckets": 120,
+    "explanation": "343 = 12 个模块 semanticsCount 之和。归档逐点列出 223 个非 mechanical 点（file:line）；其余 120 个 mechanical 点只有模块级计数，本文件用 12 个 bucket 承载，不伪造逐点 file:line。"
+  },
+  "points": [
+    {
+      "id": "WE-session-prompt-001",
+      "module": "session-prompt",
+      "primitive": "Context.Service + Layer.effect",
+      "where": "prompt.ts:340-395",
+      "portability": "di",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "SessionPrompt.Service 标签 + 巨型 Layer.effect 构造器：构造期 yield 出 ~34 个服务（Bus/Status/Session/Agent/Provider/Processor/Compaction/Plugin/Command/Config/SchedulingRuntime/RemoteCompaction/Permission/Fsys/MCP/LSP/Registry/Truncate/Image/Spawner/Sc...",
+      "contract": "构造期注入图：整个文件是一个 DI 闭包，memoMap 内单例，层顺序/可见性敏感",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-002",
+      "module": "session-prompt",
+      "primitive": "Layer.suspend + Layer.provide x20 + mergeAll",
+      "where": "prompt.ts:3835-3887",
+      "portability": "di",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "defaultLayer 组装：把 34 个 defaultLayer 分 6 组喂给内层 layer；注释明确记载 BackgroundJob 必须走这条 provide 链而非 mergeAll 兄弟（构造期 serviceOption 陷阱，2026-10-15 修复）",
+      "contract": "注入图装配顺序即正确性；serviceOption 在构造期解析、兄弟层不可见",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-003",
+      "module": "session-prompt",
+      "primitive": "Effect.serviceOption",
+      "where": "prompt.ts:368, 379-383",
+      "portability": "di",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "可选依赖 BackgroundJob（后台任务节流/可见性）与 Memory（缺省时给 succeed/void 默认实现的空对象）",
+      "contract": "可选构造期注入 + None 默认降级",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-004",
+      "module": "session-prompt",
+      "primitive": "InstanceState.make",
+      "where": "prompt.ts:846, 3699, 3799",
+      "portability": "di",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "三个每实例（按目录键 ScopedCache）单例：goalResumeArmed Set（每进程每会话只 kick 一次）、editIntentWatch（编辑意图释放/唤醒 watcher）、processWatch（进程退出 watcher）；prompt() 首跑时 InstanceState.get 惰性武装（2795-2796）",
+      "contract": "每项目目录单例 + dispose 级联清理（ScopedCache 语义）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-005",
+      "module": "session-prompt",
+      "primitive": "InstanceState.context",
+      "where": "prompt.ts:403, 544, 1630, 1820, 2076, 2155, 2932 等 9 处",
+      "portability": "di",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "读取每实例 worktree/directory（ALS 承载的环境上下文）用于路径解析、plan 路径、助手消息 path 字段",
+      "contract": "环境上下文注入（等价隐式参数/ALS）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-006",
+      "module": "session-prompt",
+      "primitive": "SessionRunState.ensureRunning",
+      "where": "prompt.ts:3406-3410",
+      "portability": "structured-concurrency",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "loop() 入口：整个 runLoop 包在 state.ensureRunning(sessionID, lastAssistant, work) 里——每会话互斥（同会话重入 dedupe）、跨进程 turn lease（RemoteBusyError）、取消级联",
+      "contract": "每会话互斥执行锁 + 跨进程租约 + 可取消；机制在 run-state.ts，本文件声明契约",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-007",
+      "module": "session-prompt",
+      "primitive": "SessionRunState.startShell + Latch",
+      "where": "prompt.ts:3412-3417, 1815-1818, 1893",
+      "portability": "coordination",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "shell 命令入口：Latch.make 造一次性闩锁交给 startShell；shellImpl 在消息持久化完成后经 ensuring(markReady=ready.open) 开闩，调用方才返回",
+      "contract": "一次性闩锁握手（就绪信号）+ 每会话互斥",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-008",
+      "module": "session-prompt",
+      "primitive": "Effect.forkIn(scope) 后台 fiber",
+      "where": "prompt.ts:830 (goal kick 驱动 loop), 3054 (标题生成), 3172 (summary.summarize), 3401 (compaction.prune)",
+      "portability": "structured-concurrency",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly",
+        "goal",
+        "compaction",
+        "retention"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "4 处 fire-and-forget：把标题/摘要/prune/goal-kick 循环 fork 进 layer 构造 scope（365 行 yield* Scope.Scope），不阻塞主轮",
+      "contract": "依附 layer 寿命的后台 fiber：app 存活期内运行，层关闭时取消",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-009",
+      "module": "session-prompt",
+      "primitive": "bus.subscribe -> Stream.runForEach -> Effect.forkScoped",
+      "where": "prompt.ts:3703-3719 (SessionStatus.Idle), 3720-3733 (EditIntentClaims.Released), 3802-3812 (ProcessRegistry.Changed)",
+      "portability": "streaming",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "mutation-chain/auto-audit-pass"
+      },
+      "control_domains": [
+        "prompt-assembly",
+        "mutation-chain"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "editIntentWatch/processWatch 把实例级事件总线订阅当 Stream 消费：idle 时释放编辑意图 claim（有活跃家族 job 则 forkIn 一个 recheck fiber）、Released 时给等待会话注入合成唤醒消息、进程变更时 notifyProcessExit",
+      "contract": "事件流消费 fiber，实例 dispose 时 forkScoped 中断；流背压=串行 forEach",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-010",
+      "module": "session-prompt",
+      "primitive": "Effect.repeat(Schedule.spaced(3s)) 轮询",
+      "where": "prompt.ts:3741-3748 (跨进程编辑意图唤醒 poll), 3813-3817 (进程退出 liveness poll)",
+      "portability": "coordination",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "跨进程桥：外进程释放 claim / 进程死亡无本地 bus 事件，靠 3 秒周期轮询（首 tick 立即）补注入",
+      "contract": "周期轮询循环，完成间隔计时，scope 取消即停",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-011",
+      "module": "session-prompt",
+      "primitive": "Effect.uninterruptibleMask + Effect.exit/Cause 分类",
+      "where": "prompt.ts:1816-1971 (shellImpl)",
+      "portability": "structured-concurrency",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "shell 执行三区结构：不可中断的建消息/建 part 持久化（ensuring 开闩），restore() 恢复可中断的子进程流消费，Effect.uninterruptible 的 finish 收尾；出口用 Effect.exit + Cause.hasInterrupts/hasDies/hasInterruptsOnly 区分用户中断 vs 真失败，中断不重抛、真失败 failCause",
+      "contract": "关键区不可取消 + 子进程区可取消 + 收尾必跑 + 中断原因代数分类",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-012",
+      "module": "session-prompt",
+      "primitive": "ChildProcess + Stream.decodeText + Effect.scoped",
+      "where": "prompt.ts:1938-1956 (shell 命令), 3466-3481 (/cmd 内 !`...` 替换)",
+      "portability": "streaming",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "spawner.spawn(ChildProcess.make(...forceKillAfter)) 拿 scoped 句柄，Stream.runForEach(decodeText(handle.all)) 逐 chunk 累积并落库 updatePart，Effect.scoped 保证进程句柄释放",
+      "contract": "RAII 子进程作用域 + stdout/stderr 流式消费 + scope 关闭强杀",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-013",
+      "module": "session-prompt",
+      "primitive": "工具中止竞速：Effect.callback + raceFirst + sleep + onInterrupt",
+      "where": "prompt.ts:1159-1190, 3136, 3150, 3393",
+      "portability": "structured-concurrency",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "waitForAbort 把 AbortSignal 包成 Effect（callback 注册/注销监听），raceFirst 与工具执行竞速，信号触发后给 1000ms 宽限再 fail；executeGuarded catchCause 里 failToolCall 落账、AstraToolPolicyViolation 经 onPolicyViolation 中止共享 toolAbort 让兄弟工具同停；onInterrupt 时 failToolCall + ...",
+      "contract": "AbortSignal<->中断双向桥 + 宽限期 + 取消域内兄弟传染",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-014",
+      "module": "session-prompt",
+      "primitive": "handleSubtask 中断级联",
+      "where": "prompt.ts:1689-1743",
+      "portability": "structured-concurrency",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "子代理派发：本地 taskAbort AbortController 传给 taskTool.execute；catchCause 记录 error 并吞掉（转 part error 态）；onInterrupt 时 abort 子控制器 + 把 assistant/part 落终态（error: Cancelled）",
+      "contract": "中断传播到子任务 + 终态持久化保证",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-015",
+      "module": "session-prompt",
+      "primitive": "resolvePart 文件读取 onInterrupt",
+      "where": "prompt.ts:2471-2483",
+      "portability": "structured-concurrency",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "@-mention 文件读取：每次读造 AbortController，Effect.onInterrupt(() => controller.abort()) 把 effect 中断翻译成 read 工具的信号中止",
+      "contract": "中断->AbortSignal 单向桥",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-016",
+      "module": "session-prompt",
+      "primitive": "createUserMessage Effect.scoped + Effect.addFinalizer",
+      "where": "prompt.ts:2377, 2787",
+      "portability": "structured-concurrency",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "用户消息创建整体包在请求级 scope：addFinalizer 注册 instruction.clear(messageID)，prompt 流程结束时清该消息的指令缓存",
+      "contract": "每请求 RAII 作用域 + finalizer 必跑",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-017",
+      "module": "session-prompt",
+      "primitive": "Effect.ensuring",
+      "where": "prompt.ts:1893 (markReady), 3394 (instruction.clear)",
+      "portability": "structured-concurrency",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "instructions/first-match"
+      },
+      "control_domains": [
+        "prompt-assembly",
+        "instructions"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "两处 ensuring：shell 建消息段无论成败都开闩；每步 LLM 处理段结束都清当步 instruction 缓存",
+      "contract": "finally 语义，成功/失败/中断均执行",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-018",
+      "module": "session-prompt",
+      "primitive": "LLM 事件流聚合",
+      "where": "prompt.ts:924-941 (标题生成)",
+      "portability": "streaming",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "llm.stream 产出事件 Stream，filter(text-delta) -> map(text) -> mkString 聚合成标题字符串，orDie 把流错误转 defect",
+      "contract": "事件流过滤+聚合为单值",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-019",
+      "module": "session-prompt",
+      "primitive": "结构化输出抽取流 drain",
+      "where": "prompt.ts:2891-2916 (loop 后 finalize), 3302-3328 (步内 native 抽取)",
+      "portability": "streaming",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "无工具抽取请求：llm.stream(structuredOutput.onSuccess 回调捕获输出) 接 Stream.runDrain 纯副作用消费；catchCause 把纯中断重抛（Effect.interrupt 保持中断透明）、其余错误吞掉",
+      "contract": "流消费为副作用 + 中断透明（中断不可被吞）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-020",
+      "module": "session-prompt",
+      "primitive": "命令模板 shell 替换并发",
+      "where": "prompt.ts:3462-3486",
+      "portability": "streaming",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "模板里每个 !`cmd` 并发 spawn（Effect.all unbounded），每个命令内部 stdout 收集与 stderr drain 并发（concurrency: 2），单命令失败降级为空串",
+      "contract": "并发扇出 + 逐命令错误降级",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-prompt-021",
+      "module": "session-prompt",
+      "primitive": "Effect.sleep(1000) 中止宽限",
+      "where": "prompt.ts:1168",
+      "portability": "coordination",
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/prompt.test.ts",
+      "purpose": "工具收到 abort 后等 1s 让工具自行收尾再注入 abortError",
+      "contract": "定时宽限期",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-core-022",
+      "module": "session-core",
+      "primitive": "Context.Service",
+      "where": "session.ts:631, processor.ts:253, llm.ts:261",
+      "portability": "di",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-022"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "Session/SessionProcessor/LLM 三个服务标签，模块自再导出模式 (export * as X)",
+      "contract": "typed service handle + 构造期注入图节点",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-023",
+      "module": "session-core",
+      "primitive": "Layer.effect",
+      "where": "session.ts:648, processor.ts:270, llm.ts:267",
+      "portability": "di",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-023"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "服务构造：从 context 拉依赖(4~12个)，闭包组装 Interface 返回",
+      "contract": "惰性单例(memoMap 去重)，构造体可见声明的依赖",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-024",
+      "module": "session-core",
+      "primitive": "Layer.suspend + Layer.provide 链",
+      "where": "processor.ts:1115-1131, llm.ts:878-888, session.ts:1102-1108",
+      "portability": "di",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-024"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "defaultLayer 组合根；suspend 打断循环依赖，provide 逐层喂依赖",
+      "contract": "构造顺序即注入顺序；Rust 即手工构造期 wiring(trait object 传参)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-025",
+      "module": "session-core",
+      "primitive": "Effect.serviceOption(BackgroundJob)",
+      "where": "session.ts:655",
+      "portability": "di",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "prompt-assembly",
+        "job-family"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "构造期可选捕获后台任务服务，供 remove 时取消 owned jobs",
+      "contract": "层构造时解析的 Option 依赖；已知陷阱(须由本服务 defaultLayer 链提供, session.ts:1103 已满足)；Rust: Option<Arc<dyn>>",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-core-026",
+      "module": "session-core",
+      "primitive": "Effect.serviceOption(OtelTracer)",
+      "where": "llm.ts:660",
+      "portability": "di",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-026"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "运行期可选取 OTel tracer 并包 Proxy 注入 session.id 属性",
+      "contract": "可选依赖缺失时降级为无遥测",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-027",
+      "module": "session-core",
+      "primitive": "Scope.Scope yield",
+      "where": "processor.ts:283",
+      "portability": "structured-concurrency",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-027"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "在 Layer.effect 构造体里捕获层生命周期 scope",
+      "contract": "该 scope 随层/实例销毁关闭，是 forkIn 的挂靠点",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-028",
+      "module": "session-core",
+      "primitive": "Effect.forkIn(scope)",
+      "where": "processor.ts:823",
+      "portability": "structured-concurrency",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-028"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "turn 结束后把 summary.summarize 火忘式 fork 进层 scope(错误 ignore)",
+      "contract": "后台 fiber 随实例 dispose 被中断；Rust: tokio::spawn + 实例级 CancellationToken",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-029",
+      "module": "session-core",
+      "primitive": "Deferred.make/succeed/await",
+      "where": "processor.ts:519(创建), 324(settle), 986(drain)",
+      "portability": "coordination",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-029"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "每个 tool call 一个 done 一次性闩锁；turn 收尾前等待未完结 tool 各 250ms",
+      "contract": "一次性闩锁 + 超时批量 drain；Rust: tokio::sync::oneshot + timeout",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-030",
+      "module": "session-core",
+      "primitive": "Effect.timeout(\"250 millis\")",
+      "where": "processor.ts:986",
+      "portability": "coordination",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-030"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "drain 工具闩锁时单闩有界等待，超时 ignore 继续",
+      "contract": "软超时(放弃等待而非取消闩)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-031",
+      "module": "session-core",
+      "primitive": "Stream 服务签名",
+      "where": "llm.ts:258",
+      "portability": "streaming",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-031"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "LLM.stream 返回 Stream.Stream<Event, unknown> 冷流",
+      "contract": "冷流+scope 资源绑定+错误通道；Rust: impl Stream/Receiver<Event>",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-032",
+      "module": "session-core",
+      "primitive": "Stream.scoped + Stream.unwrap + Effect.acquireRelease(AbortController)",
+      "where": "llm.ts:837-843",
+      "portability": "structured-concurrency",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-032"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "流生命周期绑定 AbortController：流结束/中断即 abort 在途 HTTP 请求，并与外部 abort 信号合并(AbortSignal.any)",
+      "contract": "scope 关闭→释放器必跑→请求取消；Rust: drop-guard/CancellationToken",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-033",
+      "module": "session-core",
+      "primitive": "Stream.fromAsyncIterable",
+      "where": "llm.ts:851",
+      "portability": "streaming",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-033"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "包 AI SDK result.fullStream 异步迭代器为 Effect 流，错误映射为 Error",
+      "contract": "拉取式背压包装；Rust: reqwest/SSE 字节流→mpsc",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-034",
+      "module": "session-core",
+      "primitive": "Stream.ensuring(structuredOutput.onSuccess)",
+      "where": "llm.ts:864-869",
+      "portability": "streaming",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-034"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "流 drain 完后交付 SDK 校验过的结构化输出；失败 catchCause 吞掉",
+      "contract": "终结器在完结/中断均跑，失败静默降级",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-035",
+      "module": "session-core",
+      "primitive": "Stream.tap + takeUntil + runDrain",
+      "where": "processor.ts:1045-1047",
+      "portability": "streaming",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-035"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "消费 LLM 事件进 handleEvent 状态机，ctx.needsCompaction/terminated 置位即截断",
+      "contract": "有状态逐事件 fold + 谓词截断；Rust: while-let 循环 + cancel 检查",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-036",
+      "module": "session-core",
+      "primitive": "Effect.onInterrupt",
+      "where": "processor.ts:1050-1057",
+      "portability": "structured-concurrency",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-036"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "fiber 被中断时置 aborted=true 并以 AbortError 走 halt 收尾",
+      "contract": "中断处理器在取消路径必跑；Rust: select! 加 cancel 分支",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-037",
+      "module": "session-core",
+      "primitive": "Effect.catchCauseIf(!Cause.hasInterruptsOnly)",
+      "where": "processor.ts:1058-1061",
+      "portability": "coordination",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-037"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "把纯中断 cause 从错误/retry 路径中滤掉，其余 cause squash 成 fail",
+      "contract": "中断不可被 retry 吞没",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-038",
+      "module": "session-core",
+      "primitive": "Effect.retry(SessionRetry.policy)",
+      "where": "processor.ts:1062-1086 (policy 实体在 retry.ts: Schedule.fromStepWithMetadata)",
+      "portability": "coordination",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-038"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "自定义 Schedule 决定可重试性/退避，逐 attempt 发 SessionEvent.Retried + 写 status=retry",
+      "contract": "带元数据回调的有状态重试策略；Rust: 手写退避循环",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-039",
+      "module": "session-core",
+      "primitive": "Effect.ensuring(cleanup())",
+      "where": "processor.ts:1088",
+      "portability": "structured-concurrency",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-039"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "每 turn 无条件终结器：闭合 reasoning parts、drain 工具闩锁、把未完工具标 AbortError、盖 completed 时间戳",
+      "contract": "成功/失败/中断三路均执行的资源收尾",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-core-040",
+      "module": "session-core",
+      "primitive": "Effect.provide(EffectLogger.layer)",
+      "where": "message-v2.ts:1194",
+      "portability": "di",
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/WE-session-core-040"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/session.test.ts",
+      "purpose": "导出边界处临时喂日志层",
+      "contract": "就地局部注入",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-stream-041",
+      "module": "session-stream",
+      "primitive": "Context.Service",
+      "where": "remote-compaction.ts:484",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "RemoteCompaction 服务标签，接口 = resolve/canCompact/compact 三个返回 Effect 的方法",
+      "contract": "构造期注入的服务接口（DI 容器键），Rust 对应 trait object",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-042",
+      "module": "session-stream",
+      "primitive": "Layer.effect",
+      "where": "remote-compaction.ts:715-726",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "从 Auth/Config/HttpClient(+可选Provider) 构造服务闭包",
+      "contract": "构造期依赖装配；捕获的依赖在方法间共享",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-043",
+      "module": "session-stream",
+      "primitive": "Effect.serviceOption",
+      "where": "remote-compaction.ts:723",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "构造期可选捕获 Provider.Service（provider 传输分支可缺席）",
+      "contract": "构造期 Optional 注入，须由本服务 own defaultLayer 链兜底（:1234 Layer.provide(Provider.defaultLayer)）——正是 AGENTS.md service-wiring 陷阱模式",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-044",
+      "module": "session-stream",
+      "primitive": "Layer.provide chain",
+      "where": "remote-compaction.ts:1230-1235",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "defaultLayer = layer 依次 provide Auth/Config/FetchHttpClient/Provider",
+      "contract": "构造期注入图：4 个上游服务",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-045",
+      "module": "session-stream",
+      "primitive": "Layer.succeed (disabledLayer)",
+      "where": "remote-compaction.ts:1237-1279",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "policy_off 时的静态桩实现（resolve 返回 local、compact 直接 fail）",
+      "contract": "构造期注入的 noop/stub 变体",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-046",
+      "module": "session-stream",
+      "primitive": "Effect.timeoutOrElse",
+      "where": "remote-compaction.ts:1094-1104",
+      "portability": "coordination",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "单次压缩请求超时→retryable RemoteCompactionError",
+      "contract": "带超时的可取消 IO（默认 60s），tokio::time::timeout 直译",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-047",
+      "module": "session-stream",
+      "primitive": "Context.Service",
+      "where": "compaction.ts:227",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "SessionCompaction 服务标签，接口 = isOverflow/prune/process/create",
+      "contract": "构造期注入的服务接口",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-048",
+      "module": "session-stream",
+      "primitive": "Layer.effect (9 依赖捕获)",
+      "where": "compaction.ts:241-252",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "构造闭包捕获 Bus/Config/Session/Agent/Plugin/SessionProcessor/Provider/RemoteCompaction/SyncEvent",
+      "contract": "构造期注入图最深的节点之一（9 上游）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-049",
+      "module": "session-stream",
+      "primitive": "Layer.suspend + 9×Layer.provide",
+      "where": "compaction.ts:801-813",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "defaultLayer 惰性装配全部上游 defaultLayer",
+      "contract": "惰性构造 + 构造期注入",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-050",
+      "module": "session-stream",
+      "primitive": "Effect.ensuring + Effect.ignoreCause({log:true})",
+      "where": "compaction.ts:747-752",
+      "portability": "structured-concurrency",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "process 进入时打 time_compacting 标记，退出/失败/中断三种路径都保证清除（防 memory stage1 永久跳过该 session）",
+      "contract": "中断安全的 finalizer（含 interruption 路径）——本模块唯一的真生命周期语义",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-051",
+      "module": "session-stream",
+      "primitive": "InstanceState.context",
+      "where": "compaction.ts:529",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "取当前 per-directory 实例上下文（directory/worktree 写入摘要消息 path）",
+      "contract": "环境式上下文（ALS/FiberRef 承载的隐式 DI）；Rust 需显式 ctx 参数",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-052",
+      "module": "session-stream",
+      "primitive": "processor.process 模块间递归",
+      "where": "compaction.ts:664-683",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "compaction/select-and-prune"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "本地压缩路径回调 SessionProcessor 的完整 LLM 流式循环（压缩=一次特殊 prompt 执行）",
+      "contract": "服务→服务调用边界，被调方是流式 LLM 执行器",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-053",
+      "module": "session-stream",
+      "primitive": "plugin.trigger",
+      "where": "compaction.ts:425, 521, 528",
+      "portability": "di",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "compaction",
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "compacting/autocontinue/messages.transform 三个插件扩展点",
+      "contract": "插件钩子（构造期注入的 Plugin 服务方法）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-stream-054",
+      "module": "session-stream",
+      "primitive": "(非Effect) async generator stream()",
+      "where": "codex-responses.ts:250-275",
+      "portability": "streaming",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-stream/WE-session-stream-054"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "Codex Responses 主事件流：WS 优先、HTTP SSE 回退；被 llm.ts:841-851 以 AbortController+Stream.fromAsyncIterable 桥进 Effect",
+      "contract": "拉取式可取消事件流（AsyncIterable + AbortSignal）；Rust=tokio mpsc/broadcast + CancellationToken",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-stream-055",
+      "module": "session-stream",
+      "primitive": "(非Effect) ChunkOutput 惰性 thunk",
+      "where": "codex-responses.ts:99, 323, 417",
+      "portability": "streaming",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-stream/WE-session-stream-055"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "事件可是 () => Promise<LLMEvent>（延迟物化，如 tool 输出解析）",
+      "contract": "流内延迟求值元素",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-stream-056",
+      "module": "session-stream",
+      "primitive": "(非Effect) sendWebSocketRequest 手写泵",
+      "where": "codex-responses.ts:658-731",
+      "portability": "streaming",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-stream/WE-session-stream-056"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "queue 数组 + resume Promise 闩锁 + message/error/close/abort 监听 + try/finally 摘监听",
+      "contract": "手写无界队列 + 一次性唤醒闩锁 + 取消传播；tokio::select! + mpsc 直译",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-stream-057",
+      "module": "session-stream",
+      "primitive": "(非Effect) waitWebSocketOpen",
+      "where": "codex-responses.ts:753-779",
+      "portability": "coordination",
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-stream/WE-session-stream-057"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/session/compaction.test.ts",
+      "purpose": "连接建立闩锁 + 3s 超时 + abort 监听",
+      "contract": "带超时与取消的一次性闩锁",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-058",
+      "module": "session-infra",
+      "primitive": "Context.Service",
+      "where": "status.ts:51, summary.ts:94, run-state.ts:29, work-brief.ts:44, activity.ts:37, context-epoch.ts:35, goal.ts:87, todo.ts:39, tool-search.ts:459, revert.ts:32, system.ts:207, instruction.ts:48",
+      "portability": "di",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family",
+        "goal",
+        "workbrief",
+        "tool-search",
+        "instructions",
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "12 个 session-infra 服务的 DI tag（@opencode/SessionStatus、SessionSummary、SessionRunState、SessionWorkBrief、SessionActivity、ContextEpoch、SessionGoal、SessionTodo、SessionToolSearch、SessionRevert、SystemPrompt、Instruction）",
+      "contract": "构造期注入：每个服务是 {Interface, tag, layer} 三元组，消费方 yield* Tag.Service 取实现",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-infra-059",
+      "module": "session-infra",
+      "primitive": "Layer.effect + defaultLayer 链",
+      "where": "status.ts:53/86, summary.ts:96/174, run-state.ts:60/212, work-brief.ts:120/154, activity.ts:39/163, goal.ts:197/474, todo.ts:41/84, tool-search.ts:461, revert.ts:34/175, system.ts:209/268, instruction.ts:50/222, context-epoch.ts:181/204",
+      "portability": "di",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family",
+        "goal",
+        "workbrief",
+        "tool-search",
+        "instructions",
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "惰性服务构造 + 依赖闭包（Bus/Session/Snapshot/Storage/SyncEvent/BackgroundJob/SessionStatus 等逐层 provide）",
+      "contract": "构造期依赖图求解，含 memoMap 去重；Rust 侧等价物是显式构造顺序 + Arc<trait object> 传参，但需要先把这张图完整画出",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-infra-060",
+      "module": "session-infra",
+      "primitive": "Layer.suspend",
+      "where": "summary.ts:151, revert.ts:175",
+      "portability": "di",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-060"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "延迟 layer 构造以打断 session 集群的构造期循环依赖（summary↔session、revert↔run-state/session）",
+      "contract": "惰性求值的构造图节点；Rust 构造期用 lazy-init 或两阶段装配即可，但必须识别出这两处是防循环的",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-061",
+      "module": "session-infra",
+      "primitive": "Effect.serviceOption",
+      "where": "run-state.ts:71-72, activity.ts:47",
+      "portability": "di",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-061"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "构造期可选捕获 InstanceStore / BackgroundJob，缺失时按设计降级（无 pin reconciler / 无 job 引擎只做 status 侦活）",
+      "contract": "可选依赖 + 降级分支；注意本仓库有专门陷阱：构造期 serviceOption 只吃自身 provide 链与根 provideMerge，不吃 mergeAll 兄弟层",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-062",
+      "module": "session-infra",
+      "primitive": "InstanceState.make / .get / .context",
+      "where": "status.ts:58-72, run-state.ts:73-182, instruction.ts:66-181, system.ts:217",
+      "portability": "di",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family",
+        "instructions",
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "按目录 key 的 ScopedCache 每实例状态（status Map、runner Map+scope、instruction claims Map），dispose 时自动清理",
+      "contract": "per-directory 单例状态 + 作用域清理；Rust 等价物是按 project dir 索引的 registry + Drop/显式 dispose",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-session-infra-063",
+      "module": "session-infra",
+      "primitive": "Scope + Effect.addFinalizer",
+      "where": "run-state.ts:75-85",
+      "portability": "structured-concurrency",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-063"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "InstanceState 闭包内取 Scope 并注册 finalizer：实例销毁时并发取消所有 session runner 并清空 Map",
+      "contract": "可取消作用域 + 析构钩子（ dispose 语义）；tokio 侧需要 Drop-guard 或显式 shutdown 对每个 runner 发 cancel",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-064",
+      "module": "session-infra",
+      "primitive": "Effect.forever + Effect.sleep (renewalLoop)",
+      "where": "run-state.ts:54-58",
+      "portability": "structured-concurrency",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-064"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "每 RENEW_INTERVAL_MS(10min) 对本进程全部 turn lease 做一条 SQL renewAll，错误吞掉记日志",
+      "contract": "周期任务 + 异常隔离（单 tick 失败不杀循环）；tokio::interval + 错误日志即可",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-065",
+      "module": "session-infra",
+      "primitive": "Effect.forkIn + Fiber.interrupt",
+      "where": "run-state.ts:118-152",
+      "portability": "structured-concurrency",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-065"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "onBusy 时在实例 scope 里 fork 续约 fiber，onIdle 时 Fiber.interrupt 停掉；lease TTL 续约随 turn 生命周期启停",
+      "contract": "生命周期绑定的可取消后台 fiber（启动/停止成对）；tokio task + CancellationToken，停止必须可靠投递",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-066",
+      "module": "session-infra",
+      "primitive": "Queue.sliding(1) + Queue.offer/take",
+      "where": "activity.ts:125,133,144",
+      "portability": "streaming",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-066"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "waitQuiescent 的容量1滑动唤醒邮箱：状态迁移事件 offer（满了丢旧的），等待侧 take",
+      "contract": "有界(drop-oldest)单次信号槽；Rust 等价 tokio::sync::Notify 或 mpsc(1)+try_send 覆盖语义",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-067",
+      "module": "session-infra",
+      "primitive": "Stream.filter + Stream.runForEach + Effect.forkScoped",
+      "where": "activity.ts:131-134",
+      "portability": "streaming",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-067"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "订阅 Bus 的 SessionStatus 事件流，过滤到 family 成员后写入 wake 队列；forkScoped 使订阅 fiber 随 Effect.scoped 结束而中断",
+      "contract": "可取消作用域内的流式事件消费（先订阅后读，不丢中间迁移）；tokio broadcast::Receiver + select!(CancellationToken)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-068",
+      "module": "session-infra",
+      "primitive": "Effect.scoped",
+      "where": "activity.ts:123",
+      "portability": "structured-concurrency",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-068"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "waitQuiescent 整体包一层 scope，保证订阅 fiber 在返回时被回收",
+      "contract": "作用域即取消边界；structured concurrency 核心语义",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-069",
+      "module": "session-infra",
+      "primitive": "Effect.raceAll",
+      "where": "activity.ts:143-147",
+      "portability": "coordination",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-069"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "每轮等待三者先到者：wake 队列、family 各 job 的 waitOwnerQuiescent、2s 兜底定时器",
+      "contract": "N 路首到竞争 + 输家取消；tokio::select! 直接对应",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-070",
+      "module": "session-infra",
+      "primitive": "Schedule.fromStepWithMetadata",
+      "where": "retry.ts:123-137",
+      "portability": "coordination",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-070"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "自定义 LLM 重试策略：按 attempt/limit/错误可重试性决定 Cause.done 或返回 [attempt, Duration]，间隔由 retry-after 头或指数退避算出，并回调 set 写 retry 状态",
+      "contract": "声明式重试调度（每步元数据 + 时钟读取）；Rust 无现成等价物但手写 backoff loop 即可，语义就是纯函数 (meta)->Option<Duration>",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-071",
+      "module": "session-infra",
+      "primitive": "Effect.provide + Effect.timeoutOption",
+      "where": "streaming-preview.ts:448",
+      "portability": "di",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/WE-session-infra-071"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "readSnapshot 临时提供 AppFileSystem layer 并给文件读取加 SNAPSHOT_TIMEOUT 截止",
+      "contract": "调用点临时 DI + 超时；tokio::time::timeout + 显式参数传 fs handle",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-session-infra-072",
+      "module": "session-infra",
+      "primitive": "BusEvent.define",
+      "where": "status.ts:29-43, todo.ts:25-31, goal.ts:51-64, prompt-stats.ts:50, error-event.ts:86",
+      "portability": "streaming",
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family",
+        "goal",
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/session/activity.test.ts",
+      "purpose": "定义 session.status/todo.updated/goal.updated/session.prompt.stats/session.error 事件（schema + 注册顺序敏感的注册表）",
+      "contract": "类型化 pub/sub 事件声明，注册顺序影响生成的 OpenAPI 事件 union；Rust 侧 tokio broadcast + serde tag，顺序敏感性需显式保留",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-server-httpapi-073",
+      "module": "server-httpapi",
+      "primitive": "Layer.provide/mergeAll大图",
+      "where": "routes/instance/httpapi/server.ts:112-227",
+      "portability": "di",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-073"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "组装 rootApiRoutes/eventApiRoutes/instanceRoutes/rawRoutes + errorLayer/compression/cors/runtime 中间件 + ~55个域服务defaultLayer + provideMerge(InstanceLayer/Observability/CorsConfig)",
+      "contract": "构造期一次性注入全图,请求期不再重建layer(AGENTS.md明令禁止handler内provide)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-074",
+      "module": "server-httpapi",
+      "primitive": "memoMap/Layer.makeMemoMapUnsafe",
+      "where": "routes/instance/httpapi/server.ts:86,234,243",
+      "portability": "di",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-074"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "HttpRouter.toWebHandler共享memoMap去重layer构建;动态CORS变体用独立unsafe memoMap避免串味",
+      "contract": "构造期注入去重;Rust单次构建宿主不需要memoMap",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-075",
+      "module": "server-httpapi",
+      "primitive": "Context.makeUnsafe",
+      "where": "routes/instance/httpapi/server.ts:91",
+      "portability": "di",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-075"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "导出空根Context(供adapter运行入口)",
+      "contract": "可变根上下文单例",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-076",
+      "module": "server-httpapi",
+      "primitive": "HttpApiBuilder.group+Effect.gen(yield服务→闭包捕获)",
+      "where": "routes/instance/httpapi/handlers/session.ts:50-67(全部20个handler文件同构)",
+      "portability": "di",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-076"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "组构建时yield稳定服务(Session/Share/Prompt/Scope等~15个),handler体闭包捕获直接用",
+      "contract": "构造期注入+请求期零DI;Rust=构造期传Arc<dyn Trait>",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-077",
+      "module": "server-httpapi",
+      "primitive": "Stream.takeUntil/tick/merge/Sse.encode/ensuring",
+      "where": "routes/instance/httpapi/event.ts:42-56",
+      "portability": "streaming",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-077"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "bus.subscribeAll无限事件流,合并10s心跳(haltStrategy left),InstanceDisposed哨兵终止,SSE编码,断连日志",
+      "contract": "无界SSE流+心跳+终止哨兵;tokio=broadcast::Receiver+interval+select!",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-078",
+      "module": "server-httpapi",
+      "primitive": "Stream.scoped+Stream.unwrap+Effect.addFinalizer",
+      "where": "routes/instance/httpapi/event.ts:64-85",
+      "portability": "streaming",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-078"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "实例租约在流真正被拉取时才获取(修过的R1 B2泄漏:响应返回但流未跑会泄漏租约+bus订阅),scope终结器在完成/中断时释放",
+      "contract": "拉取才获取/作用域终结器释放的资源租约;Rust=stream首poll时acquire+Drop guard",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-079",
+      "module": "server-httpapi",
+      "primitive": "Stream.fromAsyncIterable+Stream.ensuring",
+      "where": "routes/instance/httpapi/handlers/global.ts:49-59",
+      "portability": "streaming",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-079"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "sharedGlobalEventStream的push订阅(带连接上限,超限429)适配为SSE响应体,断连时close订阅",
+      "contract": "外部push源→响应流适配+取消时释放订阅;tokio mpsc Receiver+Drop",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-080",
+      "module": "server-httpapi",
+      "primitive": "Stream.fromEffect+Effect.provideService(InstanceRef/WorkspaceRef)",
+      "where": "routes/instance/httpapi/handlers/session.ts:337-350",
+      "portability": "di",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-080"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "prompt端点:把请求捕获的实例/工作区上下文显式注入流内prompt effect,单元素流JSON序列化输出",
+      "contract": "请求上下文显式传入下游effect(非隐式DI穿透)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-081",
+      "module": "server-httpapi",
+      "primitive": "Effect.forkIn(scope)+catchCause(logError+bus.publish)",
+      "where": "routes/instance/httpapi/handlers/session.ts:353-370",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-081"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "prompt_async:立即返回204,prompt工作fork进handler层scope,失败时记日志并发bus错误事件",
+      "contract": "层scope承载的fire-and-forget任务,随server teardown取消;错误不外抛转为事件",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-082",
+      "module": "server-httpapi",
+      "primitive": "yield* Scope.Scope",
+      "where": "routes/instance/httpapi/handlers/session.ts:65, handlers/sync.ts:24",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-082"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "组构建时取层scope供请求handler forkIn",
+      "contract": "可取消长驻作用域贯穿layer生命周期",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-083",
+      "module": "server-httpapi",
+      "primitive": "Effect.forkIn(scope)+Effect.ignore",
+      "where": "routes/instance/httpapi/handlers/sync.ts:27-32",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-083"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "sync.start端点立即返回true,workspace同步后台启动",
+      "contract": "同上:层scope后台任务,结果忽略",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-084",
+      "module": "server-httpapi",
+      "primitive": "Effect.timeoutOption",
+      "where": "routes/instance/httpapi/handlers/session.ts:421-425",
+      "portability": "coordination",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-084"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "backgroundQuiescence端点:waitOwnerQuiescent(内部闩锁等待)加1-120s超时,Some=已静止",
+      "contract": "闩锁等待+超时;tokio::time::timeout直接对应",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-085",
+      "module": "server-httpapi",
+      "primitive": "Effect.scoped+Socket.runRaw+Effect.forkScoped",
+      "where": "routes/instance/httpapi/middleware/proxy.ts:24-83",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-085"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "WS代理:upgrade入站+Socket.makeWebSocket出站,outbound→inbound泵forkScoped,inbound→outbound主await,断连互传CloseEvent",
+      "contract": "双向WS转发;scope取消传播到泵fiber;一方结束→另一方收close",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-086",
+      "module": "server-httpapi",
+      "primitive": "Effect.timeout(\"1 second\")+Effect.catchReason(SocketError/SocketCloseError)",
+      "where": "routes/instance/httpapi/middleware/proxy.ts:32-45, handlers/pty.ts:118-125",
+      "portability": "coordination",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-086"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "WS关闭握手:runRaw挂起等待peer确认close,1s超时+socket错误吞掉",
+      "contract": "限时关闭握手;tokio timeout+错误降级",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-087",
+      "module": "server-httpapi",
+      "primitive": "HttpServerResponse.stream+Stream.catchCause(→empty)",
+      "where": "routes/instance/httpapi/middleware/proxy.ts:106",
+      "portability": "streaming",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-087"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "HTTP代理:上游响应流透传,上游流错误截断为空流(响应已开始,只能静默截断)",
+      "contract": "字节流透传+中途错误静默截断",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-088",
+      "module": "server-httpapi",
+      "primitive": "EffectBridge.make+bridge.fork",
+      "where": "routes/instance/httpapi/handlers/pty.ts:131-148",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-088"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "PTY WS路由:legacy Pty适配器的send/close是同步JS回调,bridge.fork把write effect runFork回Effect运行时并恢复Instance/Workspace ALS",
+      "contract": "同步回调→Effect运行时再入+Node ALS恢复;ALS是JS专属,Rust侧显式传ctx后此桥消失",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-089",
+      "module": "server-httpapi",
+      "primitive": "Effect.ensuring(Effect.sync(onClose))",
+      "where": "routes/instance/httpapi/handlers/pty.ts:160-165",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-089"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "PTY socket读循环结束(任何原因)时置closed=true并回调handler.onClose",
+      "contract": "保证执行的清理(finally语义)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-090",
+      "module": "server-httpapi",
+      "primitive": "Context.Service+Layer.sync+Set+closing闩锁",
+      "where": "routes/instance/httpapi/websocket-tracker.ts:14-45",
+      "portability": "coordination",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-090"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "进程级WS注册表:closing一次性闩锁置位后add拒绝,closeAll并发(unbounded)逐个限时1s关闭",
+      "contract": "一次性闩锁+注册表+关机批量限时关闭;Rust=Mutex<HashSet>+AtomicBool+join_all",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-091",
+      "module": "server-httpapi",
+      "primitive": "Effect.serviceOption+Effect.addFinalizer(remove)",
+      "where": "routes/instance/httpapi/websocket-tracker.ts:47-55",
+      "portability": "di",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-091"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "register:tracker为可选注入(None时直接放行),注册成功挂作用域终结器注销",
+      "contract": "可选依赖注入+请求作用域终结器",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-092",
+      "module": "server-httpapi",
+      "primitive": "WeakMap<request.source>+appendPreResponseHandler+Effect.uninterruptible",
+      "where": "routes/instance/httpapi/lifecycle.ts:16-52",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-092"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "dispose/reload标记以原始Request对象为键在handler与disposeMiddleware间交接,响应产出后不可中断地跑store.dispose/reload",
+      "contract": "响应后不可中断清理+GC键关联;Rust需显式request-id传递(JS WeakMap无对应)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-093",
+      "module": "server-httpapi",
+      "primitive": "EffectBridge.fork(配置变更触发dispose)",
+      "where": "routes/instance/httpapi/handlers/global.ts:77,123",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-093"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "configUpdate:全局配置变更后bridge.fork异步disposeAllInstances并恢复ALS",
+      "contract": "fire-and-forget后台处置",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-094",
+      "module": "server-httpapi",
+      "primitive": "Effect.uninterruptible+bridge.run",
+      "where": "routes/instance/httpapi/lifecycle.ts:39,50",
+      "portability": "structured-concurrency",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-094"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "reload/dispose以Effect.callback包runPromiseExit再入Effect,且全程不可取消",
+      "contract": "不可取消的跨运行时调用",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-095",
+      "module": "server-httpapi",
+      "primitive": "HttpApiMiddleware.Service+Context.Service(WorkspaceRouteContext)",
+      "where": "routes/instance/httpapi/middleware/workspace-routing.ts:31-45",
+      "portability": "di",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-095"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "typed中间件声明provides/requires,请求级WorkspaceRouteContext(directory+workspaceID)由路由决策产出",
+      "contract": "请求级上下文注入(类型化)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-httpapi-096",
+      "module": "server-httpapi",
+      "primitive": "Layer.effect构造期捕获+per-request Effect.provideService",
+      "where": "routes/instance/httpapi/middleware/workspace-routing.ts:197-227, instance-context.ts:36-49",
+      "portability": "di",
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/WE-server-httpapi-096"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-inventory.test.ts",
+      "purpose": "middleware构造时捕获WebSocketConstructor/Workspace/HttpClient/InstanceStore,每请求再provideService给内层effect",
+      "contract": "构造期捕获稳定服务+请求期注入派生上下文",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-097",
+      "module": "server-core",
+      "primitive": "Layer.provide graph",
+      "where": "routes/instance/httpapi/server.ts:166-228",
+      "portability": "di",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-097"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "createRoutes() composes ~40 service defaultLayers + middleware layers into one router layer via Layer.provide/provideMerge",
+      "contract": "构造期注入图：整个应用服务图在 server 启动时一次性构建并 memo 化",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-098",
+      "module": "server-core",
+      "primitive": "HttpApiBuilder.group",
+      "where": "routes/instance/httpapi/handlers/*.ts (every handler group, e.g. pty.ts:26, session.ts:51, global.ts:71)",
+      "portability": "di",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-098"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "group constructor Effect.gen yields stable services once at layer build, handlers close over them per request",
+      "contract": "构造期注入 + 请求期闭包调用；服务捕获一次",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-099",
+      "module": "server-core",
+      "primitive": "HttpRouter.serve + Layer.buildWithMemoMap + Scope.makeUnsafe",
+      "where": "server.ts:281-298",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-099"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "effect-httpapi listener: builds the layer into a manually-held unsafe Scope and keeps {scope, ctx} for the listener lifetime",
+      "contract": "手动持有的根作用域；layer 构建失败时必须 Scope.close 回滚",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-100",
+      "module": "server-core",
+      "primitive": "stop latch + Scope.close + runPromiseExit",
+      "where": "server.ts:321-346",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-100"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "stop() uses stopPromise ??= once-latch; stop(true) escalates: forceStop closes HttpApiServer+WebSocketTracker then closes the scope",
+      "contract": "一次性闩锁 + 可升级强制关闭 + 作用域终结",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-101",
+      "module": "server-core",
+      "primitive": "ConfigProvider.layer(fromEnv())",
+      "where": "server.ts:277",
+      "portability": "di",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "mcp-transports",
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "installs a fresh env ConfigProvider per listener because Effect's default snapshots process.env on first read",
+      "contract": "构造期注入且必须每 listener 新建",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-server-core-102",
+      "module": "server-core",
+      "primitive": "ScopedCache keyed by directory",
+      "where": "src/effect/instance-state.ts:38-60",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-102"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "InstanceState.make builds a ScopedCache<string,A> (capacity ∞); registerDisposer invalidates per directory on dispose; addFinalizer unregisters",
+      "contract": "按目录 run-once 的作用域缓存 + 终结器链；实例 dispose 时自动清理",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-103",
+      "module": "server-core",
+      "primitive": "Fiber.getCurrent + Context.getReferenceUnsafe",
+      "where": "src/effect/instance-state.ts:16-26",
+      "portability": "hard",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-103"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "InstanceState.bind captures fiber-local InstanceRef when ALS context is absent, to re-install Instance context inside native-callback wrappers",
+      "contract": "隐式上下文（fiber-scoped reference + AsyncLocalStorage 双轨）跨边界传播",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-104",
+      "module": "server-core",
+      "primitive": "Effect.provideService(InstanceRef/WorkspaceRef/WorkspaceRouteContext)",
+      "where": "middleware/instance-context.ts:31; middleware/workspace-routing.ts:171,205-206,223-224; handlers/session.ts:344",
+      "portability": "di",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-104"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "middleware injects per-request route/instance/workspace context refs into the handler effect",
+      "contract": "请求级隐式上下文注入（下游 yield* 读取）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-105",
+      "module": "server-core",
+      "primitive": "Stream.takeUntil + Stream.merge(Stream.tick) + Sse.encode + encodeText + ensuring",
+      "where": "routes/instance/httpapi/event.ts:43-56",
+      "portability": "streaming",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-105"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "instance SSE: bus.subscribeAll stream terminates on InstanceDisposed, merged with 10s heartbeat, SSE-encoded, disconnect logged",
+      "contract": "可中断流 + 左优先合并心跳 + 终止条件 + 流终了副作用",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-106",
+      "module": "server-core",
+      "primitive": "Stream.scoped(Stream.unwrap(...)) + addFinalizer(lease.release)",
+      "where": "routes/instance/httpapi/event.ts:64-85",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-106"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "instance-lease acquisition deferred until the response stream actually executes; scope finalizer releases on completion/interruption",
+      "contract": "惰性获取 + 作用域保证释放（修复了永不执行的响应体泄漏 lease 的 bug）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-107",
+      "module": "server-core",
+      "primitive": "AppRuntime.runPromise lease + AbortSignal backstop",
+      "where": "routes/instance/event.ts:46-59",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-107"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "legacy Hono SSE acquires the same lease via runPromise and releases it via request abort listener + stream.onAbort",
+      "contract": "手动资源配对 + 幂等释放",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-108",
+      "module": "server-core",
+      "primitive": "createSharedGlobalEventStream",
+      "where": "global-event-stream.ts:251-402",
+      "portability": "streaming",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-108"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "process-wide SSE hub: one GlobalBus listener, one 40ms delta-merge window, one JSON+SSE encode per batch fanned out to N per-connection drop-oldest AsyncQueues; maxConnections cap; start watchdog; idle bus detach",
+      "contract": "有界 drop-oldest 扇出 + gap 标记 + 连接上限 + 无连接时零驻留",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-109",
+      "module": "server-core",
+      "primitive": "Stream.fromAsyncIterable + Stream.ensuring(subscription.close)",
+      "where": "routes/instance/httpapi/handlers/global.ts:50-58",
+      "portability": "streaming",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-109"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "wraps the hub's AsyncGenerator<Uint8Array> into an Effect Stream for HttpServerResponse.stream, closing the subscription on stream end",
+      "contract": "外部异步迭代器桥接进流 + 终了清理",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-110",
+      "module": "server-core",
+      "primitive": "Effect.scoped + forkScoped WS duplex pump",
+      "where": "routes/instance/httpapi/middleware/proxy.ts:24-83",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-110"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "remote workspace WS proxy: upgrade inbound, open outbound via Socket.makeWebSocket, fork outbound->inbound pump into request scope, run inbound->outbound to completion; both close with 1s timeout",
+      "contract": "全双工泵的生命周期绑定请求作用域；异常路径降级为 CloseEvent 转发",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-111",
+      "module": "server-core",
+      "primitive": "Context.Service + Layer.sync registry (WebSocketTracker)",
+      "where": "routes/instance/httpapi/websocket-tracker.ts:14-57",
+      "portability": "coordination",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-111"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "process-wide Set of socket-close effects; closeAll runs each with 1s timeout unbounded; register uses serviceOption + addFinalizer to deregister",
+      "contract": "进程级注册表 + 优雅关闭广播 + 作用域终结器反注册",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-112",
+      "module": "server-core",
+      "primitive": "request.upgrade + Socket.runRaw + EffectBridge.fork adapter",
+      "where": "routes/instance/httpapi/handlers/pty.ts:90-171",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-112"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "PTY connect: raw HttpRouter route upgrades to WS, wraps Socket.writer in a callback-style adapter whose sends are bridged via bridge.fork, runs read loop with ensuring(onClose)",
+      "contract": "升级后 handler 驻留至 socket 关闭；回调 API ↔ Effect 写桥",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-113",
+      "module": "server-core",
+      "primitive": "EffectBridge.make",
+      "where": "src/effect/bridge.ts (consumed at lifecycle.ts:20, pty.ts:131, handlers/global.ts:77, workspace-routing.ts:90)",
+      "portability": "hard",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-113"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "captures full Effect Context + InstanceRef/WorkspaceRef, returns {promise, fork, run} thunks that restore ALS + provide the context around runPromise/runFork/runPromiseExit",
+      "contract": "跨 Promise 边界的双轨上下文（Effect Context + ALS）重放；FFI 另一侧无对应物",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-114",
+      "module": "server-core",
+      "primitive": "HttpEffect.appendPreResponseHandler + WeakMap(request.source)",
+      "where": "routes/instance/httpapi/lifecycle.ts:16-52",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-114"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "handler marks instance for disposal/reload; outer disposeMiddleware runs the uninterruptible dispose after the response is produced, keyed by request identity",
+      "contract": "响应产出后的不可取消清理 + 以 Request 对象为一次性交接键",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-115",
+      "module": "server-core",
+      "primitive": "InstanceStore.provide inside middleware",
+      "where": "routes/instance/httpapi/middleware/instance-context.ts:23-49",
+      "portability": "di",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-115"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "enters the per-directory instance scope around the handler effect (LRU-managed instance activation)",
+      "contract": "请求级实例激活作用域",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-116",
+      "module": "server-core",
+      "primitive": "workspaceRoutingLayer / workspaceRouterMiddleware",
+      "where": "routes/instance/httpapi/middleware/workspace-routing.ts:197-227",
+      "portability": "di",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-116"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "services captured at layer construction; per request plans Local/Remote/MissingWorkspace then either provideService(route ctx) or proxies",
+      "contract": "构造期捕获 + 请求级路由决策",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-117",
+      "module": "server-core",
+      "primitive": "Fence.waitEffect + request AbortSignal + catch->503",
+      "where": "routes/instance/httpapi/middleware/workspace-routing.ts:112-123",
+      "portability": "coordination",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-117"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "after proxying a mutating request to a remote workspace, waits on the sync fence (abortable by client disconnect) before returning the response",
+      "contract": "可中止的栅栏等待（跨进程同步点）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-118",
+      "module": "server-core",
+      "primitive": "Stream.fromEffect(prompt(...).pipe(provideService refs))",
+      "where": "routes/instance/httpapi/handlers/session.ts:337-349",
+      "portability": "streaming",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "mcp-transports",
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "session prompt endpoint returns a single-shot stream carrying one JSON payload with instance/workspace refs installed",
+      "contract": "单发流式响应 + 请求上下文注入",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-server-core-119",
+      "module": "server-core",
+      "primitive": "Effect.forkIn(scope, {startImmediately}) fire-and-forget",
+      "where": "routes/instance/httpapi/handlers/session.ts:353-368 (promptAsync); handlers/sync.ts:27-31 (sync start)",
+      "portability": "structured-concurrency",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "prompt-assembly/segment-order"
+      },
+      "control_domains": [
+        "mcp-transports",
+        "prompt-assembly"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "detaches prompt/sync work into the layer-construction scope (app lifetime), failures logged + published to Bus",
+      "contract": "即发即弃纤维，绑定层作用域而非请求作用域",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-server-core-120",
+      "module": "server-core",
+      "primitive": "waitOwnerQuiescent + Effect.timeoutOption",
+      "where": "routes/instance/httpapi/handlers/session.ts:406-426",
+      "portability": "coordination",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "mcp-transports",
+        "job-family"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "background-quiescence endpoint waits (Deferred lives in BackgroundJob service, outside module) with clamped timeout then re-counts",
+      "contract": "静默等待 + 超时轮询",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-server-core-121",
+      "module": "server-core",
+      "primitive": "Effect.serviceOption(WebSocketTracker)",
+      "where": "routes/instance/httpapi/websocket-tracker.ts:49",
+      "portability": "di",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-121"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "tracker is optional at request time (fetch-adapter path has no tracker layer)",
+      "contract": "可选依赖的请求期解析",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-server-core-122",
+      "module": "server-core",
+      "primitive": "Context.makeUnsafe(new Map()) placeholder",
+      "where": "routes/instance/httpapi/server.ts:91 + server.ts:104",
+      "portability": "di",
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/WE-server-core-122"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "existing_suite": "test/server/httpapi-integration.test.ts",
+      "purpose": "empty context passed to the fetch handler for the no-platform-server path",
+      "contract": "占位 DI 容器",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-agent-123",
+      "module": "agent",
+      "primitive": "Context.Service+Layer.effect",
+      "where": "background-job.ts:155,848; delegation-limiter.ts:20,22; agent.ts:76,78",
+      "portability": "di",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "三个服务的DI骨架：Context.Service声明标签，Layer.effect构造，defaultLayer串provide链（agent.ts:446-452提供Plugin/Provider/Auth/Config/Skill）",
+      "contract": "构造期注入+类型化标签解析；依赖图为静态有向图，无运行时动态解析",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-124",
+      "module": "agent",
+      "primitive": "InstanceState.make/useEffect",
+      "where": "agent.ts:87,364-370; background-job.ts:852-868; delegation-limiter.ts:26,42,56",
+      "portability": "di",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "按项目目录keyed的ScopedCache单例：每个打开的directory一份注册表/限流器/agent状态，dispose时自动清理（BackgroundJob注册表因此是实例级而非进程级配额）",
+      "contract": "按目录键的惰性单例+作用域化清理（ScopedCache.invalidate触发finalizer）；同目录并发get去重初始化",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-125",
+      "module": "agent",
+      "primitive": "Deferred四闩锁网格",
+      "where": "background-job.ts:493-496 (done/deliveryDone/promoted/tail), :42-55 Active记录",
+      "portability": "coordination",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "每个job携带4个一次性闩锁：done=终态完成、deliveryDone=投递完成（markDelivered）、promoted=前台转后台唤醒、tail=extend续跑链式排序",
+      "contract": "一次性闩锁（写一次读多次）；重复succeed需幂等（全部.pipe(Effect.ignore)）；generation-bound防止旧fiber误标新run",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-126",
+      "module": "agent",
+      "primitive": "SynchronizedRef原子状态机",
+      "where": "background-job.ts:358 make, :377 settle, :497 start, :600 markDelivered, :651 extend, :700 cancel, :752 finalizer, :806 promote",
+      "portability": "coordination",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "整个job注册表是SynchronizedRef<Map<id,Active>>，所有状态迁移走modify/modifyEffect原子区；token对象比较(job.token!==token)做代际防护",
+      "contract": "原子读-改-写；modifyEffect在临界区内执行Effect（start里建Deferred+Scope.fork+抛限流错误）——Rust侧严禁持Mutex跨await，需改为检查-提交两段或mpsc actor单线程化",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-127",
+      "module": "agent",
+      "primitive": "Scope树+Effect.forkIn",
+      "where": "background-job.ts:359 注册表ambient scope, :516 Scope.fork(state.scope,\"parallel\")每job子scope, :444/:426 fiber fork进job scope, :726 Scope.close",
+      "portability": "structured-concurrency",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "每job一个子scope承载其run fiber；settle/cancel时关闭该子scope只杀本job fiber；settle路径的Scope.close用forkIn异步执行不阻塞终态返回",
+      "contract": "可取消作用域树：父关=>子全关；子关闭不波及兄弟；cancel语义=关闭scope打断fiber",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-128",
+      "module": "agent",
+      "primitive": "Effect.uninterruptibleMask+restore",
+      "where": "background-job.ts:487-564 start, :648-678 extend",
+      "portability": "structured-concurrency",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "注册（建闩锁+入Map+fork fiber）必须对取消原子，job本体restore回可取消；防止注册到一半被打断产生孤儿fiber",
+      "contract": "屏蔽区内的注册与fiber派生要么全发生要么全不发生；tokio无mask原语，是迁移中语义最不匹配点（需靠spawn顺序+取消令牌入注册表前不暴露来逼近）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-129",
+      "module": "agent",
+      "primitive": "Effect.addFinalizer注册表终局清理",
+      "where": "background-job.ts:742-780",
+      "portability": "structured-concurrency",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "实例dispose时对每个running job做终态迁移（cancelled+done闩锁+onInterrupt钩子），刻意用finalizer-safe原语且不回调cancel()",
+      "contract": "作用域关闭钩子必须幂等、不依赖已关闭的环境、不re-enter Scope.close；Rust对应物=显式shutdown/Drop+JoinSet abort",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-130",
+      "module": "agent",
+      "primitive": "Effect.raceAll动态扇入等待",
+      "where": "background-job.ts:629-645 waitOwnerQuiescent",
+      "portability": "coordination",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "父会话park：循环重读该owner的running∨delivery-pending job集，raceAll等待其中每个job当前未决的那把闩（running等done，settled等deliveryDone），醒来后重读快照",
+      "contract": "每次迭代只await尚未解析的闩（避免热自旋）；无超时永不放弃；天然可被打断；Rust=loop{futures::select_all(oneshot集)}",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-131",
+      "module": "agent",
+      "primitive": "Effect.timeoutOption",
+      "where": "background-job.ts:693 wait超时; subagent-dispatch.ts:381 park进度节拍",
+      "portability": "coordination",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "把超时表达为Option：wait带deadline；dispatch的park循环用timeoutOption(interval)把无限期quiescence等待切成30s进度上报节拍（永不放弃）",
+      "contract": "超时不取消底层等待语义只切片观察；Rust=tokio::time::timeout包select_all",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-132",
+      "module": "agent",
+      "primitive": "Effect.never",
+      "where": "background-job.ts:792 waitForPromotion",
+      "portability": "coordination",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "未知/已终态job返回永不解析的effect，使task工具的raceFirst(wait, waitForPromotion)恒从done侧终结",
+      "contract": "永不完成的future作为race的惰性腿；Rust=std::future::pending",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-133",
+      "module": "agent",
+      "primitive": "promote一次性钩子+闩",
+      "where": "background-job.ts:805-832",
+      "portability": "coordination",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "运行中的前台job原地翻转为后台：不中断fiber，翻metadata.background，唤醒promoted闩，恰好一次触发onPromote（task工具在此发布后台化元数据并fork结果通知fiber）",
+      "contract": "恰好一次钩子+闩锁广播；幂等（已后台返回原快照）；task句柄的配额归属翻转必须与状态迁移原子",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-134",
+      "module": "agent",
+      "primitive": "extend续跑链",
+      "where": "background-job.ts:647-679",
+      "portability": "coordination",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "job-family/cancel-cascade"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "同id续跑：pending计数+1，新fiber await前一段tail闩再andThen(run)，自身ensuring写新tail，保证多段run严格串行",
+      "contract": "链式闩锁实现FIFO续跑排序；settle按pending计数只在最后一段落定终态",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-agent-135",
+      "module": "agent",
+      "primitive": "Semaphore+配额出借",
+      "where": "delegation-limiter.ts:32 makeUnsafe(max), :41-53 acquire, :55-73 release, :83 ensuring(release)",
+      "portability": "coordination",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:agent/WE-agent-135"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "前台委派并发预算（max_concurrent默认128）：父会话持有permit时可借给子会话（holders表的borrowedFrom/lentTo链），避免祖先持锁等待子孙造成的死锁",
+      "contract": "FIFO信号量+出借账本；release必须恰好一次（ensuring/drop guard）；借出中的permit归还回池而非还给lender；Rust=tokio Semaphore+显式出借表",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-agent-136",
+      "module": "agent",
+      "primitive": "Effect.acquireUseRelease abort监听",
+      "where": "subagent-dispatch.ts:401-459",
+      "portability": "structured-concurrency",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:agent/WE-agent-136"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "acquire=注册AbortSignal的abort监听器，use=跑子代理prompt，release=若exit含interrupt则cancel子会话，并ensuring移除监听器",
+      "contract": "RAII资源对（事件监听注册/注销）+按退出原因的条件清理；Rust=scopeguard+CancellationToken联动",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-agent-137",
+      "module": "agent",
+      "primitive": "Effect.interrupt作控制流",
+      "where": "subagent-dispatch.ts:385,395,407,438",
+      "portability": "structured-concurrency",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:agent/WE-agent-137"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "检测到input.abort.aborted时以Effect.interrupt作为返回值，把JS AbortSignal语义映射进fiber取消语义，供上游Exit/Cause分类",
+      "contract": "合作式取消点；abort=>interrupt而非fail，遥测据此区分cancelled/failed；Rust=CancellationToken::cancelled().await或检查后返回Cancelled错误变体",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-agent-138",
+      "module": "agent",
+      "primitive": "EffectBridge.make+runCancel.fork",
+      "where": "subagent-dispatch.ts:350-353 (桥实现src/effect/bridge.ts:43-76)",
+      "portability": "structured-concurrency",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:agent/WE-agent-138"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "abort回调（Effect世界之外的JS事件）里要执行Effect的session cancel：桥捕获当前Effect context+Instance ALS，fork回Effect运行时",
+      "contract": "从原生回调重新进入运行时的逃生舱，携带实例上下文；JS互操作专属——Rust宿主下消失或变为runtime Handle::spawn",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-agent-139",
+      "module": "agent",
+      "primitive": "SubagentDispatch闭包DI",
+      "where": "subagent-dispatch.ts:109-116",
+      "portability": "di",
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:agent/WE-agent-139"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "existing_suite": "test/agent/background-job.test.ts",
+      "purpose": "Effect.gen顶层yield六个服务（Agent/Config/Session/Provider/Routing/DelegationLimiter）+Effect.serviceOption(BackgroundJob)可选依赖，整模块是一个捕获环境的大闭包",
+      "contract": "构造期注入；serviceOption是运行时可选边（AGENTS.md记载过该构造期serviceOption生产环境漏接为None的陷阱）；Rust=显式Option<Arc<dyn Trait>>字段",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-140",
+      "module": "tool-core",
+      "primitive": "Context.Service",
+      "where": "registry.ts:122",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-140"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "ToolRegistry.Service 服务标签类,承载 ids/all/named/tools 四个方法",
+      "contract": "构造期注入(服务定位器,单例)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-141",
+      "module": "tool-core",
+      "primitive": "Layer.effect",
+      "where": "registry.ts:124",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-141"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "构造 ToolRegistry:yield 约 50 个工具 Effect + Config/Plugin/Agent/Truncate 等服务,再 InstanceState.make 建状态",
+      "contract": "构造期注入(巨型依赖图一次性装配,失败即层构建失败)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-142",
+      "module": "tool-core",
+      "primitive": "InstanceState.make",
+      "where": "registry.ts:188",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-142"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "按目录键控的 ScopedCache 缓存工具集状态(builtin+custom+task/read),目录销毁时自动失效",
+      "contract": "每实例惰性一次 + 作用域清理(ScopedCache,容量无限,键=directory)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-143",
+      "module": "tool-core",
+      "primitive": "Layer.suspend + provide 链",
+      "where": "registry.ts:496-529",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-143"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "defaultLayer:约 22 个 defaultLayer 的嵌套 provide/mergeAll 装配(Config/Auth/Plugin/Question/Todo/LSP/Bus/HttpClient/Ripgrep/Truncate/BrowserRuntime 等)",
+      "contract": "构造期注入图(宽但纯构造期,Rust 构造参数/trait object 可平移)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-144",
+      "module": "tool-core",
+      "primitive": "Tool.define 惰性 init",
+      "where": "tool.ts:130-148",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-144"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "define 返回带 id 属性的 Effect,真正构造在 registry yield 它时发生,wrap 闭包捕获 Truncate/Agent 服务做输出截断",
+      "contract": "构造期注入 + 惰性构造(依赖在 yield 点捕获,execute 闭包长期持有)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-145",
+      "module": "tool-core",
+      "primitive": "Semaphore per-path 锁",
+      "where": "edit.ts:80-96",
+      "portability": "coordination",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-145"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "模块级 Map<resolvedPath, Semaphore(1)>;withLocks 对多文件路径排序后 reduceRight 嵌套 withPermits(1),包裹整个读-改-写临界区",
+      "contract": "每文件互斥锁 + 全局锁序防死锁(跨实例的进程级锁表)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-146",
+      "module": "tool-core",
+      "primitive": "Effect.cached",
+      "where": "shell.ts:375 (loadParsers 定义于 339)",
+      "portability": "coordination",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-146"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "tree-sitter bash/powershell WASM parser 的昂贵加载只跑一次,并发调用者共享同一 in-flight",
+      "contract": "单次航班异步记忆化(无 TTL 的永久缓存)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-147",
+      "module": "tool-core",
+      "primitive": "Effect.scoped + spawner.spawn",
+      "where": "shell.ts:496",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-147"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "子进程句柄生命周期绑定 scope,scope 关闭保证进程资源回收",
+      "contract": "可取消作用域(资源获取与释放配对于词法作用域)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-148",
+      "module": "tool-core",
+      "primitive": "Effect.addFinalizer",
+      "where": "shell.ts:518",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-148"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "任意 scope 结局(正常/超时/中止/defect/中断)恰好一次注销 ProcessRegistry 行,settled 标志幂等",
+      "contract": "恰好一次清理(作用域终结钩子,与业务路径去重)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-149",
+      "module": "tool-core",
+      "primitive": "Effect.forkScoped + Stream.runForEach/decodeText",
+      "where": "shell.ts:528-578",
+      "portability": "streaming",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-149"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "把子进程合并 stdout/stderr 字节流解码为文本,在 scope 内 fiber 上逐块消费:滚动窗口截断、溢出写盘、实时 ctx.metadata 推送",
+      "contract": "流式消费 fiber 绑作用域(scope 结束自动中断)+ 有界滚动缓冲",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-150",
+      "module": "tool-core",
+      "primitive": "Effect.callback",
+      "where": "shell.ts:580",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-150"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "把 Tool.Context 的 AbortSignal(事件监听)桥接成 Effect,返回注销监听器的清理 effect",
+      "contract": "回调API桥接 + 取消传播 + 注销清理",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-151",
+      "module": "tool-core",
+      "primitive": "Effect.raceAll",
+      "where": "shell.ts:589",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-151"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "三路竞速:进程 exitCode(含信号死亡折叠)/用户 abort/超时 sleep(+100ms 宽限),先到者赢,输家被中断;abort/timeout 分支再 handle.kill(forceKillAfter 3s)",
+      "contract": "可取消竞速(输家中断语义,等价 tokio::select! + CancellationToken)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-152",
+      "module": "tool-core",
+      "primitive": "Fiber.join",
+      "where": "shell.ts:639",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-152"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "进程定局后 join 输出消费 fiber,确保缓冲/文件 sink 冲刷完再读结果",
+      "contract": "fiber 汇合(join 传播失败)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-153",
+      "module": "tool-core",
+      "primitive": "Effect.acquireRelease",
+      "where": "shell.ts:734",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-153"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "解析出的 tree-sitter 语法树(WASM 堆对象)在 parse 校验作用域结束时 tree.delete() 释放",
+      "contract": "RAII 资源释放(Rust Drop 直接覆盖)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-154",
+      "module": "tool-core",
+      "primitive": "Scope.Scope 捕获",
+      "where": "read.ts:409",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-154"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "在 Tool.define 构造期捕获 registry 层构造 scope,供 warm 把 lsp.touchFile 以 Effect.forkIn(scope) 发射后不管",
+      "contract": "发后即忘 fiber 绑层作用域(层销毁时中断;生命周期耦合并藏于捕获)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-155",
+      "module": "tool-core",
+      "primitive": "InstanceState.make (readDedup)",
+      "where": "read.ts:410-416",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-155"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "按目录缓存 read 去重窗口状态(sessions Map),目录销毁自动清理",
+      "contract": "每实例惰性一次 + 作用域清理",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-156",
+      "module": "tool-core",
+      "primitive": "Effect.scoped + fs.open",
+      "where": "read.ts:470,526",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-156"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "采样读取与分行读取都在 Effect.scoped 内打开文件句柄,出作用域自动关闭",
+      "contract": "RAII 文件句柄",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-157",
+      "module": "tool-core",
+      "primitive": "Effect.serviceOption",
+      "where": "read.ts:707, truncate.ts:77",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-157"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "运行期(非构造期)可选解析 Config.Service,缺席时走默认(去重开关/截断上限)",
+      "contract": "可选依赖运行期查找(Rust: Option<&Config> 参数)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-158",
+      "module": "tool-core",
+      "primitive": "Stream.mapEffect+take+runCollect",
+      "where": "glob.ts:51-67",
+      "portability": "streaming",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-158"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "Ripgrep 文件流逐条 stat 附 mtime,take(limit+1) 判定截断后 runCollect 收拢;take 触发上游提前终止",
+      "contract": "流式截断收集(take N+1 向上游传播取消)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-159",
+      "module": "tool-core",
+      "primitive": "Effect.repeat(Schedule.spaced)+delay+forkScoped",
+      "where": "truncate.ts:144-152",
+      "portability": "coordination",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-159"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "截断目录 7 天保留期 GC:延迟 1 分钟首跑、每小时一轮、异常仅记日志,绑 Truncate 层 scope",
+      "contract": "周期后台任务(间隔调度 + 失败续命 + 作用域终止)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-160",
+      "module": "tool-core",
+      "primitive": "Layer.effect + provide",
+      "where": "truncate.ts:50,158",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-160"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "Truncate 服务构造与默认层装配(AppFileSystem/NodePath)",
+      "contract": "构造期注入",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-161",
+      "module": "tool-core",
+      "primitive": "Context.Service",
+      "where": "truncate.ts:48",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-161"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "Truncate.Service 标签类",
+      "contract": "构造期注入",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-162",
+      "module": "tool-core",
+      "primitive": "Question.Service ask(Deferred 一次性闩锁)",
+      "where": "question.ts:17,24 (实现 src/question/index.ts:142-179)",
+      "portability": "coordination",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-162"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "工具调用阻塞等待用户作答:Deferred.make/await + ensuring 清 pending;实例销毁时 addFinalizer 统一 RejectedError",
+      "contract": "一次性闩锁无限期泊车 + 取消/销毁时拒绝(oneshot + shutdown 语义)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-163",
+      "module": "tool-core",
+      "primitive": "InstanceState.context (隐式实例上下文)",
+      "where": "shell.ts:722, read.ts:610, edit.ts:291, write.ts:59, glob.ts:30, grep.ts:55, apply_patch.ts:67, external-directory.ts:25 (实现 src/effect/instance-state.ts:28-30)",
+      "portability": "di",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-163"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "从 Fiber Context 引用(InstanceRef)回退到 AsyncLocalStorage 的 Instance.current,取 directory/worktree",
+      "contract": "环境隐式上下文(ALS + fiber 局部双通道;过 FFI 必须显式化为参数)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-core-164",
+      "module": "tool-core",
+      "primitive": "Stream 子进程合并流",
+      "where": "shell.ts:529 (handle.all)",
+      "portability": "streaming",
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/WE-tool-core-164"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "effect ChildProcess 句柄的 stdout/stderr 合流以 Stream 暴露,是 shell 数据面的核心流抽象",
+      "contract": "字节流多路合并(stdout+stderr 保序合流)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-165",
+      "module": "tool-graph",
+      "primitive": "Effect.acquireRelease + Effect.scoped",
+      "where": "chimera.ts:725-748 (acquire) + chimera.ts:3182,3213,3301,3343,3378,3417,3480,3525,3575,3625,3733 (11 call sites)",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-165"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "打开项目图谱时持有 in-use 引用计数租约，防止 10 分钟空闲 TTL 扫描在长操作中关闭 graph state；release 时 untrack 并把只读 state 归还池",
+      "contract": "RAII 资源租约：acquire 与 release 严格配对，生命周期=工具调用 scope；release 无退出状态（需幂等，只读/跨项目走归还池分支）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-166",
+      "module": "tool-graph",
+      "primitive": "Effect.ensuring",
+      "where": "chimera.ts:747,769; orchestrate.ts:305,349; worker-batch.ts:296-297; task.ts:371",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-166"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "finalizer：进度 reporter.done()、bindings.disposeAll()、jobs.markDelivered、slots.release 在任何退出路径（含中断）都执行恰好一次",
+      "contract": "无论成功/失败/中断都执行的终结器，语义等价 try/finally 但覆盖 fiber 中断",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-167",
+      "module": "tool-graph",
+      "primitive": "Effect.catchDefect",
+      "where": "chimera.ts:802; ast_edit.ts ×2",
+      "portability": "hard",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-167"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "把 GraphSchemaMigrationRequiredError 等 defect 当控制流捕获并降级为结构化返回值",
+      "contract": "defect 通道被刻意用作跨层控制流信号——移植时 Rust panic/Error 分层必须保留这条通道，不能简单合并",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-168",
+      "module": "tool-graph",
+      "primitive": "Effect.raceFirst + Effect.sleep + Effect.exit + Cause.squash",
+      "where": "chimera.ts:842-872 (predesignStage)",
+      "portability": "coordination",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "mutation-chain/auto-audit-pass"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "predesign 阶段超时：业务 effect 与定时失败赛跑，用 Exit 显式检查成败后发 metadata 并原样重抛 cause",
+      "contract": "可取消超时 + Exit 级结果检查 + cause 无损透传",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-tool-graph-169",
+      "module": "tool-graph",
+      "primitive": "Scope.Scope ambient yield",
+      "where": "orchestrate.ts:100; task.ts:373 所在 define; swarm.ts:483 区域; read.ts:460; mutation-diagnostics.ts",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-169"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "工具在 Tool.define 初始化时从调用方环境取得每调用 scope，后续 forkIn 的后台 fiber 全部挂进该 scope",
+      "contract": "构造期注入的环境 scope：调用返回即中断所有 forkIn fiber（forkDetach 除外）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-170",
+      "module": "tool-graph",
+      "primitive": "Queue.unbounded + Queue.take 消费循环 + Queue.offerUnsafe",
+      "where": "orchestrate.ts:120-143",
+      "portability": "streaming",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-170"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "orchestrate 日志聚合：同步 runtime 回调经 offerUnsafe 桥回 Effect 上下文，单个消费 fiber 节流发布（每窗口最多一次）",
+      "contract": "无界队列 + 同步安全入队 + 单消费者节流循环；队列语义可用 tokio mpsc(unbounded) 复刻",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-171",
+      "module": "tool-graph",
+      "primitive": "Effect.provide(local layer) + ensuring(dispose)",
+      "where": "orchestrate.ts:187",
+      "portability": "di",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-171"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "在工具内部局部组装 OrchestrateRuntime.defaultLayer 给代码运行沙箱用，退出时 dispose bindings",
+      "contract": "局部 DI 注入 + 作用域内资源清理",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-172",
+      "module": "tool-graph",
+      "primitive": "Fiber.interrupt(...).pipe(Effect.ignore)",
+      "where": "orchestrate.ts:372; swarm.ts:388",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-172"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "主动掐死日志发布器/尾随 publish 定时器 fiber，防止 settle 后再发过期快照",
+      "contract": "定向取消一个已命名 fiber 并吞掉中断错误",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-173",
+      "module": "tool-graph",
+      "primitive": "Ref.make + Ref.modify 状态机 + Ref<Fiber> 定时器",
+      "where": "swarm.ts:332-390",
+      "portability": "coordination",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-173"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "swarm 元数据发布合并器：原子 modify 决策 now/scheduled/coalesced，脏标记在写前清零，尾随 timer fiber 可被 flushPublish 打断",
+      "contract": "原子 CAS 式状态机 + 可取消防抖定时器；本模块最精巧的并发逻辑，移植需逐行核对原子性（Rust 侧用 Mutex/RwLock+AbortHandle）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-174",
+      "module": "tool-graph",
+      "primitive": "Semaphore.makeUnsafe(concurrency) + ensuring(release)",
+      "where": "worker-batch.ts:255,297,368-371",
+      "portability": "coordination",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-174"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "后台 swarm worker 并发槽位池：dispatcher 补槽循环受信号量限流，worker 终态后经 ensuring 释放",
+      "contract": "有界计数信号量，acquire/release 严格配对，与 tokio Semaphore 一一对应",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-175",
+      "module": "tool-graph",
+      "primitive": "Effect.forkIn(scope, {startImmediately:true})",
+      "where": "task.ts:373; orchestrate.ts:239,263,350; swarm.ts:379; worker-batch.ts:262,299,378; read.ts:460",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-175"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "把通知/等待/泵送 fiber 挂进调用 scope 并立即启动：jobs.wait→injectSynthetic→markDelivered 通知链、LSP warm、日志泵",
+      "contract": "作用域化后台 fiber：scope 关闭即中断，立即启动语义（effect v4 无裸 fork）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-176",
+      "module": "tool-graph",
+      "primitive": "Effect.forkDetach",
+      "where": "mutation-diagnostics.ts:387",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-176"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "late diagnostics fiber 必须活得比工具调用久（工具 execute 在 per-call promise 里），预算约 12s 且 catchCause 兜底必自终止",
+      "contract": "全模块唯一刻意逃逸调用 scope 的游离 fiber；Rust 宿主需保留一个可 detach 的 runtime 句柄",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-177",
+      "module": "tool-graph",
+      "primitive": "Effect.forkScoped + Effect.repeat(Schedule.spaced(1h)) + Effect.delay",
+      "where": "truncate.ts:144-152",
+      "portability": "coordination",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-177"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "Truncate 服务 layer 内的周期清理任务：延迟 1 分钟后每小时清过期截断文件，layer scope 关闭即停",
+      "contract": "作用域化周期循环；全模块唯一 Schedule 用法",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-178",
+      "module": "tool-graph",
+      "primitive": "Effect.raceFirst(jobs.wait, waitForPromotion) + Effect.onInterrupt(cancel)",
+      "where": "task.ts:617-624",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-178"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "前台 task 同时等结果与等晋升后台；父 turn 中断时引擎 job 继续活在自有 scope，需显式 cancel（onInterrupt 钩子再取消子会话）",
+      "contract": "可取消竞速 + 中断时副作用钩子；中断语义必须保留（父 abort ≠ 静默丢弃）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-179",
+      "module": "tool-graph",
+      "primitive": "Effect.interrupt (中断即控制流)",
+      "where": "task.ts:642; swarm.ts:533; worker-batch.ts:227",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-179"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "检测到 ctx.abort.aborted 时让分发以 interrupted 而非 failed 退出，保持 pre-engine 的中断契约",
+      "contract": "把 AbortSignal 翻译成 fiber 中断状态，调用方按中断而非错误处理",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-180",
+      "module": "tool-graph",
+      "primitive": "Effect.serviceOption",
+      "where": "task.ts:131; swarm.ts:483; truncate.ts:77 等 7 处",
+      "portability": "di",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-180"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "运行期可选依赖探测（BackgroundJob、Config 可能不在环境中），None 时走降级路径",
+      "contract": "可选 DI：Rust 侧用 Option<Arc<dyn Trait>> 构造期传入即可，但需注意 AGENTS.md 记载的构造期/运行期 wiring 陷阱",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-181",
+      "module": "tool-graph",
+      "primitive": "Effect.scoped 包裹 spawn+泵+竞速",
+      "where": "shell.ts:496-644",
+      "portability": "structured-concurrency",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-181"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "shell 执行区：spawn 子进程、addFinalizer 保证 ProcessRegistry 恰好注销一次、forkScoped 输出泵、callback 桥接 AbortSignal、raceAll(exit/abort/timeout)、Fiber.join 收干输出",
+      "contract": "全模块最重的结构化并发：scope 区 + finalizer 恰好一次 + 流式输出泵 + 三路竞速 + join；Rust 侧需 tokio select!+CancellationToken+Drop guard",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-182",
+      "module": "tool-graph",
+      "primitive": "Stream.decodeText + Stream.runForEach (forkScoped)",
+      "where": "shell.ts:528-578",
+      "portability": "streaming",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-182"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "子进程合并输出流按 chunk 消费：环形截断、超阈值落盘、实时 metadata 预览",
+      "contract": "拉取式流 + 背压由 forkScoped fiber 天然提供；可用 tokio 管道+async iterator 复刻",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-183",
+      "module": "tool-graph",
+      "primitive": "Stream.take/runForEach over rg.files",
+      "where": "ast_edit.ts:1475-1478; glob.ts:52-65; skill.ts:45-48",
+      "portability": "streaming",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "skills/precedence"
+      },
+      "control_domains": [
+        "mutation-chain",
+        "skills"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "文件枚举流：惰性拉取 + take(N+1) 提前终止做上限检测",
+      "contract": "可提前终止的惰性枚举流；async iterator + break 即可",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-tool-graph-184",
+      "module": "tool-graph",
+      "primitive": "模块级 Map<path, Semaphore> + withPermits(1) 排序多锁",
+      "where": "edit.ts:80-96",
+      "portability": "coordination",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-184"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "跨工具调用的每文件互斥：按路径字典序嵌套加锁防死锁",
+      "contract": "进程全局可变状态 + 有序多锁；Rust 宿主中模块级状态必须显式化为共享注册表，是迁移陷阱",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-185",
+      "module": "tool-graph",
+      "primitive": "Context.Service + Layer.effect/suspend DI 图",
+      "where": "registry.ts:122-125,496-525; truncate.ts:48-58",
+      "portability": "di",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-185"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "ToolRegistry 服务与约 20 层依赖（Auth/Plugin/Question/Todo/Skill/Agent/Session/Provider/LSP/Bus/HttpClient/Truncate/BrowserRuntime 等）的构造图",
+      "contract": "构造期注入图：Rust 侧用构造器传参/Arc<dyn Trait> 重写，需先理清 provide 链与 mergeAll 兄弟不可见规则",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-tool-graph-186",
+      "module": "tool-graph",
+      "primitive": "Tool.define/wrap：Schema.decodeUnknownEffect + withSpan + orDie",
+      "where": "tool.ts:84-148",
+      "portability": "di",
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/WE-tool-graph-186"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "existing_suite": "test/tool/chimera.test.ts",
+      "purpose": "统一工具包装：参数 Schema 校验（decode 闭包按 init 提升一次）、OTel span、缺陷升格",
+      "contract": "Schema 驱动参数校验 + 统一错误表面；Schema.×684 大头是各工具参数声明，Rust 化后由 serde/schemars 接管",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-187",
+      "module": "provider",
+      "primitive": "Context.Service",
+      "where": "auth.ts:107, balance.ts:84, models.ts:190, provider.ts:1329",
+      "portability": "di",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-187"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "四个 Effect 服务标签：ProviderAuth / ProviderBalance / ModelsDev / Provider，全部走 Context.Service<Service, Interface>()(name) 新式声明",
+      "contract": "构造期注入的服务句柄：tag 只是类型化键，运行时由 Layer 图装配；无运行时查找魔法",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-188",
+      "module": "provider",
+      "primitive": "Layer.effect",
+      "where": "auth.ts:109, balance.ts:137, models.ts:196, provider.ts:1615",
+      "portability": "di",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-188"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "四个服务的构造器：在 Effect.gen 里 yield* 依赖服务（Auth/Plugin/Config/Env/HttpClient/AppFileSystem/ModelsDev/Npm），构造出 Service.of({...}) 闭包表",
+      "contract": "构造期依赖注入图：依赖在 layer 构建时一次性解析，产出不可变服务接口；Rust 等价物 = 构造函数传参/Arc<dyn Trait>",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-189",
+      "module": "provider",
+      "primitive": "Layer.provide + Layer.suspend",
+      "where": "auth.ts:224, balance.ts:268-272, models.ts:295-302, provider.ts:2648-2658",
+      "portability": "di",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-189"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "defaultLayer 把 layer 与全部传递依赖（FetchHttpClient、AppFileSystem、Env、Config、Auth、Plugin、ModelsDev、Npm、EffectFlock）静态接线；Layer.suspend 延迟求值避免循环初始化",
+      "contract": "静态注入图的声明式装配 + 延迟构造；迁 Rust 后是 main/启动期的手写构造顺序，无对应运行时",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-190",
+      "module": "provider",
+      "primitive": "InstanceState.make<State>",
+      "where": "provider.ts:1637-2183",
+      "portability": "structured-concurrency",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-190"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "构建每个项目目录一份的 Provider 全量状态：合并 models.dev 库 + 配置 + 插件钩子 + 内置 custom loaders，产出 providers/sdk缓存/modelLoaders/varsLoaders/sourceRevisions",
+      "contract": "ScopedCache 按 directory 键 memoize 的运行一次构造语义 + invalidate 触发重建 + 实例 dispose 时 scope 清理；是 ScopedCache+Scope 的组合，不是单纯 DI",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-191",
+      "module": "provider",
+      "primitive": "InstanceState.get/invalidate/directory",
+      "where": "provider.ts:835,2188,2195,2199,2212; auth.ts:114,132,166,189",
+      "portability": "structured-concurrency",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-191"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "运行时读取当前目录的状态副本；auth/models 源 revision 变化时 invalidate 整个缓存键；directory 从 ALS(InstanceRef)解析项目目录",
+      "contract": "按键 memoize + 失效重建 + 隐式 ALS 键解析；Rust 宿主里应改为显式 project_id 键的注册表（比 ALS 更简单）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-192",
+      "module": "provider",
+      "primitive": "Semaphore.makeUnsafe(1) + withPermits(1)",
+      "where": "provider.ts:2185,2206",
+      "portability": "coordination",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-192"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "freshState 的 check-revision → invalidate → 递归重建 序列化：并发调用方只有一个能执行 resolveFreshState，其余直接拿旧态或等待",
+      "contract": "单许可互斥锁保护失效-重建临界区（读侧快速路径不进锁）；Rust = tokio::sync::Mutex<()> 或 Semaphore(1)",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-193",
+      "module": "provider",
+      "primitive": "Effect.forkScoped + Effect.repeat(Schedule.spaced(\"60 minutes\"))",
+      "where": "models.ts:288",
+      "portability": "structured-concurrency",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-193"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "在 layer scope 内挂一个后台 fiber：立即跑一次 refresh()，之后每小时跑一次；OPENCODE_DISABLE_MODELS_FETCH 或 --get-yargs-completions 时不启动",
+      "contract": "可取消作用域内的周期后台循环，scope 关闭（进程/实例销毁）即中断；Rust = tokio::spawn + tokio::time::interval + CancellationToken",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-194",
+      "module": "provider",
+      "primitive": "Effect.cachedInvalidateWithTTL",
+      "where": "models.ts:259-264",
+      "portability": "coordination",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-194"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "把 populate()（磁盘→快照→网络三级加载 models.dev 目录）包成单飞缓存：并发 get() 共享同一次进行中的计算，refresh() 里 yield* invalidate 主动失效",
+      "contract": "in-flight 去重 + 手动失效的 memoized effect（TTL=Infinity，仅靠 revision 失效）；Rust = once_cell/Shared future + 代际计数器",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-195",
+      "module": "provider",
+      "primitive": "EffectFlock.withLock(lockKey)",
+      "where": "models.ts:255,276",
+      "portability": "coordination",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-195"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "populate/refresh 写 models.json 缓存文件时持有跨进程文件锁，双检 fresh() 防止多 CLI 进程竞写",
+      "contract": "跨进程（非跨线程）文件锁 + 锁内双检；tokio 不覆盖此语义，需要 fs2/fd-lock 类 crate，属成熟但非 tokio 原生对应物",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-196",
+      "module": "provider",
+      "primitive": "EffectBridge.make + bridge.promise",
+      "where": "provider.ts:1641,2025",
+      "portability": "hard",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-196"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "plugin.auth.loader 是普通 async 回调，内部又要重入 Effect 服务（auth.get）；bridge 捕获当前 Effect context + Instance/Workspace AsyncLocalStorage，把它打包成 () => Promise 注入插件",
+      "contract": "Effect context 与 Node ALS 的双栈重入桥：回调里重开 runtime 时两套上下文都要还原；跨 FFI/跨运行时最难复刻的一处（但插件体系本来就必须留 Bun 侧）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-197",
+      "module": "provider",
+      "primitive": "Stream.mapError/flatMap/fromIterable/concat/make + Stream.toReadableStream",
+      "where": "sdk/native-llm/language-model.ts:124-139",
+      "portability": "streaming",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-197"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "doStream 把 LLM route 事件流 1→N raise 成 AI SDK StreamPart，前缀拼一个 stream-start，最后转成 web ReadableStream 交给 streamText；abortSignal 监听触发 stream.cancel() 关闭 Effect scope 中断 HTTP fiber",
+      "contract": "惰性拉取流 + 取消传播（reader cancel → scope 中断）；Rust/tokio = mpsc receiver → async-iterator/Stream，取消用 CancellationToken；语义浅、映射直接",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-198",
+      "module": "provider",
+      "primitive": "ManagedRuntime.make",
+      "where": "sdk/native-llm/language-model.ts:43-54",
+      "portability": "di",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-198"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "进程级惰性共享 runtime：第一次用 LLMClient 时建 ManagedRuntime(LLMClient.layer + fetchLayer)，runPromise 取服务句柄后缓存 Promise",
+      "contract": "惰性单例 runtime + memoized 服务句柄；Rust = OnceLock<RwLock<Client>> 一次性初始化",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-199",
+      "module": "provider",
+      "primitive": "resolveSDK 的 npm 动态安装与 import",
+      "where": "provider.ts:2248-2405 (2381 行 Effect.runPromise(npm.add), 2393 await import(importSpec))",
+      "portability": "hard",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-199"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "按模型 npm 包名 + options 哈希缓存 SDK 实例；缺包时运行时 npm 安装 @ai-sdk/* 再动态 import，调用其 create* 工厂",
+      "contract": "运行时包管理 + 动态模块加载 + 哈希缓存；深度绑定 Bun/Node 与 AI SDK npm 生态，是去 Effect 化也搬不进 Rust 的真障碍（但属编排职责）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-provider-200",
+      "module": "provider",
+      "primitive": "dep 构造期注入到 custom() loaders",
+      "where": "provider.ts:402 (custom(dep)), 1658-1663 (dep 定义), 2042 (yield* fn(data))",
+      "portability": "di",
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/WE-provider-200"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "existing_suite": "test/provider/provider.test.ts",
+      "purpose": "把 auth.get/config.get/env.all/env.get 包成 effect 闭包，注入给 ~12 个内置 provider loader（opencode/azure/bedrock/vertex/gitlab...）在状态构建期执行",
+      "contract": "构造期注入的访问器对象 + 构造期内一次性执行；Rust = 构造参数传闭包/trait object，注入图需人工理清但无运行时语义",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-config-storage-201",
+      "module": "config-storage",
+      "primitive": "Context.Service",
+      "where": "packages/chimera/src/config/config.ts:450; src/storage/storage.ts:68; src/config/subagent-routing.ts:80",
+      "portability": "di",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Define DI tags for Config/Storage/SubagentRouting services (Context.Service<Ser,self>() factory)",
+      "contract": "构造期注入标签（tag = service identity, consumed via yield* Foo.Service）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-202",
+      "module": "config-storage",
+      "primitive": "Layer.effect",
+      "where": "src/config/config.ts:542; src/storage/storage.ts:220; src/config/subagent-routing.ts:218",
+      "portability": "di",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Effectful service constructors that yield deps (AppFileSystem, Git, Auth, Account, Env, Npm, EffectFlock, Global) then build closures",
+      "contract": "构造期依赖解析：一次 yield 固定依赖，返回方法表",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-203",
+      "module": "config-storage",
+      "primitive": "Layer.provide",
+      "where": "src/config/config.ts:1062-1069; src/storage/storage.ts:332; src/config/subagent-routing.ts:359-363",
+      "portability": "di",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "defaultLayer chains wiring transitive deps into each service",
+      "contract": "静态注入图（每服务自带完整依赖闭包，不依赖外层组合）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-204",
+      "module": "config-storage",
+      "primitive": "Effect.provideService",
+      "where": "src/config/config.ts:944",
+      "portability": "di",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Re-inject the captured AppFileSystem into the inner loadInstanceState computation",
+      "contract": "局部覆盖注入（构造期捕获的实例喂给子计算）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-205",
+      "module": "config-storage",
+      "primitive": "InstanceState.make/use/useEffect/invalidate/directory",
+      "where": "src/config/config.ts:947,954,958,974,978,982,988,997,1003,1008,1014",
+      "portability": "di",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Per-open-directory config State (merged config, sources, deps, consoleState) cached in a ScopedCache keyed by directory; update/remove/updateGlobal write then invalidate to force reload",
+      "contract": "按目录键控的可失效实例缓存：惰性重建 + dispose 自动清理 + 写后失效",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-206",
+      "module": "config-storage",
+      "primitive": "Effect.cached",
+      "where": "src/storage/storage.ts:229-250",
+      "portability": "coordination",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:config-storage/WE-config-storage-206"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Run-once resolution of storage dir + sequential JSON-tree migrations (marker file, stop-on-first-failure); concurrent first callers share one in-flight run",
+      "contract": "一次性门闩/并发去重（shared in-flight, permanent memo）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-config-storage-207",
+      "module": "config-storage",
+      "primitive": "Effect.cachedInvalidateWithTTL(Duration.infinity)",
+      "where": "src/config/config.ts:620-628 (pair invalidateGlobal at :1017-1019)",
+      "portability": "coordination",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Memoize merged global config; manual invalidation after updateGlobal writes",
+      "contract": "可手动失效的 memo latch（TTL 无限，失效全靠显式调用）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-208",
+      "module": "config-storage",
+      "primitive": "RcMap.make + RcMap.get",
+      "where": "src/storage/storage.ts:225-228,269",
+      "portability": "coordination",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:config-storage/WE-config-storage-208"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Registry of TxReentrantLock per storage key (idleTimeToLive: 0 = never evicted)",
+      "contract": "键控锁注册表（per-key lock map, scoped borrow）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-config-storage-209",
+      "module": "config-storage",
+      "primitive": "TxReentrantLock.withReadLock/withWriteLock",
+      "where": "src/storage/storage.ts:275,282,290,305",
+      "portability": "coordination",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:config-storage/WE-config-storage-209"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Serialize JSON file read/write/update per key; update() is read-modify-write under write lock",
+      "contract": "每键读写锁（可重入；update 原子性依赖写锁持有期间完成读改写）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-config-storage-210",
+      "module": "config-storage",
+      "primitive": "Effect.scoped",
+      "where": "src/storage/storage.ts:266-271",
+      "portability": "structured-concurrency",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:config-storage/WE-config-storage-210"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Wrap each storage op so the RcMap lock borrow is released at op end",
+      "contract": "有界资源借用作用域（acquire-release bound to op lifetime）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-config-storage-211",
+      "module": "config-storage",
+      "primitive": "Semaphore.makeUnsafe(1) + withPermits(1)",
+      "where": "src/config/subagent-routing.ts:224,268",
+      "portability": "coordination",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "In-process mutex serializing read-modify-write of subagent-routing.json",
+      "contract": "进程内互斥（1-permit semaphore = Mutex）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-212",
+      "module": "config-storage",
+      "primitive": "EffectFlock.withLock (under the Semaphore)",
+      "where": "src/config/subagent-routing.ts:281",
+      "portability": "coordination",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Cross-process OS file lock layered inside the in-process mutex; temp-file+chmod+rename atomic write with Effect.ensuring temp cleanup",
+      "contract": "双层序列化（in-proc Mutex + cross-proc flock）+ 原子替换写",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-213",
+      "module": "config-storage",
+      "primitive": "Fiber.Fiber<void,never>[] + Effect.forkDetach",
+      "where": "src/config/config.ts:431,768,784-805",
+      "portability": "structured-concurrency",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "Detach background npm install of @opencode-ai/plugin per config directory during load; failures captured via Effect.exit+tap and only logged",
+      "contract": "分离任务句柄（fire-now/join-later；错误不外传）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-config-storage-214",
+      "module": "config-storage",
+      "primitive": "Fiber.join via Effect.forEach(concurrency: unbounded)",
+      "where": "src/config/config.ts:983",
+      "portability": "structured-concurrency",
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "existing-domain",
+        "ref": "config-bootstrap/merge-order"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/config/config.test.ts",
+      "purpose": "waitForDependencies: join all detached install fibers",
+      "contract": "等待全部后台任务终止（never-failing join）",
+      "note": "domain-level behavior fixture covers the same control area; W-E point-level parity remains pending."
+    },
+    {
+      "id": "WE-plugin-215",
+      "module": "plugin",
+      "primitive": "Context.Service",
+      "where": "index.ts:95",
+      "portability": "di",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-215"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "Plugin 服务的 DI 标签，Interface={trigger,list,init} 返回 Effect",
+      "contract": "构造期注入的服务标签，消费方 yield* Plugin.Service",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-plugin-216",
+      "module": "plugin",
+      "primitive": "Layer.effect",
+      "where": "index.ts:149-151",
+      "portability": "di",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-216"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "服务构造：构造期 yield* Bus.Service/Config.Service/Npm.Service 三个依赖",
+      "contract": "构造期依赖解析 + 惰性建层",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-plugin-217",
+      "module": "plugin",
+      "primitive": "Layer.provide",
+      "where": "index.ts:342-346",
+      "portability": "di",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-217"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "defaultLayer 组合根：把 Bus/Config/Npm 的 defaultLayer 接进 plugin layer",
+      "contract": "静态注入图（3 条边），无 serviceOption 陷阱",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-plugin-218",
+      "module": "plugin",
+      "primitive": "InstanceState.make",
+      "where": "index.ts:156-311",
+      "portability": "structured-concurrency",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-218"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "按 project directory 缓存的 hooks 注册表（ScopedCache，run-once），插件加载全部发生在这个闭包里",
+      "contract": "按目录键控的一次性初始化 + scope 绑定的清理生命周期",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-plugin-219",
+      "module": "plugin",
+      "primitive": "Effect.addFinalizer + Effect.forEach(discard)",
+      "where": "index.ts:284-296",
+      "portability": "structured-concurrency",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-219"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "实例销毁时顺序跑所有 hook.dispose?.()，错误逐条 Effect.ignore",
+      "contract": "作用域关闭时必跑的析构回调（Rust Drop/analogue）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-plugin-220",
+      "module": "plugin",
+      "primitive": "Stream.runForEach + Effect.forkScoped",
+      "where": "index.ts:299-308",
+      "portability": "streaming",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-220"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "常驻订阅 bus.subscribeAll()，每个事件同步扇出到所有 hook['event']；fiber 随实例 scope 中断",
+      "contract": "常驻事件流消费 fiber，生命周期绑定 scope（tokio mpsc + CancellationToken）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-plugin-221",
+      "module": "plugin",
+      "primitive": "EffectBridge.make / bridge.fork",
+      "where": "index.ts:159,163",
+      "portability": "structured-concurrency",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-221"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "在纯 Promise 回调（loader report.error）里 fire-and-forget 地 bus.publish 插件加载错误",
+      "contract": "捕获的 runtime 句柄 → 从同步上下文 spawn effect（tokio::Handle::spawn）",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-plugin-222",
+      "module": "plugin",
+      "primitive": "AppRuntime.runPromise(EffectFlock.withLock(Effect.promise(body)))",
+      "where": "meta.ts:54-60,153-191",
+      "portability": "coordination",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-222"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "plugin-meta.json 读-改-写（touchMany/setTheme/list）包在跨进程文件锁里",
+      "contract": "跨进程互斥锁（带 LockTimeout/LockCompromised），Promise 外壳",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    },
+    {
+      "id": "WE-plugin-223",
+      "module": "plugin",
+      "primitive": "AppRuntime.runPromise(EffectFlock.withLock(Effect.promise(patchOne)))",
+      "where": "install.ts:346-424",
+      "portability": "coordination",
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/WE-plugin-223"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "existing_suite": "test/oracle/plugin/trajectory.test.ts",
+      "purpose": "chimera.json/tui.json 的 plugin 数组 JSONC 补丁包在 'plug-config:<file>' 锁里",
+      "contract": "同上：配置文件写互斥",
+      "note": "no point-level fixture; pending id is the planned fixture slot."
+    }
+  ],
+  "mechanical_buckets": [
+    {
+      "id": "WE-mechanical-session-prompt",
+      "module": "session-prompt",
+      "count": 10,
+      "owner_role": "session-prompt owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-prompt/mechanical-bucket"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "note": "source archive enumerates only 21 non-mechanical point(s) for this module; the remaining 10 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-session-core",
+      "module": "session-core",
+      "count": 9,
+      "owner_role": "session-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-core/mechanical-bucket"
+      },
+      "control_domains": [
+        "prompt-assembly"
+      ],
+      "note": "source archive enumerates only 19 non-mechanical point(s) for this module; the remaining 9 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-session-stream",
+      "module": "session-stream",
+      "count": 19,
+      "owner_role": "session-stream owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-stream/mechanical-bucket"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "note": "source archive enumerates only 17 non-mechanical point(s) for this module; the remaining 19 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-session-infra",
+      "module": "session-infra",
+      "count": 10,
+      "owner_role": "session-infra owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:session-infra/mechanical-bucket"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "note": "source archive enumerates only 15 non-mechanical point(s) for this module; the remaining 10 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-server-httpapi",
+      "module": "server-httpapi",
+      "count": 11,
+      "owner_role": "server-httpapi owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-httpapi/mechanical-bucket"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "note": "source archive enumerates only 24 non-mechanical point(s) for this module; the remaining 11 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-server-core",
+      "module": "server-core",
+      "count": 7,
+      "owner_role": "server-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:server-core/mechanical-bucket"
+      },
+      "control_domains": [
+        "mcp-transports"
+      ],
+      "note": "source archive enumerates only 26 non-mechanical point(s) for this module; the remaining 7 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-agent",
+      "module": "agent",
+      "count": 8,
+      "owner_role": "agent owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:agent/mechanical-bucket"
+      },
+      "control_domains": [
+        "job-family"
+      ],
+      "note": "source archive enumerates only 17 non-mechanical point(s) for this module; the remaining 8 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-tool-core",
+      "module": "tool-core",
+      "count": 11,
+      "owner_role": "tool-core owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-core/mechanical-bucket"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "note": "source archive enumerates only 25 non-mechanical point(s) for this module; the remaining 11 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-tool-graph",
+      "module": "tool-graph",
+      "count": 8,
+      "owner_role": "tool-graph owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:tool-graph/mechanical-bucket"
+      },
+      "control_domains": [
+        "mutation-chain"
+      ],
+      "note": "source archive enumerates only 22 non-mechanical point(s) for this module; the remaining 8 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-provider",
+      "module": "provider",
+      "count": 9,
+      "owner_role": "provider owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:provider/mechanical-bucket"
+      },
+      "control_domains": [
+        "compaction"
+      ],
+      "note": "source archive enumerates only 14 non-mechanical point(s) for this module; the remaining 9 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-config-storage",
+      "module": "config-storage",
+      "count": 9,
+      "owner_role": "config-storage owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:config-storage/mechanical-bucket"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "note": "source archive enumerates only 14 non-mechanical point(s) for this module; the remaining 9 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    },
+    {
+      "id": "WE-mechanical-plugin",
+      "module": "plugin",
+      "count": 9,
+      "owner_role": "plugin owner",
+      "fixture": {
+        "status": "pending",
+        "ref": "pending:plugin/mechanical-bucket"
+      },
+      "control_domains": [
+        "config-bootstrap"
+      ],
+      "note": "source archive enumerates only 9 non-mechanical point(s) for this module; the remaining 9 mechanical point(s) have a module-level count only, so this bucket carries them without fabricating file:line entries."
+    }
+  ]
+}

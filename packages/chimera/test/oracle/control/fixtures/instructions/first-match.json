@@ -1,0 +1,38 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "instructions/first-match",
+  "domain": "instructions",
+  "kind": "behavior",
+  "rule": "instructions.first-match",
+  "title": "全局/项目 instruction 只取首个匹配，配置本地与远程分开",
+  "description": "合成全局 AGENTS.md/CLAUDE.md、项目 AGENTS.md/CLAUDE.md、配置本地文件与远程 URL；断言只保留全局首个存在文件、项目首个匹配文件族、配置本地路径与远程 URL 分离。",
+  "input": {
+    "globalFiles": [
+      { "path": "global/AGENTS.md", "exists": true },
+      { "path": "global/CLAUDE.md", "exists": true }
+    ],
+    "projectMatches": {
+      "AGENTS.md": ["project/AGENTS.md"],
+      "CLAUDE.md": ["project/CLAUDE.md"]
+    },
+    "configInstructions": [
+      { "kind": "local", "path": "docs/rules.md" },
+      { "kind": "remote", "url": "synthetic://instructions" }
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "systemPaths", "equals": ["global/AGENTS.md", "project/AGENTS.md", "docs/rules.md"] },
+      { "path": "remote", "equals": ["synthetic://instructions"] }
+    ],
+    "must_not": ["global/CLAUDE.md", "project/CLAUDE.md", "remote URL in systemPaths"]
+  },
+  "provenance": {
+    "evidence": ["src/session/instruction.ts:106-147", "src/session/instruction.ts:149-166"],
+    "derivation": "按 systemPaths() 的全局 break、项目首个文件族 break、config.instructions 本地/远程分流构造合成输入。",
+    "executed": true
+  }
+}

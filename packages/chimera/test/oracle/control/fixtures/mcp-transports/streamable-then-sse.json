@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "mcp-transports/streamable-then-sse",
+  "domain": "mcp-transports",
+  "kind": "behavior",
+  "rule": "mcp.transports",
+  "title": "local 走 stdio；remote 先 StreamableHTTP 后 SSE 回退",
+  "description": "合成 local server 与 remote server；remote 首次 StreamableHTTP 失败、第二次 SSE 成功。断言两种 transport 与尝试顺序。",
+  "input": {
+    "servers": [
+      { "key": "local-synthetic", "type": "local", "enabled": true, "command": ["synthetic-mcp"] },
+      { "key": "remote-synthetic", "type": "remote", "enabled": true }
+    ],
+    "remoteAttempts": [
+      { "transport": "StreamableHTTP", "result": "error" },
+      { "transport": "SSE", "result": "ok" }
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "servers.0.transport", "equals": "stdio" },
+      { "path": "servers.0.status", "equals": "connected" },
+      { "path": "servers.1.transport", "equals": "SSE" },
+      { "path": "servers.1.status", "equals": "connected" },
+      { "path": "servers.1.attempts", "equals": ["StreamableHTTP", "SSE"] }
+    ],
+    "must_not": ["try SSE before StreamableHTTP", "spawn a process for a remote server"]
+  },
+  "provenance": {
+    "evidence": ["src/mcp/index.ts:282-303", "src/mcp/index.ts:364-393"],
+    "derivation": "connectRemote 的 transports 数组顺序为 StreamableHTTP → SSE；connectLocal 固定 StdioClientTransport。",
+    "executed": true
+  }
+}

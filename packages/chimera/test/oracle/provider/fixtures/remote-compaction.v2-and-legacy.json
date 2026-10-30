@@ -1,0 +1,223 @@
+{
+  "format": "chimera.oracle.provider-fixture",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "profile": "remote-compaction",
+  "case": "v2-and-legacy",
+  "description": "Codex 后端 remote compaction: the v2 SSE protocol emits one encrypted compaction item, and the legacy JSON protocol returns the same item shape from the compact endpoint.",
+  "capabilities": {
+    "genai_verdict": "uncovered",
+    "transport": "sse",
+    "auth": "oauth",
+    "native_tool_search": false,
+    "remote_compaction": true,
+    "hosted_tools_exercised": [],
+    "retry_owner": "chimera",
+    "auth_refresh_owner": "chimera"
+  },
+  "turns": [
+    {
+      "turn": 1,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:OAUTH_ACCESS>",
+          "chatgpt-account-id": "acct-placeholder",
+          "content-type": "application/json",
+          "originator": "chimera",
+          "session_id": "session-placeholder",
+          "user-agent": "chimera-oracle"
+        },
+        "body": {
+          "model": "codex 后端",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Summarize the fixture session."
+                }
+              ]
+            },
+            {
+              "type": "compaction_trigger"
+            }
+          ],
+          "instructions": "Compact the conversation.",
+          "tools": [],
+          "parallel_tool_calls": false,
+          "prompt_cache_key": "session-placeholder",
+          "store": false,
+          "stream": true
+        }
+      },
+      "auth": {
+        "kind": "oauth",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:OAUTH_ACCESS>",
+        "account_header": {
+          "name": "ChatGPT-Account-ID",
+          "value": "acct-placeholder"
+        },
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "before-expiry",
+          "dedupe_key": "credential"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "response.created",
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_cmp_1"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "cmp_1",
+                "type": "compaction",
+                "encrypted_content": "<REDACTED:COMPACTION_BLOB>"
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "event": "response.completed",
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_cmp_1",
+                "usage": {
+                  "input_tokens": 100,
+                  "output_tokens": 10,
+                  "total_tokens": 110
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [],
+        "result": {
+          "output": [
+            {
+              "type": "compaction",
+              "encrypted_content": "<REDACTED:COMPACTION_BLOB>"
+            }
+          ],
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "total_tokens": 110
+          }
+        }
+      }
+    },
+    {
+      "turn": 2,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses/compact",
+        "headers": {
+          "authorization": "Bearer <REDACTED:OAUTH_ACCESS>",
+          "chatgpt-account-id": "acct-placeholder",
+          "content-type": "application/json",
+          "originator": "chimera",
+          "session_id": "session-placeholder",
+          "user-agent": "chimera-oracle"
+        },
+        "body": {
+          "model": "codex 后端",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Summarize the fixture session."
+                }
+              ]
+            }
+          ],
+          "instructions": "Compact the conversation.",
+          "tools": [],
+          "parallel_tool_calls": false,
+          "prompt_cache_key": "session-placeholder",
+          "store": false
+        }
+      },
+      "auth": {
+        "kind": "oauth",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:OAUTH_ACCESS>",
+        "account_header": {
+          "name": "ChatGPT-Account-ID",
+          "value": "acct-placeholder"
+        },
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "before-expiry",
+          "dedupe_key": "credential"
+        }
+      },
+      "stream": {
+        "transport": "json",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "data": {
+              "id": "resp_cmp_2",
+              "output": [
+                {
+                  "type": "compaction",
+                  "encrypted_content": "<REDACTED:COMPACTION_BLOB>"
+                }
+              ],
+              "usage": {
+                "input_tokens": 90,
+                "output_tokens": 8,
+                "total_tokens": 98
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [],
+        "result": {
+          "output": [
+            {
+              "type": "compaction",
+              "encrypted_content": "<REDACTED:COMPACTION_BLOB>"
+            }
+          ],
+          "usage": {
+            "input_tokens": 90,
+            "output_tokens": 8,
+            "total_tokens": 98
+          }
+        }
+      }
+    }
+  ]
+}

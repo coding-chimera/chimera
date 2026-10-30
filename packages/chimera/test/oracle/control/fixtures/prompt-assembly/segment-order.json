@@ -1,0 +1,59 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "prompt-assembly/segment-order",
+  "domain": "prompt-assembly",
+  "kind": "behavior",
+  "rule": "prompt.assembly",
+  "title": "system prompt 分段按固定顺序装配，能力层按工具可见性注入",
+  "description": "合成无 agent override、含 chimera/workbrief/browser 工具、multi-agent、ultra root、system/user 附加段的输入；断言完整 key 顺序。",
+  "input": {
+    "agentPrompt": "",
+    "modelLayer": "synthetic",
+    "overlay": "synthetic-overlay",
+    "tools": {
+      "read": {},
+      "workbrief": {},
+      "chimera_search": {},
+      "browser_open": {}
+    },
+    "multiAgent": "policy",
+    "small": false,
+    "parentSessionID": null,
+    "variant": "ultra",
+    "ultraLayer": "synthetic",
+    "system": ["sys-a", null, "sys-b"],
+    "userSystem": "user-a"
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      {
+        "path": "keys",
+        "equals": [
+          "core/default",
+          "core/workflow",
+          "model/synthetic",
+          "overlay/synthetic-overlay",
+          "core/chimera",
+          "core/workbrief",
+          "core/browser",
+          "policy/multi-agent",
+          "variant/ultra",
+          "variant/ultra-synthetic",
+          "input/system/0",
+          "input/system/2",
+          "user/system/0"
+        ]
+      },
+      { "path": "capabilityIncluded", "equals": true }
+    ],
+    "must_not": ["reorder capability layers", "include input/system/1 for a null segment"]
+  },
+  "provenance": {
+    "evidence": ["src/session/llm.ts:230-255", "src/session/system.ts:142-197"],
+    "derivation": "按 systemSegments() 的 send 顺序与 capabilitySegments() 的工具门控构造合成输入。",
+    "executed": true
+  }
+}

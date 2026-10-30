@@ -1,0 +1,12 @@
+{
+  "id": "cancel-run",
+  "fault_class": "cancel",
+  "label_zh": "取消",
+  "base_golden": "determinism.jsonl",
+  "description": "transcript 级：在事件 12 前插入 control/cancel 标记，其后仍有 SSE 与 prompt.join 事件；envelope 级附加 cancelled。",
+  "envelope_status": "cancelled",
+  "injections": [
+    { "op": "insert-cancel-event", "at": 12, "reason": "user" }
+  ],
+  "expected": { "status": "fail", "code": "FAULT_CANCEL" }
+}

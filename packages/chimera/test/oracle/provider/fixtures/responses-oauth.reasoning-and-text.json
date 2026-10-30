@@ -1,0 +1,478 @@
+{
+  "format": "chimera.oracle.provider-fixture",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "profile": "responses-oauth",
+  "case": "reasoning-and-text",
+  "description": "Responses over SSE with an OAuth bearer and account header: encrypted reasoning is captured, replayed on the next request, and followed by text.",
+  "capabilities": {
+    "genai_verdict": "compat",
+    "transport": "sse",
+    "auth": "oauth",
+    "native_tool_search": false,
+    "remote_compaction": false,
+    "hosted_tools_exercised": [],
+    "retry_owner": "chimera",
+    "auth_refresh_owner": "chimera"
+  },
+  "turns": [
+    {
+      "turn": 1,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:OAUTH_ACCESS>",
+          "chatgpt-account-id": "acct-placeholder",
+          "content-type": "application/json",
+          "user-agent": "chimera-oracle"
+        },
+        "body": {
+          "model": "codex 后端",
+          "instructions": "You are a synthetic fixture assistant.",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Think briefly and answer."
+                }
+              ]
+            }
+          ],
+          "tools": [],
+          "tool_choice": "auto",
+          "reasoning": {
+            "effort": "low",
+            "summary": "auto"
+          },
+          "include": [
+            "reasoning.encrypted_content"
+          ],
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder"
+        }
+      },
+      "auth": {
+        "kind": "oauth",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:OAUTH_ACCESS>",
+        "account_header": {
+          "name": "ChatGPT-Account-ID",
+          "value": "acct-placeholder"
+        },
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "before-expiry",
+          "dedupe_key": "credential"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "response.created",
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_oauth_1"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "rs_oauth_1",
+                "type": "reasoning",
+                "encrypted_content": "<REDACTED:ENCRYPTED_REASONING>",
+                "summary": []
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "event": "response.reasoning_summary_part.added",
+            "data": {
+              "type": "response.reasoning_summary_part.added",
+              "summary_index": 0
+            }
+          },
+          {
+            "seq": 4,
+            "event": "response.reasoning_summary_text.delta",
+            "data": {
+              "type": "response.reasoning_summary_text.delta",
+              "summary_index": 0,
+              "delta": "Check the request."
+            }
+          },
+          {
+            "seq": 5,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "rs_oauth_1",
+                "type": "reasoning",
+                "encrypted_content": "<REDACTED:ENCRYPTED_REASONING>",
+                "summary": [
+                  {
+                    "type": "summary_text",
+                    "text": "Check the request."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "seq": 6,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 1,
+              "item": {
+                "id": "msg_oauth_1",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+              }
+            }
+          },
+          {
+            "seq": 7,
+            "event": "response.output_text.delta",
+            "data": {
+              "type": "response.output_text.delta",
+              "item_id": "msg_oauth_1",
+              "delta": "Answer."
+            }
+          },
+          {
+            "seq": 8,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 1,
+              "item": {
+                "id": "msg_oauth_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "Answer."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "seq": 9,
+            "event": "response.completed",
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_oauth_1",
+                "usage": {
+                  "input_tokens": 14,
+                  "output_tokens": 5,
+                  "total_tokens": 19
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "reasoning-start",
+            "id": "rs_oauth_1:0",
+            "providerMetadata": {
+              "openai": {
+                "itemId": "rs_oauth_1",
+                "reasoningEncryptedContent": "<REDACTED:ENCRYPTED_REASONING>",
+                "reasoningSummary": true
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "type": "reasoning-delta",
+            "id": "rs_oauth_1:0",
+            "text": "Check the request."
+          },
+          {
+            "seq": 4,
+            "type": "reasoning-end",
+            "id": "rs_oauth_1:0",
+            "providerMetadata": {
+              "openai": {
+                "itemId": "rs_oauth_1",
+                "reasoningEncryptedContent": "<REDACTED:ENCRYPTED_REASONING>",
+                "reasoningSummary": true
+              }
+            }
+          },
+          {
+            "seq": 5,
+            "type": "text-start",
+            "id": "msg_oauth_1"
+          },
+          {
+            "seq": 6,
+            "type": "text-delta",
+            "id": "msg_oauth_1",
+            "text": "Answer."
+          },
+          {
+            "seq": 7,
+            "type": "text-end",
+            "id": "msg_oauth_1"
+          },
+          {
+            "seq": 8,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 14,
+              "outputTokens": 5,
+              "totalTokens": 19
+            }
+          },
+          {
+            "seq": 9,
+            "type": "finish",
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 14,
+              "outputTokens": 5,
+              "totalTokens": 19
+            }
+          }
+        ]
+      }
+    },
+    {
+      "turn": 2,
+      "request": {
+        "method": "POST",
+        "endpoint": "synthetic://provider/responses",
+        "headers": {
+          "authorization": "Bearer <REDACTED:OAUTH_ACCESS>",
+          "chatgpt-account-id": "acct-placeholder",
+          "content-type": "application/json",
+          "user-agent": "chimera-oracle"
+        },
+        "body": {
+          "model": "codex 后端",
+          "instructions": "You are a synthetic fixture assistant.",
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Think briefly and answer."
+                }
+              ]
+            },
+            {
+              "type": "reasoning",
+              "encrypted_content": "<REDACTED:ENCRYPTED_REASONING>",
+              "summary": [
+                {
+                  "type": "summary_text",
+                  "text": "Check the request."
+                }
+              ]
+            },
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Answer."
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Continue."
+                }
+              ]
+            }
+          ],
+          "tools": [],
+          "tool_choice": "auto",
+          "reasoning": {
+            "effort": "low",
+            "summary": "auto"
+          },
+          "include": [
+            "reasoning.encrypted_content"
+          ],
+          "store": false,
+          "stream": true,
+          "prompt_cache_key": "session-placeholder"
+        }
+      },
+      "auth": {
+        "kind": "oauth",
+        "placement": "header",
+        "name": "authorization",
+        "value": "Bearer <REDACTED:OAUTH_ACCESS>",
+        "account_header": {
+          "name": "ChatGPT-Account-ID",
+          "value": "acct-placeholder"
+        },
+        "refresh": {
+          "owner": "chimera",
+          "strategy": "before-expiry",
+          "dedupe_key": "credential"
+        }
+      },
+      "stream": {
+        "transport": "sse",
+        "terminal": "completed",
+        "frames": [
+          {
+            "seq": 1,
+            "event": "response.created",
+            "data": {
+              "type": "response.created",
+              "response": {
+                "id": "resp_oauth_2"
+              }
+            }
+          },
+          {
+            "seq": 2,
+            "event": "response.output_item.added",
+            "data": {
+              "type": "response.output_item.added",
+              "output_index": 0,
+              "item": {
+                "id": "msg_oauth_2",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+              }
+            }
+          },
+          {
+            "seq": 3,
+            "event": "response.output_text.delta",
+            "data": {
+              "type": "response.output_text.delta",
+              "item_id": "msg_oauth_2",
+              "delta": "Continued."
+            }
+          },
+          {
+            "seq": 4,
+            "event": "response.output_item.done",
+            "data": {
+              "type": "response.output_item.done",
+              "output_index": 0,
+              "item": {
+                "id": "msg_oauth_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "Continued."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "seq": 5,
+            "event": "response.completed",
+            "data": {
+              "type": "response.completed",
+              "response": {
+                "id": "resp_oauth_2",
+                "usage": {
+                  "input_tokens": 22,
+                  "output_tokens": 3,
+                  "total_tokens": 25
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "terminal": "completed",
+        "events": [
+          {
+            "seq": 1,
+            "type": "step-start",
+            "index": 0
+          },
+          {
+            "seq": 2,
+            "type": "text-start",
+            "id": "msg_oauth_2"
+          },
+          {
+            "seq": 3,
+            "type": "text-delta",
+            "id": "msg_oauth_2",
+            "text": "Continued."
+          },
+          {
+            "seq": 4,
+            "type": "text-end",
+            "id": "msg_oauth_2"
+          },
+          {
+            "seq": 5,
+            "type": "step-finish",
+            "index": 0,
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 22,
+              "outputTokens": 3,
+              "totalTokens": 25
+            }
+          },
+          {
+            "seq": 6,
+            "type": "finish",
+            "reason": "stop",
+            "usage": {
+              "inputTokens": 22,
+              "outputTokens": 3,
+              "totalTokens": 25
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

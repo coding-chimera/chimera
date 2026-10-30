@@ -1,0 +1,93 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "job-family",
+  "title": "job family 活跃性、取消级联与 quiescence",
+  "owner_role": "job-family owner",
+  "scope": "family BFS（256 cap）、active 谓词（running ∨ delivery-pending）、waitOwnerQuiescent、取消级联、generation 安全的 markDelivered、dispose finalizer、quota 作用域；不覆盖真实子进程/LLM 任务。",
+  "fixtures": [
+    {
+      "id": "job-family/delivery-pending-active",
+      "path": "fixtures/job-family/delivery-pending-active.json",
+      "kind": "negative",
+      "covers": ["CP-JOB-002", "CP-JOB-003"]
+    },
+    {
+      "id": "job-family/cancel-cascade",
+      "path": "fixtures/job-family/cancel-cascade.json",
+      "kind": "behavior",
+      "covers": ["CP-JOB-001", "CP-JOB-004", "CP-JOB-005"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-JOB-001",
+      "title": "familyIDs = self + 全部后代，BFS + visited set，最多 256 成员",
+      "owner_role": "job-family owner",
+      "fixture": { "status": "existing-domain", "ref": "job-family/cancel-cascade" },
+      "evidence": ["src/session/activity.ts:49-70"]
+    },
+    {
+      "id": "CP-JOB-002",
+      "title": "active = 任一成员非 idle，或 family 拥有 running∨delivery-pending job",
+      "owner_role": "job-family owner",
+      "fixture": { "status": "existing-domain", "ref": "job-family/delivery-pending-active" },
+      "evidence": ["src/session/activity.ts:74-107"]
+    },
+    {
+      "id": "CP-JOB-003",
+      "title": "waitOwnerQuiescent 把 delivery-pending 视为活跃，直到 markDelivered",
+      "owner_role": "job-family owner",
+      "fixture": { "status": "existing-domain", "ref": "job-family/delivery-pending-active" },
+      "evidence": ["src/agent/background-job.ts:620-645"]
+    },
+    {
+      "id": "CP-JOB-004",
+      "title": "取消 cascade 按 family BFS 顺序，父先于子；session.remove 单层清理恰好一次",
+      "owner_role": "job-family owner",
+      "fixture": { "status": "existing-domain", "ref": "job-family/cancel-cascade" },
+      "evidence": ["src/session/run-state.ts", "src/session/session.ts", "src/tool/task-cancel.ts"]
+    },
+    {
+      "id": "CP-JOB-005",
+      "title": "markDelivered 带 generation；过期代次是 no-op，不能误判 delivery 完成",
+      "owner_role": "job-family owner",
+      "fixture": { "status": "existing-domain", "ref": "job-family/cancel-cascade" },
+      "evidence": ["src/agent/background-job.ts:590-618"]
+    },
+    {
+      "id": "CP-JOB-006",
+      "title": "实例 dispose finalizer 把 running job 置 cancelled、完成 done Deferred、触发 onInterrupt，且不回调 cancel()",
+      "owner_role": "job-family owner",
+      "fixture": { "status": "pending", "ref": "pending:job-family/dispose-finalizer" },
+      "evidence": ["src/agent/background-job.ts:730-786"],
+      "note": "需要 Effect scope dispose 与三腿矩阵；生产已有 test/agent/background-job-dispose.test.ts，本包未复制。"
+    },
+    {
+      "id": "CP-JOB-007",
+      "title": "BackgroundJob quota 是 instance-scoped（按目录），不是 process-global；可见性/取消权是 session-scoped",
+      "owner_role": "job-family owner",
+      "fixture": { "status": "pending", "ref": "pending:job-family/quota-scope" },
+      "evidence": ["src/agent/background-job.ts:327-340", "src/effect/instance-state.ts:36-65", "src/tool/task-cancel.ts"],
+      "note": "已知陷阱：一个进程打开 N 个项目目录有 N 个独立池；修复需产品决策，本包只记录。"
+    },
+    {
+      "id": "CP-JOB-008",
+      "title": "独立取消顺序断言：真实取消轨迹中 parent-before-child、每个 job 只 cancel 一次",
+      "owner_role": "job-family owner",
+      "fixture": { "status": "pending", "ref": "pending:job-family/cancel-order-assertion" },
+      "evidence": ["src/session/run-state.ts:175-246"],
+      "note": "待补 fixture。当前 cancel-cascade 的 cancelOrder 直接复用 family BFS 列表，与 family 成员顺序同源；must_not 是文档字段、judge 不执行，因此未独立验证真实取消顺序与 cancel-once。"
+    }
+  ],
+  "new_capabilities": [
+    "delivery-pending 计入活跃的边界 fixture。",
+    "取消级联 BFS 顺序与 stale generation no-op 的行为 fixture。"
+  ],
+  "known_differences": [
+    "fixture 不启动真实任务、不触发 Effect scope dispose；dispose finalizer 与 quota 作用域仍是待补点。",
+    "256 成员上限只在合成 family 中体现，未构造超边界 family 的 quiescence/claim 释放压测。",
+    "cancel-cascade 的 cancelOrder 与 family BFS 同源，未独立验证 parent-before-child / cancel-once；独立取消顺序断言列为待补 fixture（CP-JOB-008）。"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "reorder-swapped-db-writes",
+  "fault_class": "reorder",
+  "label_zh": "乱序",
+  "base_golden": "causality.jsonl",
+  "description": "交换第 1、2 条 db.write；事件身份集合不变但物理顺序与基线不同。",
+  "envelope_status": "complete",
+  "injections": [
+    { "op": "swap-events", "kind": "db.write", "ordinals": [1, 2] }
+  ],
+  "expected": { "status": "fail", "code": "FAULT_REORDER" }
+}

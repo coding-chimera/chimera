@@ -1,0 +1,77 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "prompt-assembly",
+  "title": "system prompt 分段装配顺序与能力层门控",
+  "owner_role": "prompt owner",
+  "scope": "systemSegments 的 send 顺序、agent.prompt override、capability 层、multi-agent、ultra root、input/user 附加段；不覆盖真实 provider 模板字节与 system_context epoch。",
+  "fixtures": [
+    {
+      "id": "prompt-assembly/segment-order",
+      "path": "fixtures/prompt-assembly/segment-order.json",
+      "kind": "behavior",
+      "covers": ["CP-PROMPT-001", "CP-PROMPT-002", "CP-PROMPT-004"]
+    },
+    {
+      "id": "prompt-assembly/override-drops-capability",
+      "path": "fixtures/prompt-assembly/override-drops-capability.json",
+      "kind": "negative",
+      "covers": ["CP-PROMPT-003", "CP-PROMPT-004"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-PROMPT-001",
+      "title": "分段顺序：provider/agent → overlay → capability → multi-agent → ultra → input/system → user/system",
+      "owner_role": "prompt owner",
+      "fixture": { "status": "existing-domain", "ref": "prompt-assembly/segment-order" },
+      "evidence": ["src/session/llm.ts:230-255"]
+    },
+    {
+      "id": "CP-PROMPT-002",
+      "title": "capability 层按权限过滤后的工具集注入：chimera_*、workbrief、browser_open",
+      "owner_role": "prompt owner",
+      "fixture": { "status": "existing-domain", "ref": "prompt-assembly/segment-order" },
+      "evidence": ["src/session/system.ts:155-163"]
+    },
+    {
+      "id": "CP-PROMPT-003",
+      "title": "agent.prompt override 替换整条 provider 栈，并抑制 capability 层",
+      "owner_role": "prompt owner",
+      "fixture": { "status": "existing-domain", "ref": "prompt-assembly/override-drops-capability" },
+      "evidence": ["src/session/llm.ts:239-246"]
+    },
+    {
+      "id": "CP-PROMPT-004",
+      "title": "ultra 层只对非 small、非子会话的 root 注入；模型专属 ultra 层叠加",
+      "owner_role": "prompt owner",
+      "fixture": { "status": "existing-domain", "ref": "prompt-assembly/override-drops-capability" },
+      "evidence": ["src/session/llm.ts:247-248", "src/session/system.ts:186-197"]
+    },
+    {
+      "id": "CP-PROMPT-005",
+      "title": "provider/overlay/ultra 分段 memo 上限 64，FIFO 逐出",
+      "owner_role": "prompt owner",
+      "fixture": { "status": "pending", "ref": "pending:prompt-assembly/segment-memo-bound" },
+      "evidence": ["src/session/system.ts:113-139"],
+      "note": "纯性能/内存边界，需在 Rust 侧用同语义缓存测试；当前不伪造。"
+    },
+    {
+      "id": "CP-PROMPT-006",
+      "title": "experimental.system_context 开启时 epoch 复用 baseline、变更走 delta、压缩跨越替换 baseline",
+      "owner_role": "prompt owner",
+      "fixture": { "status": "pending", "ref": "pending:prompt-assembly/system-context-epoch" },
+      "evidence": ["src/session/system-context.ts", "src/session/context-epoch.ts"],
+      "note": "默认关闭；需要 DB + 多 turn 序列，留待 G0 环境项。"
+    }
+  ],
+  "new_capabilities": [
+    "system prompt 分段 key 顺序的完整合成 fixture。",
+    "agent.prompt override 与 ultra 子会话抑制的负例。"
+  ],
+  "known_differences": [
+    "fixture 不读取真实 txt 内容、不调用 provider；只断言分段 key 顺序与门控。",
+    "分段 memo 上限与 system_context epoch 仍是待补点。"
+  ]
+}

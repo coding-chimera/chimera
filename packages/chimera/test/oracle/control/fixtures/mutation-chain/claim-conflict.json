@@ -1,0 +1,37 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "mutation-chain/claim-conflict",
+  "domain": "mutation-chain",
+  "kind": "behavior",
+  "rule": "mutation.chain",
+  "title": "其他 session family 持有 edit-intent claim 时 mutation 被 claim gate 阻断",
+  "description": "图已初始化、predesign 新鲜，但声明文件与外部 claim 冲突；断言 blockedBy=edit-intent-claim，且该 gate 与风险分类无关。",
+  "input": {
+    "graphInitialized": true,
+    "predesignToolAvailable": true,
+    "files": ["src/example.ts"],
+    "risky": false,
+    "freshPredesign": true,
+    "claimConflict": true,
+    "mutationSuccess": false,
+    "auditRecorded": false,
+    "oracle": { "status": "unknown", "trusted": false, "linked": false },
+    "obligations": []
+  },
+  "expect": {
+    "verdict": "blocked",
+    "code": "EDIT_INTENT_CLAIM",
+    "assertions": [
+      { "path": "blockedBy", "equals": "edit-intent-claim" },
+      { "path": "code", "equals": "EDIT_INTENT_CLAIM" }
+    ],
+    "must_not": ["bypass claims when the file is low risk", "write before the claim is released"]
+  },
+  "provenance": {
+    "evidence": ["src/chimera/provenance.ts:1366-1390", "src/chimera/edit-intent.ts:112-143"],
+    "derivation": "requirePredesignForMutation 先做 EditIntentClaims.checkMutation；冲突时返回 blockedBy=edit-intent-claim，与 risky 无关。",
+    "executed": true
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "format": "chimera.oracle.control.domain",
+  "version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "domain": "compaction",
+  "title": "compaction tail 选择、工具输出裁剪与远程回退",
+  "owner_role": "compaction owner",
+  "scope": "tail_turns/preserve_recent_tokens 选择、PRUNE_PROTECT/PRUNE_MINIMUM 裁剪、受保护工具、远程压缩资格与本地回退；不覆盖真实 LLM 摘要与 provider 网络。",
+  "fixtures": [
+    {
+      "id": "compaction/select-and-prune",
+      "path": "fixtures/compaction/select-and-prune.json",
+      "kind": "behavior",
+      "covers": ["CP-COMPACT-001", "CP-COMPACT-002"]
+    },
+    {
+      "id": "compaction/prune-protected-tool",
+      "path": "fixtures/compaction/prune-protected-tool.json",
+      "kind": "negative",
+      "covers": ["CP-COMPACT-002"]
+    }
+  ],
+  "semantic_points": [
+    {
+      "id": "CP-COMPACT-001",
+      "title": "tail 选择保留最近 tail_turns，预算内从后向前累积；单 turn 可二分切分",
+      "owner_role": "compaction owner",
+      "fixture": { "status": "existing-domain", "ref": "compaction/select-and-prune" },
+      "evidence": ["src/session/compaction.ts:284-333", "src/session/compaction.ts:145-155"]
+    },
+    {
+      "id": "CP-COMPACT-002",
+      "title": "prune 跳过最近 2 个 turn、受保护工具与已压缩 part；超过 PRUNE_PROTECT 且裁剪量 > PRUNE_MINIMUM 才落库",
+      "owner_role": "compaction owner",
+      "fixture": { "status": "existing-domain", "ref": "compaction/prune-protected-tool" },
+      "evidence": ["src/session/compaction.ts:39-40", "src/session/compaction.ts:340-384"]
+    },
+    {
+      "id": "CP-COMPACT-003",
+      "title": "远程压缩按模型能力与 provider 配置判定；失败记录 remote_error 并回退本地压缩",
+      "owner_role": "compaction owner",
+      "fixture": { "status": "pending", "ref": "pending:compaction/remote-fallback" },
+      "evidence": ["src/session/compaction.ts:569-651", "src/session/remote-compaction-registry.ts"],
+      "note": "需要 provider 配置与失败注入；WP-08 覆盖 provider profile，本包只记录回退契约。"
+    },
+    {
+      "id": "CP-COMPACT-004",
+      "title": "compaction summary 带 anchor、保留 tail_start_id，replay 时复用 producer binding",
+      "owner_role": "compaction owner",
+      "fixture": { "status": "pending", "ref": "pending:compaction/summary-anchor" },
+      "evidence": ["src/session/compaction.ts:472-640"],
+      "note": "需要多 turn 消息历史与 DB；当前 fixture 只覆盖选择/裁剪。"
+    },
+    {
+      "id": "CP-COMPACT-005",
+      "title": "process() 设置 time_compacting，ensuring 在中断路径清理",
+      "owner_role": "compaction owner",
+      "fixture": { "status": "pending", "ref": "pending:compaction/time-compacting-cleanup" },
+      "evidence": ["src/session/compaction.ts:735-780"],
+      "note": "需要真实 DB 行与中断注入；WP-03 fault matrix 可复用。"
+    }
+  ],
+  "new_capabilities": [
+    "compaction tail 选择与 prune 阈值的合成 fixture。",
+    "受保护工具不得被裁剪的负例。"
+  ],
+  "known_differences": [
+    "fixture 不执行真实摘要、不读写 message/part 表；远程压缩与 time_compacting 清理仍是待补点。",
+    "PRUNE_PROTECTED_TOOLS 源码当前为 [\"skill\"]；fixture 用 skill 作代表。"
+  ]
+}

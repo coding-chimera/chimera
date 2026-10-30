@@ -1,0 +1,44 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "tool-search/score-and-reveal",
+  "domain": "tool-search",
+  "kind": "behavior",
+  "rule": "tool-search.score",
+  "title": "tool_search 关键词评分、id 升序 tie-break 与压缩边界提升",
+  "description": "合成 browser/click 查询与四个候选；断言 browser_click 得分最高、同分按 id 升序、仅 reveal 时间早于压缩摘要的 tool 被提升。",
+  "input": {
+    "query": "browser click",
+    "limit": 5,
+    "candidates": [
+      { "id": "browser_open", "description": "open a url" },
+      { "id": "browser_click", "description": "click a snapshot ref" },
+      { "id": "browser_close", "description": "close a tab" },
+      { "id": "lsp", "description": "language server references" }
+    ],
+    "denied": [],
+    "agentMode": "subagent",
+    "subagentHidden": ["subagent_model_prefer"],
+    "revealed": ["browser_open", "browser_click"],
+    "revealTimes": { "browser_open": 900, "browser_click": 1100 },
+    "compactionSummaryAt": 1000
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "matches.0.id", "equals": "browser_click" },
+      { "path": "matches", "length": 3 },
+      { "path": "matches.1.id", "equals": "browser_close" },
+      { "path": "matches.2.id", "equals": "browser_open" },
+      { "path": "promoted", "equals": ["browser_open"] },
+      { "path": "candidateCount", "equals": 4 }
+    ],
+    "must_not": ["promote browser_click before the compaction boundary", "rank lsp above browser_click"]
+  },
+  "provenance": {
+    "evidence": ["src/session/tool-search.ts:199-230", "src/session/tool-search.ts:386-399"],
+    "derivation": "按 scoreDeferred 的 3×id/1×description/1×prefix 评分与 revealedAt <= compaction summary 的提升规则构造合成输入。",
+    "executed": true
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "format": "chimera.oracle.control.fixture",
+  "id": "retention/evidence-compaction",
+  "domain": "retention",
+  "kind": "negative",
+  "rule": "retention.evidence",
+  "title": "证据压缩只处理 30 天前、已提交、pass+trusted、非活跃会话且未被 active obligation 引用的事件",
+  "description": "合成五个事件覆盖每种排除条件；断言只有 e-old 被压缩，pending obligation 引用的 e-pending 必须保留。",
+  "input": {
+    "now": "2026-10-30T00:00:00Z",
+    "retentionDays": 30,
+    "activeSession": "s-active",
+    "activeObligationRefs": ["o1"],
+    "events": [
+      {
+        "id": "e-old",
+        "finishedAt": "2026-09-01T00:00:00Z",
+        "committed": true,
+        "session": "s1",
+        "facts": ["f1"],
+        "oracle": { "status": "pass", "trusted": true },
+        "obligationRefs": []
+      },
+      {
+        "id": "e-pending",
+        "finishedAt": "2026-09-01T00:00:00Z",
+        "committed": true,
+        "session": "s2",
+        "facts": ["f2"],
+        "oracle": { "status": "pass", "trusted": true },
+        "obligationRefs": ["o1"]
+      },
+      {
+        "id": "e-active",
+        "finishedAt": "2026-09-01T00:00:00Z",
+        "committed": true,
+        "session": "s-active",
+        "facts": ["f3"],
+        "oracle": { "status": "pass", "trusted": true },
+        "obligationRefs": []
+      },
+      {
+        "id": "e-untrusted",
+        "finishedAt": "2026-09-01T00:00:00Z",
+        "committed": true,
+        "session": "s3",
+        "facts": ["f4"],
+        "oracle": { "status": "pass", "trusted": false },
+        "obligationRefs": []
+      },
+      {
+        "id": "e-uncommitted",
+        "finishedAt": "2026-09-01T00:00:00Z",
+        "committed": false,
+        "session": "s4",
+        "facts": ["f5"],
+        "oracle": { "status": "pass", "trusted": true },
+        "obligationRefs": []
+      }
+    ]
+  },
+  "expect": {
+    "verdict": "pass",
+    "assertions": [
+      { "path": "compacted", "equals": ["e-old"] },
+      { "path": "compacted", "excludes": "e-pending" },
+      { "path": "kept", "length": 4 },
+      { "path": "protectedByObligation", "equals": ["e-pending"] }
+    ],
+    "must_not": ["delete evidence referenced by an active obligation", "delete active-session evidence"]
+  },
+  "provenance": {
+    "evidence": ["src/chimera/store.ts:2700-2788", "src/chimera/store.ts:2794-2830"],
+    "derivation": "compactionCandidates 只接受 pass+trusted oracle、非 activeSession、finished_at <= cutoff 的 committed event，并用 activeObligationText 保护引用事实。",
+    "executed": true
+  }
+}
