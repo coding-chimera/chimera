@@ -97,17 +97,22 @@ works:
     base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
     file_hashes: {}
     contract_rev: cr-2026-10-30-r1
-    model: TBD
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
     variant: auto
     deliverables:
       - packages/chimera/test/oracle/faults/
       - packages/chimera/test/oracle/baselines/
       - packages/chimera/test/oracle/compare/
     dod: "fault matrix 覆盖丢失/乱序/重复/中断/部分写/超时/取消/重放 8 类，每类有注入 fixture 与期望判定；比较器在故意注入下必须报错（meta-test）；统计层给出同环境重复基线与噪声带"
-    oracle_commands: []
-    status: queued
-    attempt: 0
-    result_refs: []
+    oracle_commands:
+      - "cd packages/chimera && bun test --timeout 30000 test/oracle/compare/compare.test.ts"
+      - "cd packages/chimera && bun test --timeout 30000 test/oracle/baselines/baselines.test.ts"
+      - "cd packages/chimera && bun run test/oracle/compare/run.ts"
+      - "cd packages/chimera && bun run test/oracle/baselines/measure.ts --runs 5 --check"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正：同环境门 BASELINE_ENV_MISMATCH、timeout/cancel 补 transcript 级注入、suite 结构化 fail；duration 门对同机负载敏感仅作同环境检查"
     approved_delta: []
 
   - work_id: WP-04
@@ -223,16 +228,19 @@ works:
     base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
     file_hashes: {}
     contract_rev: cr-2026-10-30-r1
-    model: TBD
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
     variant: auto
     deliverables:
       - packages/chimera/specs/rust-host/provider/
       - packages/chimera/test/oracle/provider/
     dod: "profile 表至少列 Chat/API-key、Responses/API-key、Responses/OAuth、WS、native tool_search、compaction 六项，每项标 genai 可接管/需兼容/未覆盖；含 hosted tools、重试与刷新归属；对账保序；只出规格，不实现生产 transport"
-    oracle_commands: []
-    status: queued
-    attempt: 0
-    result_refs: []
+    oracle_commands:
+      - "cd packages/chimera && bun run test/oracle/provider/run.ts"
+      - "cd packages/chimera && bun test --timeout 30000 test/oracle/provider/provider.test.ts"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正：native tool_search fixture 补 call 回放+校验、重复 output 检测、引用行号；合成 fixture 不验证真实 chunk 边界"
     approved_delta: []
 
   - work_id: WP-09
@@ -246,16 +254,19 @@ works:
     base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
     file_hashes: {}
     contract_rev: cr-2026-10-30-r1
-    model: TBD
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
     variant: auto
     deliverables:
       - packages/chimera/specs/rust-host/plugin/
       - packages/chimera/test/oracle/plugin/
     dod: "config/bootstrap、tool.definition、chat.params/headers、tool.before/after、auth refresh 六类各列顺序、可变性、取消、失败策略；≥1 条完整轨迹 replay；npm 单一 owner；不实现生产 sidecar"
-    oracle_commands: []
-    status: queued
-    attempt: 0
-    result_refs: []
+    oracle_commands:
+      - "cd packages/chimera && bun test --timeout 30000 test/oracle/plugin/trajectory.test.ts"
+      - "cd packages/chimera && bun run test/oracle/plugin/run.ts"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正：verifier 十层计数一致、§2.1 输入归一化约定（snake_case↔camelCase 映射）；sidecar-topology.md:150 陈旧引用待后续小修"
     approved_delta: []
 
   - work_id: WP-10
@@ -269,14 +280,17 @@ works:
     base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
     file_hashes: {}
     contract_rev: cr-2026-10-30-r1
-    model: TBD
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
     variant: auto
     deliverables:
       - packages/chimera/test/oracle/control/
       - packages/chimera/specs/rust-host/control/
     dod: "343/343 语义点每个有 owner + fixture（已有/待补/不适用），不允许空 owner；覆盖 config/bootstrap/skills/instructions/workbrief/goal/prompt assembly/tool_search/compaction/mutation 链/MCP 三 transport/job family/retention；新增能力与已知差异单列"
-    oracle_commands: []
-    status: queued
-    attempt: 0
-    result_refs: []
+    oracle_commands:
+      - "cd packages/chimera && bun test/oracle/control/control-check.ts"
+      - "cd packages/chimera && bun test --timeout 30000 test/oracle/control/control.test.ts"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正：existing→existing-domain 口径正名、7 处归档行号漂移修正、cancel-cascade 同源限制显式化+CP-JOB-008 待补；P1/P2（120 mechanical 逐点、existing-domain 口径）待 G0 拍板"
     approved_delta: []
