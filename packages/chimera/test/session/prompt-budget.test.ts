@@ -37,7 +37,7 @@ const TOOL_BUDGETS = {
   "task.txt": 8158, // 2026-10-28 re-record
   "swarm.txt": 10713, // 2026-10-28 re-record
   "workbrief.txt": 6546,
-  "orchestrate.txt": 5223, // 2026-10-28 re-record (new budget)
+  "orchestrate.txt": 5804, // 2026-10-30 re-record (compaction-window wording)
   "shell/shell.txt": 7852,
 } as const
 
@@ -103,7 +103,17 @@ const TOOL_BUDGETS = {
 // the deferred set, tool_search.txt grows by 39 B, and the browser workflow
 // prompt gains the evaluate escape hatch. Floor 113526 -> 114668;
 // DEFERRED_TXT_BUDGET 15028 -> 16131; TOOL_SEARCH_TXT_BUDGET 2030 -> 2069.
-const TOOL_TOTAL_BUDGET = 114668
+// 2026-10-30 re-record (structured-output correction retries): orchestrate.txt
+// (5223 -> 5483) now documents the same-session corrective re-prompt; total
+// floor 114668 -> 114928.
+// 2026-10-30 re-record (structured-output fallback): orchestrate.txt
+// (5483 -> 5750) now documents exhaustion text fallback, the 8KB/outputFile
+// cap, and the retry-window compaction rule; total floor 114928 -> 115195.
+// 2026-10-30 re-record (compaction-window wording): orchestrate.txt
+// (5750 -> 5804) now states that the compaction window only decides whether
+// retrying continues, while a round with valid structured output returns
+// directly; total floor 115195 -> 115249.
+const TOOL_TOTAL_BUDGET = 115249
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the

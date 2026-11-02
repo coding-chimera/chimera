@@ -7,7 +7,9 @@ import { ModelIdentity } from "@/provider/model-identity"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { MessageV2 } from "@/session/message-v2"
-import { MessageID, SessionID } from "@/contracts/session-ids"
+import { MessageID, PartID, SessionID } from "@/contracts/session-ids"
+import { LLM } from "@/session/llm"
+import { Truncate } from "@/tool/truncate"
 import { Session } from "@/session/session"
 import { NotFoundError } from "@/storage/storage"
 import { errorMessage } from "@/util/error"
@@ -24,6 +26,35 @@ import { deriveSubagentSessionPermission } from "./subagent-permissions"
 
 /** Default progress-notification cadence while a dispatch is parked on owned background jobs. */
 const PARK_PROGRESS_INTERVAL_MS = 30_000
+
+/** Inline character cap for a structured-output text fallback; the full text is saved when it exceeds this. */
+const FALLBACK_TEXT_MAX_CHARS = 8 * 1024
+
+/** Event/UI annotation prepended to a fallback result; the worker still counts as completed. */
+const EXHAUSTED_FALLBACK_NOTE = "schema retries exhausted, fell back to text"
+const COMPACTION_FALLBACK_NOTE = "schema retries interrupted by compaction, fell back to text"
+
+function lastTextPart(message: MessageV2.WithParts) {
+  return message.parts.findLast((part): part is MessageV2.TextPart => part.type === "text")
+}
+
+/**
+ * Corrective user turn sent to a child session whose previous turn ended
+ * without valid structured output. It repeats the schema and the failure so
+ * the model can call StructuredOutput immediately instead of redoing the task.
+ */
+function structuredOutputCorrectionPrompt(schema: Record<string, unknown>, failure: string) {
+  return [
+    "Your previous turn ended without valid structured output.",
+    "",
+    `Failure: ${failure}`,
+    "",
+    "Return the final answer again, but this time call the StructuredOutput tool immediately with a JSON object that conforms to this schema:",
+    JSON.stringify(schema, null, 2),
+    "",
+    "Do not reply with plain text and do not continue the task.",
+  ].join("\n")
+}
 
 export interface SubagentPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
@@ -388,6 +419,114 @@ export const SubagentDispatch = Effect.gen(function* () {
       return latest.value
     })
 
+    // A json_schema turn that ends without structured output is recoverable:
+    // the same child session gets a corrective user turn (same format) instead
+    // of failing the whole dispatch. A StructuredOutput tool call that failed
+    // schema validation leaves the validation text on the tool part; prefer it
+    // over the generic "Model did not produce structured output" message.
+    // A non-structured assistant error keeps the existing fail-fast semantics.
+    const structuredFailure = Effect.fnUntraced(function* (message: MessageV2.WithParts, after: MessageID) {
+      if (message.info.role === "assistant" && message.info.structured !== undefined) return undefined
+      const error = message.info.role === "assistant" ? message.info.error : undefined
+      if (error && !MessageV2.StructuredOutputError.isInstance(error)) return undefined
+      const failed = yield* sessions
+        .findMessage(
+          nextSession.id,
+          (candidate) =>
+            candidate.info.id > after &&
+            candidate.parts.some(
+              (part) =>
+                part.type === "tool" &&
+                part.tool === LLM.STRUCTURED_OUTPUT_TOOL_NAME &&
+                part.state.status === "error",
+            ),
+        )
+        .pipe(Effect.map(Option.getOrUndefined))
+      const validation = failed?.parts.findLast(
+        (part) =>
+          part.type === "tool" && part.tool === LLM.STRUCTURED_OUTPUT_TOOL_NAME && part.state.status === "error",
+      )
+      if (validation?.type === "tool" && validation.state.status === "error") return validation.state.error
+      if (error) return errorMessage(error)
+      return "The StructuredOutput tool was not called before the turn ended."
+    })
+
+    // A schema retry window can be cut short by compaction. The child prompt
+    // loop may install an auto compaction between retry rounds (pending) or
+    // execute one during a retry round (completed); either way the structured
+    // answer we were retrying for is no longer the useful result. Pending
+    // compactions are skipped by the corrective user turn's newer message (the
+    // loop treats the old compaction task as stale), and completed ones are
+    // accepted without rollback — this check only decides to stop retrying and
+    // return the text read before the compaction.
+    const retryWindowCompaction = Effect.fnUntraced(function* (after: MessageID) {
+      const messages = yield* sessions.messages({ sessionID: nextSession.id })
+      const summarized = new Set(
+        messages.flatMap((message) =>
+          message.info.role === "assistant" && message.info.summary === true && message.info.finish && !message.info.error
+            ? [message.info.parentID]
+            : [],
+        ),
+      )
+      for (const message of messages) {
+        if (message.info.id <= after || message.info.role !== "user") continue
+        const compaction = message.parts.find(
+          (part): part is MessageV2.CompactionPart => part.type === "compaction",
+        )
+        if (!compaction?.auto) continue
+        return summarized.has(message.info.id) ? ("completed" as const) : ("pending" as const)
+      }
+      return undefined
+    })
+
+    const newestMessageID = Effect.fnUntraced(function* (fallback: MessageID) {
+      const messages = yield* sessions.messages({ sessionID: nextSession.id })
+      return messages.at(-1)?.info.id ?? fallback
+    })
+
+    // Text fallback for an exhausted/interrupted schema retry: the inline text
+    // is a character-capped head of the body (line-based truncation would drop
+    // the body entirely for a single long line); the full text is written
+    // through Truncate and the inline tail carries the output path. The
+    // annotation part is persisted on the child session so the event/UI stream
+    // shows why a completed worker returned text instead of structured output.
+    const textFallback = Effect.fnUntraced(function* (message: MessageV2.WithParts, note: string) {
+      const text = lastTextPart(message)?.text ?? ""
+      const content = text.length === 0 ? note : `${note}\n\n${text}`
+      const truncate = Option.getOrUndefined(yield* Effect.serviceOption(Truncate.Service))
+      const overflow = content.length > FALLBACK_TEXT_MAX_CHARS
+      const outputPath =
+        overflow && truncate
+          ? yield* truncate.write(content).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+          : undefined
+      const inline = overflow
+        ? [
+            content.slice(0, FALLBACK_TEXT_MAX_CHARS),
+            `...output truncated (${content.length - FALLBACK_TEXT_MAX_CHARS} chars omitted)...`,
+            ...(outputPath ? [`Full output saved to: ${outputPath}`] : []),
+          ].join("\n\n")
+        : content
+      const annotation: MessageV2.TextPart = {
+        id: PartID.ascending(),
+        messageID: message.info.id,
+        sessionID: message.info.sessionID,
+        type: "text",
+        text: note,
+        synthetic: true,
+        ignored: true,
+        metadata: { schema_fallback: true },
+        time: { start: Date.now(), end: Date.now() },
+      }
+      yield* sessions.updatePart(annotation).pipe(Effect.ignoreCause({ log: true }))
+      const parts = [...message.parts]
+      const index = parts.findLastIndex((part) => part.type === "text")
+      if (index >= 0 && parts[index].type === "text") parts[index] = { ...parts[index], text: inline }
+      else parts.push({ ...annotation, text: inline })
+      const info =
+        message.info.role === "assistant" && message.info.error ? { ...message.info, error: undefined } : message.info
+      return { message: { info, parts }, outputPath }
+    })
+
     const runWork = Effect.gen(function* () {
       if (input.abort.aborted) {
         yield* (input.onStarted?.({ sessionId: nextSession.id, model: prepared.resolved.model, execution }) ?? Effect.void)
@@ -410,41 +549,117 @@ export const SubagentDispatch = Effect.gen(function* () {
                 ? { ...part, metadata: { ...part.metadata, memorySource: "delegated" } }
                 : part,
             )
-            const result = yield* input.promptOps.prompt({
-              messageID,
-              sessionID: nextSession.id,
-              model: {
-                modelID: prepared.resolved.model.modelID,
-                providerID: prepared.resolved.model.providerID,
-              },
-              variant: prepared.resolved.model.variant,
-              agent: prepared.subagent.name,
-              tools: {
-                ...(prepared.subagent.permission.some((rule) => rule.permission === "todowrite")
-                  ? {}
-                  : { todowrite: false }),
-                ...(prepared.subagent.permission.some((rule) => rule.permission === "task")
-                  ? {}
-                  : { task: false, chimera_swarm: false }),
-                ...Object.fromEntries(
-                  (prepared.config.experimental?.primary_tools ?? []).map((item) => [item, false]),
-                ),
-                ...(atDepthCap ? { task: false, chimera_swarm: false, orchestrate: false } : {}),
-              },
-              parts,
-              ...(input.format ? { format: input.format } : {}),
-            })
-            firstStreamedDeltaAt = firstStreamedDelta(result.parts)
-            if (input.abort.aborted) return yield* Effect.interrupt
-            const finalResult = yield* settleOwnedBackgroundJobs(result)
-            if (finalResult.info.role === "assistant" && finalResult.info.error) {
-              return yield* Effect.fail(
-                new Error(
-                  `Subagent ${prepared.subagent.name} (${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}) failed: ${errorMessage(finalResult.info.error)}`,
-                ),
-              )
+            // Each iteration is one full child round (prompt -> park on owned
+            // background jobs -> read the final assistant message). A round
+            // without structured output re-prompts the SAME child session with
+            // a corrective user message carrying the same format, so
+            // StructuredOutput is injected again; no new session and no
+            // maxTotalAgents slot is consumed. Exhaustion degrades to a text
+            // fallback (a completed worker) when the child produced text.
+            const structuredFormat = input.format?.type === "json_schema" ? input.format : undefined
+            const maxStructuredRetries = structuredFormat?.retryCount ?? 2
+            let roundParts: SessionPrompt.PromptInput["parts"] = parts
+            let roundMessageID = messageID
+            let structuredRetries = 0
+            // Baseline is taken after the first failed round so a compaction
+            // that belongs to the child's normal work never counts. Only a
+            // compaction boundary newer than this baseline falls inside the
+            // retry window.
+            let retryBaseline: MessageID | undefined
+            let retryText: MessageV2.WithParts | undefined
+            for (;;) {
+              if (input.abort.aborted) return yield* Effect.interrupt
+              // Between retry rounds: a pending auto compaction is skipped
+              // (the corrective user turn makes its task stale, so the loop
+              // never processes it) and the retry round is cancelled.
+              if (
+                structuredRetries > 0 &&
+                retryBaseline !== undefined &&
+                retryText !== undefined &&
+                (yield* retryWindowCompaction(retryBaseline)) !== undefined
+              ) {
+                return { message: retryText, fallback: COMPACTION_FALLBACK_NOTE }
+              }
+              const result = yield* input.promptOps.prompt({
+                messageID: roundMessageID,
+                sessionID: nextSession.id,
+                model: {
+                  modelID: prepared.resolved.model.modelID,
+                  providerID: prepared.resolved.model.providerID,
+                },
+                variant: prepared.resolved.model.variant,
+                agent: prepared.subagent.name,
+                tools: {
+                  ...(prepared.subagent.permission.some((rule) => rule.permission === "todowrite")
+                    ? {}
+                    : { todowrite: false }),
+                  ...(prepared.subagent.permission.some((rule) => rule.permission === "task")
+                    ? {}
+                    : { task: false, chimera_swarm: false }),
+                  ...Object.fromEntries(
+                    (prepared.config.experimental?.primary_tools ?? []).map((item) => [item, false]),
+                  ),
+                  ...(atDepthCap ? { task: false, chimera_swarm: false, orchestrate: false } : {}),
+                },
+                parts: roundParts,
+                ...(input.format ? { format: input.format } : {}),
+              })
+              firstStreamedDeltaAt ??= firstStreamedDelta(result.parts)
+              if (input.abort.aborted) return yield* Effect.interrupt
+              // The park covers the whole round: delivery can wake the child
+              // for another turn that produces the structured answer.
+              const finalResult = yield* settleOwnedBackgroundJobs(result)
+              const failure = structuredFormat ? yield* structuredFailure(finalResult, roundMessageID) : undefined
+              if (failure === undefined || structuredFormat === undefined) {
+                if (finalResult.info.role === "assistant" && finalResult.info.error) {
+                  const interrupted =
+                    retryBaseline === undefined ? undefined : yield* retryWindowCompaction(retryBaseline)
+                  if (interrupted !== undefined) {
+                    const source =
+                      retryText ?? ((lastTextPart(finalResult)?.text ?? "").length > 0 ? finalResult : undefined)
+                    if (source) return { message: source, fallback: COMPACTION_FALLBACK_NOTE }
+                  }
+                  return yield* Effect.fail(
+                    new Error(
+                      `Subagent ${prepared.subagent.name} (${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}) failed: ${errorMessage(finalResult.info.error)}`,
+                    ),
+                  )
+                }
+                return { message: finalResult }
+              }
+              // A retry round that completed an auto compaction is discarded
+              // (accepted, not rolled back): return the last text read before
+              // it instead of continuing to retry against post-compaction state.
+              if (retryBaseline !== undefined) {
+                const interrupted = yield* retryWindowCompaction(retryBaseline)
+                if (interrupted !== undefined) {
+                  const source =
+                    retryText ?? ((lastTextPart(finalResult)?.text ?? "").length > 0 ? finalResult : undefined)
+                  if (source) return { message: source, fallback: COMPACTION_FALLBACK_NOTE }
+                }
+              }
+              if (structuredRetries >= maxStructuredRetries) {
+                // Prefer the newest round's text, but fall back to the nearest
+                // earlier retry round that produced text: a later round can end
+                // without any text even though the work was already answered.
+                const source = (lastTextPart(finalResult)?.text ?? "").length > 0 ? finalResult : retryText
+                if (source) {
+                  return { message: source, fallback: EXHAUSTED_FALLBACK_NOTE }
+                }
+                return yield* Effect.fail(
+                  new Error(
+                    `Subagent ${prepared.subagent.name} (${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}) failed: ${failure} (structured-output retries exhausted after ${structuredRetries})`,
+                  ),
+                )
+              }
+              if (retryBaseline === undefined) retryBaseline = yield* newestMessageID(roundMessageID)
+              if ((lastTextPart(finalResult)?.text ?? "").length > 0) retryText = finalResult
+              structuredRetries += 1
+              // Same child session, fresh user turn: the retry consumes no new
+              // delegation slot and the persisted child history stays intact.
+              roundMessageID = MessageID.ascending()
+              roundParts = [{ type: "text", text: structuredOutputCorrectionPrompt(structuredFormat.schema, failure) }]
             }
-            return finalResult
           }),
         (_, exit) =>
           Effect.gen(function* () {
@@ -464,14 +679,15 @@ export const SubagentDispatch = Effect.gen(function* () {
         const durationMs = Math.max(0, Date.now() - startedAt)
         const ttftMs = firstStreamedDeltaAt === undefined ? undefined : Math.max(0, firstStreamedDeltaAt - startedAt)
         if (Exit.isSuccess(exit)) {
+          const info = exit.value.message.info
           const usage =
-            exit.value.info.role === "assistant"
+            info.role === "assistant"
               ? {
-                  input: exit.value.info.tokens.input,
-                  output: exit.value.info.tokens.output,
-                  reasoning: exit.value.info.tokens.reasoning,
-                  cacheRead: exit.value.info.tokens.cache.read,
-                  cacheWrite: exit.value.info.tokens.cache.write,
+                  input: info.tokens.input,
+                  output: info.tokens.output,
+                  reasoning: info.tokens.reasoning,
+                  cacheRead: info.tokens.cache.read,
+                  cacheWrite: info.tokens.cache.write,
                 }
               : undefined
           const finishedExecution: ModelTelemetry.Execution = {
@@ -508,6 +724,11 @@ export const SubagentDispatch = Effect.gen(function* () {
       }),
     )
 
+    // A text fallback is a completed result, not a failure: the child text is
+    // returned inline (capped) and any overflow is saved to an output file.
+    const degraded = result.fallback === undefined ? undefined : yield* textFallback(result.message, result.fallback)
+    const message = degraded?.message ?? result.message
+
     return {
       title: input.description,
       sessionId: nextSession.id,
@@ -518,13 +739,14 @@ export const SubagentDispatch = Effect.gen(function* () {
         sessionId: nextSession.id,
         model: prepared.resolved.model,
         execution,
+        ...(degraded?.outputPath === undefined ? {} : { outputPath: degraded.outputPath }),
       },
-      message: result,
+      message,
       output: [
         `task_id: ${nextSession.id} (for resuming to continue this task if needed)`,
         "",
         "<task_result>",
-        result.parts.findLast((item) => item.type === "text")?.text ?? "",
+        message.parts.findLast((item) => item.type === "text")?.text ?? "",
         "</task_result>",
       ].join("\n"),
     }

@@ -457,6 +457,41 @@ const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: strin
   return msg
 })
 
+// A synthetic runtime-context message shaped like ensureRuntimeContext's
+// persistence: a deliberately stale hash makes the next loop step write an
+// update, the inter-step message that used to shadow the turn owner's format.
+const runtimeContextMessage = Effect.fn("test.runtimeContextMessage")(function* (
+  sessionID: SessionID,
+  hash: string,
+) {
+  const session = yield* Session.Service
+  const msg = yield* session.updateMessage({
+    id: MessageID.ascending(),
+    role: "user",
+    sessionID,
+    agent: "build",
+    model: ref,
+    time: { created: Date.now() },
+  })
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: msg.id,
+    sessionID,
+    type: "text",
+    text: "<system-reminder>runtime context</system-reminder>",
+    synthetic: true,
+    metadata: {
+      runtimeContext: {
+        schemaVersion: 1,
+        kind: "snapshot",
+        hash,
+        sections: { workBrief: hash },
+      },
+    },
+  })
+  return msg
+})
+
 const remoteCompactionLock = Effect.fn("test.remoteCompactionLock")(function* (
   sessionID: SessionID,
   model = { providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-5") },
@@ -3793,6 +3828,88 @@ it.live("loop-top turn end maps a failed extraction to StructuredOutputError", (
       if (result.info.role !== "assistant") return
       expect(result.info.structured).toBeUndefined()
       expect(result.info.error?.name).toBe("StructuredOutputError")
+    }),
+    { config: nativeStructuredOutputCfg },
+  ),
+)
+
+it.live("structured output survives a runtime-context update between loop steps", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const parent = yield* sessions.create({ title: "Parent" })
+      const child = yield* sessions.create({ title: "Child", parentID: parent.id })
+      // A stale runtime-context snapshot forces the first step to persist an
+      // update, so step two's `lastUser` is synthetic and carries no format.
+      yield* runtimeContextMessage(child.id, "stale-hash")
+      yield* prompt.prompt({
+        sessionID: child.id,
+        agent: "build",
+        model: ref,
+        noReply: true,
+        format: { type: "json_schema", schema: nativeSchema, retryCount: 0 },
+        parts: [{ type: "text", text: "What is 2 + 2?" }],
+      })
+      yield* llm.tool("glob", { pattern: "**/*.txt" })
+      yield* llm.tool("StructuredOutput", { answer: 4 })
+
+      const result = yield* prompt.loop({ sessionID: child.id })
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role !== "assistant") return
+      expect(result.info.structured).toEqual({ answer: 4 })
+      expect(result.info.error).toBeUndefined()
+
+      const updates = runtimeContextParts(yield* sessions.messages({ sessionID: child.id })).filter(
+        (part) => part.metadata?.runtimeContext.kind === "update",
+      )
+      expect(updates.length).toBeGreaterThan(0)
+
+      const inputs = (yield* llm.inputs).filter(
+        (body) => !JSON.stringify(body).includes("Generate a title for this conversation"),
+      )
+      expect(inputs.length).toBeGreaterThanOrEqual(2)
+      const second = inputs[1]!
+      const tools = Array.isArray(second.tools) ? (second.tools as Array<Record<string, any>>) : []
+      expect(tools.some((entry) => entry?.function?.name === "StructuredOutput")).toBe(true)
+      expect(JSON.stringify(second)).toContain("You MUST use the StructuredOutput tool")
+      expect(second.tool_choice).toBe("required")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("loop-top native extraction uses the turn owner format when runtime context tops lastUser", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const parent = yield* sessions.create({ title: "Parent" })
+      const chat = yield* sessions.create({ title: "Loop-top structured output", parentID: parent.id })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        noReply: true,
+        format: { type: "json_schema", schema: nativeSchema, retryCount: 0 },
+        parts: [{ type: "text", text: "What is 2 + 2?" }],
+      })
+      // The newest user message is synthetic; the format lives on the owner.
+      yield* runtimeContextMessage(chat.id, "stale-hash")
+      yield* seedFinishedTurn(sessions, chat.id, "final report after exploration")
+      yield* llm.text('{"answer":4}')
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role !== "assistant") return
+      expect(result.info.structured).toEqual({ answer: 4 })
+      expect(result.info.error).toBeUndefined()
+
+      const inputs = (yield* llm.inputs).filter(
+        (body) => !JSON.stringify(body).includes("Generate a title for this conversation"),
+      )
+      expect(inputs).toHaveLength(1)
+      expect(inputs[0]?.response_format).toBeDefined()
     }),
     { config: nativeStructuredOutputCfg },
   ),

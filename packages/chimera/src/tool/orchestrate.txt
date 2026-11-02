@@ -2,7 +2,7 @@ Run a model-authored orchestration program that fans out subagents in one call. 
 
 `code` is the body of an async JavaScript function (top-level `await` and `return` are allowed). It receives one binding object, `orche`:
 
-- `await orche.agent({ prompt, agent?, model?, label?, schema? })` dispatches one subagent and resolves to `{ text }`, or `{ structured }` when `schema` is given, or `null` when that subagent fails.
+- `await orche.agent({ prompt, agent?, model?, label?, schema? })` dispatches one subagent and resolves to `{ text }`, or `{ structured }` when `schema` is given, or `null` when that subagent fails. A `schema` turn that ends without valid structured output gets a corrective user turn in the same child session (same schema, default 2 retries). If retries are exhausted but the child produced text, the call resolves to `{ text }` (a fallback: inline text is capped near 8KB, and when truncated the returned text carries the `outputFile` path for the full text) instead of `null` — `structured` is then undefined. The compaction-window rule only decides whether retrying continues; a round that already produced valid structured output returns directly, unaffected by compaction.
 - `await orche.parallel([() => orche.agent(...), ...])` runs the tasks concurrently and returns results in input order; an individual failure becomes `null`.
 - `orche.pipeline([stage, ...])([item, ...])` runs every item through the stages in order; a failed stage yields `null` for that item and skips its remaining stages.
 - `orche.log(...values)` or `console.log(...)` appends a line to the tool result log.

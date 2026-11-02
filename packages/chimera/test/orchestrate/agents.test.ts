@@ -19,6 +19,7 @@ import {
   type OrchestrationLimits,
 } from "@/orchestrate/host-bindings"
 import type { JsonValue } from "@/orchestrate/protocol"
+import { Truncate } from "@/tool/truncate"
 import { TestInstance, disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
@@ -124,6 +125,7 @@ const it = testEffect(
     Session.defaultLayer,
     DelegationLimiter.defaultLayer,
     BackgroundJob.defaultLayer,
+    Truncate.defaultLayer,
     testProvider.layer,
     promptLayer,
   ),
@@ -336,6 +338,108 @@ describe("orchestrate host bindings", () => {
       expect(promptInputs[0].format).toEqual({ type: "json_schema", schema, retryCount: 2 })
       expect(events.map((event) => event.type)).toEqual(["start", "finish"])
       expect(events[0].label).toBe("structured")
+      yield* orche.disposeAll()
+    }),
+  )
+
+  it.instance("re-prompts a schema turn that ends without structured output", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const schema = {
+        type: "object",
+        properties: { answer: { type: "string" } },
+        required: ["answer"],
+      }
+      const structured = { answer: "42" }
+      let calls = 0
+      promptFn = (input) => {
+        calls += 1
+        return Effect.succeed(calls === 1 ? reply(input, "plain text") : reply(input, "", { structured }))
+      }
+      const orche = yield* bind(parent, { maxTotalAgents: 4, maxConcurrent: 2 })
+
+      const result = yield* callAgent(orche.bindings.orche.agent, {
+        prompt: "structured task",
+        schema,
+        label: "retry",
+      })
+
+      expect(result).toEqual({ structured })
+      expect(promptInputs).toHaveLength(2)
+      expect(promptInputs[1].sessionID).toBe(promptInputs[0].sessionID)
+      expect(promptInputs[1].format).toEqual({ type: "json_schema", schema, retryCount: 2 })
+      expect(events.map((event) => event.type)).toEqual(["start", "finish"])
+      yield* orche.disposeAll()
+    }),
+  )
+
+  it.instance("falls back to text when structured-output retries are exhausted", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const schema = {
+        type: "object",
+        properties: { answer: { type: "string" } },
+        required: ["answer"],
+      }
+      promptFn = (input) =>
+        Effect.succeed(
+          reply(input, "plain text", {
+            error: {
+              name: "StructuredOutputError",
+              data: { message: "expected object at answer", retries: 0 },
+            },
+          }),
+        )
+      const orche = yield* bind(parent, { maxTotalAgents: 4, maxConcurrent: 2 })
+
+      const result = yield* callAgent(orche.bindings.orche.agent, { prompt: "structured task", schema })
+
+      const text =
+        typeof result === "object" && result !== null && !Array.isArray(result)
+          ? (result as { text?: unknown }).text
+          : undefined
+      expect(typeof text).toBe("string")
+      if (typeof text !== "string") return
+      expect(text).toContain("plain text")
+      expect(text).toContain("schema retries exhausted, fell back to text")
+      expect((result as { structured?: unknown }).structured).toBeUndefined()
+      expect(promptInputs).toHaveLength(3)
+      expect(events.at(-1)?.status).toBe("completed")
+      yield* orche.disposeAll()
+    }),
+  )
+
+  it.instance("caps a fallback inline and exposes the output file path", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const schema = {
+        type: "object",
+        properties: { answer: { type: "string" } },
+        required: ["answer"],
+      }
+      const long = "0123456789".repeat(1_500)
+      promptFn = (input) => Effect.succeed(reply(input, long))
+      const orche = yield* bind(parent, { maxTotalAgents: 4, maxConcurrent: 2 })
+
+      const result = yield* callAgent(orche.bindings.orche.agent, { prompt: "structured task", schema })
+
+      const text =
+        typeof result === "object" && result !== null && !Array.isArray(result)
+          ? (result as { text?: unknown }).text
+          : undefined
+      expect(typeof text).toBe("string")
+      if (typeof text !== "string") return
+      expect(long).not.toContain("\n")
+      expect(text).toContain("schema retries exhausted, fell back to text")
+      // The inline fallback must keep the body prefix of a single long line.
+      expect(text).toContain(long.slice(0, 100))
+      expect(text).toContain("Full output saved to:")
+      const outputPath = /Full output saved to: (.+)/.exec(text)?.[1]
+      expect(outputPath).toBeString()
+      if (!outputPath) return
+      const saved = yield* Effect.promise(() => Bun.file(outputPath).text())
+      expect(saved).toContain(long)
+      expect(events.at(-1)?.status).toBe("completed")
       yield* orche.disposeAll()
     }),
   )

@@ -145,10 +145,21 @@ function turnMadeToolCalls(messages: MessageV2.WithParts[], afterID: MessageID) 
 }
 
 // The user message that owns the current turn: the loop's `lastUser` may be a
-// runtime-context message appended after the real request, so the turn
-// boundary for goal continuation is the newest non-runtime-context user message.
-function goalTurnOwner(messages: MessageV2.WithParts[]) {
-  return messages.findLast((msg) => msg.info.role === "user" && !isRuntimeContextMessage(msg))
+// runtime-context message appended after the real request, so the turn boundary
+// (goal continuation, structured-output format) is the newest non-runtime-context
+// user message.
+function isTurnOwner(msg: MessageV2.WithParts): msg is MessageV2.WithParts & { info: MessageV2.User } {
+  return msg.info.role === "user" && !isRuntimeContextMessage(msg)
+}
+
+function turnOwnerMessage(messages: MessageV2.WithParts[]) {
+  return messages.findLast(isTurnOwner)
+}
+
+// Structured-output format belongs to the turn owner: a runtime-context message
+// persisted between loop steps can occupy `lastUser` and carries no format.
+function turnOwnerFormat(messages: MessageV2.WithParts[]) {
+  return turnOwnerMessage(messages)?.info.format
 }
 
 // The terminal tool outcomes of a finished turn, in order: a tool part whose
@@ -802,7 +813,7 @@ export const layer = Layer.effect(
       if (input.session.parentID) return false
       // The turn owner (not `lastUser`, which may be an appended runtime-context
       // message) carries the user intent the continuation streak is measured on.
-      const turnOwner = goalTurnOwner(input.messages)
+      const turnOwner = turnOwnerMessage(input.messages)
       const owner = turnOwner?.info.role === "user" ? turnOwner.info : input.lastUser
       // Structured-output requests are one-shot flows; do not extend them.
       if (owner.format?.type === "json_schema") return false
@@ -907,7 +918,7 @@ export const layer = Layer.effect(
       // family jobs.
       if (yield* activity.isActive(sessionID)) return false
       // Read a bounded tail first; fall back to the full compacted history only
-      // when the window carries no non-runtime-context user message (goalTurnOwner
+      // when the window carries no non-runtime-context user message (turnOwnerMessage
       // would then be missing). Older messages are irrelevant to the goal checks,
       // which scan forward from the newest user, so truncation is safe.
       const recent = MessageV2.recent({ sessionID, limit: GOAL_KICK_WINDOW })
@@ -2966,21 +2977,24 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       session: Session.Info
     }) {
       const msgs = yield* MessageV2.filterCompactedEffect(input.sessionID)
-      const { lastUser, lastAssistant } = inspectLoopMessages(msgs)
-      if (lastUser?.format?.type !== "json_schema") return
+      const { lastAssistant } = inspectLoopMessages(msgs)
+      const turnOwner = turnOwnerMessage(msgs)
+      if (!turnOwner) return
+      const format = turnOwner.info.format
+      if (format?.type !== "json_schema") return
       if (!lastAssistant || lastAssistant.role !== "assistant") return
       if (lastAssistant.structured !== undefined || lastAssistant.error) return
       if (!lastAssistant.finish || ["tool-calls", "unknown"].includes(lastAssistant.finish)) return
-      const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, input.sessionID)
+      const model = yield* getModel(turnOwner.info.model.providerID, turnOwner.info.model.modelID, input.sessionID)
       const providerInfo = yield* provider.getProvider(model.providerID)
       if (!LLM.nativeStructuredOutputWire(model, providerInfo?.wire_api)) return
-      const agent = yield* agents.get(lastUser.agent)
+      const agent = yield* agents.get(turnOwner.info.agent)
       const remoteCompaction = yield* remoteCompactionReplay(input.sessionID, model)
       const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction })
       let structured: unknown
       yield* llm
         .stream({
-          user: lastUser,
+          user: turnOwner.info,
           agent,
           permission: input.session.permission,
           sessionID: input.sessionID,
@@ -2989,12 +3003,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           system: [],
           messages: [
             ...modelMsgs,
-            { role: "user", content: STRUCTURED_OUTPUT_EXTRACTION_PROMPT(lastUser.format.schema) },
+            { role: "user", content: STRUCTURED_OUTPUT_EXTRACTION_PROMPT(format.schema) },
           ],
           tools: {},
           model,
           structuredOutput: {
-            schema: lastUser.format.schema,
+            schema: format.schema,
             onSuccess(output) {
               structured = output
             },
@@ -3087,6 +3101,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           }
           const { lastUser, lastAssistant, lastFinished, tasks } = loopState
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+          // Structured-output format belongs to the turn owner: a runtime-context
+          // message persisted between loop steps can occupy `lastUser` and has none.
+          const format = turnOwnerFormat(msgs) ?? { type: "text" as const }
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
@@ -3125,7 +3142,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   session,
                   lastUser,
                   messages: msgs,
-                  productive: turnMadeToolCalls(msgs, goalTurnOwner(msgs)?.info.id ?? lastUser.id),
+                  productive: turnMadeToolCalls(msgs, turnOwnerMessage(msgs)?.info.id ?? lastUser.id),
                 })
               )
                 continue
@@ -3245,14 +3262,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             // synthetic StructuredOutput tool, no tool_choice. Every other
             // provider keeps the tool-call protocol below.
             const providerInfo = yield* provider.getProvider(model.providerID)
-            const structuredSchema =
-              lastUser.format?.type === "json_schema" ? lastUser.format.schema : undefined
+            const structuredSchema = format.type === "json_schema" ? format.schema : undefined
             const nativeStructuredOutput =
               structuredSchema !== undefined && LLM.nativeStructuredOutputWire(model, providerInfo?.wire_api)
 
-            if (lastUser.format?.type === "json_schema" && !nativeStructuredOutput) {
+            if (format.type === "json_schema" && !nativeStructuredOutput) {
               tools[LLM.STRUCTURED_OUTPUT_TOOL_NAME] = createStructuredOutputTool({
-                schema: lastUser.format.schema,
+                schema: format.schema,
                 onSuccess(output) {
                   structured = output
                 },
@@ -3332,7 +3348,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               system.push(CUTOFF_NOTE)
               cutoffPending = false
             }
-            const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema" && !nativeStructuredOutput)
               system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const extraModelMsgs = isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : []
