@@ -2232,6 +2232,116 @@ test("validates explicit remote compaction capability and protocol order", () =>
     ).toBe(false)
 })
 
+test("accepts remote compaction total timeout and keeps legacy capability fields", () => {
+  const parsed = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      provider: {
+        compatible: {
+          remote_compaction: {
+            profile: "codex-responses",
+            protocols: ["v2", "legacy"],
+            auth: "provider-bearer",
+            timeout: 300000,
+          },
+        },
+      },
+    },
+    "test",
+  )
+  expect(parsed.provider?.compatible?.remote_compaction).toEqual({
+    profile: "codex-responses",
+    protocols: ["v2", "legacy"],
+    auth: "provider-bearer",
+    timeout: 300000,
+  })
+  expect(
+    Config.Info.zod.parse({
+      provider: {
+        compatible: {
+          remote_compaction: {
+            profile: "codex-responses",
+            protocols: ["v2", "legacy"],
+            auth: "provider-bearer",
+            timeout: 300000,
+          },
+        },
+      },
+    }).provider?.compatible?.remote_compaction?.timeout,
+  ).toBe(300000)
+})
+
+test("remote compaction timeout is optional and has no schema default", () => {
+  const parsed = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      provider: {
+        compatible: {
+          remote_compaction: {
+            profile: "codex-responses",
+            protocols: ["v2", "legacy"],
+            auth: "provider-bearer",
+          },
+        },
+      },
+    },
+    "test",
+  )
+  expect(parsed.provider?.compatible?.remote_compaction?.timeout).toBeUndefined()
+  expect(
+    Config.Info.zod.safeParse({
+      provider: {
+        compatible: {
+          remote_compaction: {
+            profile: "codex-responses",
+            protocols: ["v2", "legacy"],
+            auth: "provider-bearer",
+          },
+        },
+      },
+    }).success,
+  ).toBe(true)
+})
+
+test("rejects invalid remote compaction timeouts", () => {
+  for (const timeout of [0, -1, 1.5, "300000", false]) {
+    const input = {
+      provider: {
+        invalid: {
+          remote_compaction: {
+            profile: "codex-responses",
+            protocols: ["v2", "legacy"],
+            auth: "provider-bearer",
+            timeout,
+          },
+        },
+      },
+    }
+    expect(Config.Info.zod.safeParse(input).success).toBe(false)
+    expect(() => ConfigParse.effectSchema(Config.Info, input, "test")).toThrow()
+  }
+})
+
+test("drops unknown nested remote compaction fields without rejecting", () => {
+  const parsed = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      provider: {
+        compatible: {
+          remote_compaction: {
+            profile: "codex-responses",
+            protocols: ["v2", "legacy"],
+            auth: "provider-bearer",
+            future_field: true,
+          },
+        },
+      },
+    },
+    "test",
+  )
+  expect(parsed.provider?.compatible?.remote_compaction).not.toHaveProperty("future_field")
+})
+
 
 // MCP config merging tests
 

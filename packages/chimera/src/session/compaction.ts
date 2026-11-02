@@ -597,6 +597,7 @@ export const layer: Layer.Layer<
             ...compactionPart,
             tail_start_id: selected.tail_start_id,
             remote: result.metadata,
+            remote_error: undefined,
           })
           const msg = makeSummaryMessage()
           msg.finish = "end_turn"

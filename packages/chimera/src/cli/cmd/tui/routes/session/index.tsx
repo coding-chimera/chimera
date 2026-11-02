@@ -29,10 +29,12 @@ import {
   formatSubagentTitle,
   formatSubagentToolcalls,
 } from "@tui/util/subagent-format"
+import { remoteCompactionFailureMessage, reportRemoteCompactionFailure } from "@tui/util/remote-compaction"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
 import type {
   AssistantMessage,
+  CompactionPart,
   Part,
   Provider,
   ToolPart,
@@ -536,11 +538,14 @@ export function Session() {
           })
           return
         }
-        void sdk.client.session.summarize({
-          sessionID: route.sessionID,
-          modelID: selectedModel.modelID,
-          providerID: selectedModel.providerID,
-        })
+        void reportRemoteCompactionFailure(
+          sdk.client.session.summarize({
+            sessionID: route.sessionID,
+            modelID: selectedModel.modelID,
+            providerID: selectedModel.providerID,
+          }),
+          (message) => toast.show({ variant: "error", message: `Compaction failed: ${message}`, duration: 5000 }),
+        )
         dialog.clear()
       },
     },
@@ -1330,6 +1335,37 @@ const MIME_BADGE: Record<string, string> = {
   "application/x-directory": "dir",
 }
 
+export function CompactionDivider(props: {
+  part?: CompactionPart
+  borderColor: RGBA
+  errorColor: RGBA
+  mutedColor: RGBA
+}) {
+  return (
+    <Show when={props.part}>
+      <box
+        marginTop={1}
+        border={["top"]}
+        title=" Compaction "
+        titleAlignment="center"
+        borderColor={props.borderColor}
+      />
+      <Show when={props.part?.remote_error}>
+        {(error) => (
+          <box paddingLeft={2} paddingTop={1} flexDirection="column">
+            <text fg={props.errorColor} wrapMode="word" width="100%">
+              Remote compaction failed: {remoteCompactionFailureMessage(error())}
+            </text>
+            <text fg={props.mutedColor} wrapMode="word" width="100%">
+              Falling back to local compaction.
+            </text>
+          </box>
+        )}
+      </Show>
+    </Show>
+  )
+}
+
 function UserMessage(props: {
   message: UserMessage
   parts: Part[]
@@ -1358,7 +1394,9 @@ function UserMessage(props: {
   const queuedFg = createMemo(() => selectedForeground(theme, color()))
   const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
 
-  const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
+  const compaction = createMemo(() =>
+    props.parts.find((x): x is CompactionPart => x.type === "compaction"),
+  )
 
   return (
     <>
@@ -1423,15 +1461,12 @@ function UserMessage(props: {
           </box>
         </box>
       </Show>
-      <Show when={compaction()}>
-        <box
-          marginTop={1}
-          border={["top"]}
-          title=" Compaction "
-          titleAlignment="center"
-          borderColor={theme.borderActive}
-        />
-      </Show>
+      <CompactionDivider
+        part={compaction()}
+        borderColor={theme.borderActive}
+        errorColor={theme.error}
+        mutedColor={theme.textMuted}
+      />
     </>
   )
 }

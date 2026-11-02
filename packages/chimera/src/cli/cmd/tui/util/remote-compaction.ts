@@ -1,4 +1,6 @@
 import type { RemoteCompactionPolicyPatch, RemoteCompactionResolution } from "@opencode-ai/sdk/v2"
+import { errorMessage } from "@/util/error"
+import { isRecord } from "@/util/record"
 
 export type RemoteCompactionMode = RemoteCompactionResolution["configured"]["mode"]
 export type RemoteCompactionProtocol = RemoteCompactionResolution["configured"]["protocol"]
@@ -122,3 +124,49 @@ export function remoteCompactionShortAlert(status: RemoteCompactionResolution | 
   return undefined
 }
 
+const REDACTED_URL = "[redacted url]"
+const REDACTED_CREDENTIAL = "[redacted]"
+const MAX_ERROR_LENGTH = 500
+
+function remoteCompactionErrorMessage(error: unknown) {
+  if (error === undefined || error === null) return ""
+  if (error instanceof Error) return errorMessage(error)
+  if (isRecord(error)) {
+    if (isRecord(error.data) && typeof error.data.message === "string") return error.data.message
+    if (typeof error.message === "string") return error.message
+    if (Object.keys(error).length === 0) return ""
+    if ("data" in error || "name" in error) return ""
+  }
+  const message = errorMessage(error)
+  return message === "[object Object]" ? "" : message
+}
+
+function sanitizeRemoteCompactionError(message: string) {
+  const line = message.split(/\r?\n/, 1)[0] ?? ""
+  return line
+    .replace(/\bhttps?:\/\/[^\s"'<>]+/gi, REDACTED_URL)
+    .replace(/\b((?:proxy-)?authorization\s*[:=]\s*)(?:bearer|basic)?\s*[^\s,;]+/gi, `$1${REDACTED_CREDENTIAL}`)
+    .replace(/\b(bearer|basic)\s+[^\s,;]+/gi, `$1 ${REDACTED_CREDENTIAL}`)
+    .replace(
+      /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|token|password|secret)\b(\s*[:=]\s*)(["']?)[^\s,"';]+\3/gi,
+      `$1$2$3${REDACTED_CREDENTIAL}`,
+    )
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, REDACTED_CREDENTIAL)
+    .slice(0, MAX_ERROR_LENGTH)
+    .trim()
+}
+
+export function remoteCompactionFailureMessage(error: unknown) {
+  return sanitizeRemoteCompactionError(remoteCompactionErrorMessage(error)) || "unknown error"
+}
+
+export async function reportRemoteCompactionFailure(
+  request: Promise<{ error?: unknown } | undefined>,
+  report: (message: string) => void,
+) {
+  const result = await request.catch((error: unknown) => {
+    report(remoteCompactionFailureMessage(error))
+    return undefined
+  })
+  if (result?.error !== undefined) report(remoteCompactionFailureMessage(result.error))
+}

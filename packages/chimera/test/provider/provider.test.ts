@@ -3881,6 +3881,7 @@ test("model-level Responses eligibility preserves sibling Chat transport and rep
                 profile: "codex-responses",
                 protocols: ["v2", "legacy"],
                 auth: "provider-bearer",
+                timeout: 300000,
               },
               options: { apiKey: "aijws-test-key", baseURL: `${server.url.origin}/v1` },
               models: {
@@ -3901,6 +3902,8 @@ test("model-level Responses eligibility preserves sibling Chat transport and rep
     directory: tmp.path,
     fn: async () => {
       const provider = (await list())[ProviderID.make("aijws")]
+      expect(provider.remote_compaction?.timeout).toBe(300000)
+      expect(Provider.Info.zod.parse(provider).remote_compaction?.timeout).toBe(300000)
       const target = provider.models.target
       const sibling = provider.models.sibling
       expect(target.api.npm).toBe("@ai-sdk/openai")

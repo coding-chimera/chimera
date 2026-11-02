@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import { APICallError } from "ai"
-import { Cause, Effect, Exit, Layer, ManagedRuntime } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, ManagedRuntime } from "effect"
 import * as Stream from "effect/Stream"
 import { FetchHttpClient } from "effect/unstable/http"
 import z from "zod"
@@ -31,6 +31,7 @@ import type { Provider } from "@/provider/provider"
 import * as SessionProcessorModule from "../../src/session/processor"
 import { Snapshot } from "../../src/snapshot"
 import { ProviderTest } from "../fake/provider"
+import { ResponsesTransport } from "../../src/provider/responses-transport"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { TestConfig } from "../fixture/config"
@@ -1510,6 +1511,29 @@ describe("session.compaction.process", () => {
           model: openai,
           auto: false,
         })
+        const compaction = (await svc.messages({ sessionID: session.id })).at(-1)?.parts.find(
+          (item): item is MessageV2.CompactionPart => item.type === "compaction",
+        )
+        expect(compaction?.type).toBe("compaction")
+        const stale: MessageV2.CompactionPart = {
+          ...compaction!,
+          remote_error: {
+            providerID: "openai",
+            endpoint: "codex",
+            implementation: "responses_compact",
+            modelID: "gpt-5.2",
+            message: "stale remote compaction failure",
+            status: 500,
+            retryable: true,
+            attempts: 1,
+            time: Date.now(),
+          },
+        }
+        await svc.updatePart(stale)
+        const seeded = (await svc.messages({ sessionID: session.id })).at(-1)?.parts.find(
+          (item): item is MessageV2.CompactionPart => item.type === "compaction",
+        )
+        expect(seeded?.remote_error?.message).toBe("stale remote compaction failure")
 
         const config = cfg({ remote: "auto", remote_protocol: "legacy", tail_turns: 0 })
         const auth = Layer.mock(Auth.Service)({
@@ -1568,8 +1592,11 @@ describe("session.compaction.process", () => {
 
           expect(result).toBe("continue")
           expect(calls).toBe(2)
+          const summary = all.find((msg) => msg.info.role === "assistant" && msg.info.summary)
+          expect(part?.remote?.implementation).toBe("responses_compact")
           expect(part?.remote?.output[0]?.encrypted_content).toBe("retry")
           expect(part?.remote_error).toBeUndefined()
+          expect(summary?.parts[0]).toMatchObject({ type: "text", text: "Remote Codex compaction installed." })
           expect(notice).toBeUndefined()
         } finally {
           await rt.dispose()
@@ -3384,16 +3411,31 @@ describe("session.remote-compaction provider target", () => {
   function genericFixture(
     protocols: Array<"v2" | "legacy"> = ["v2", "legacy"],
     success: "v2" | "legacy" = "legacy",
-    options: { capability?: boolean; model?: boolean } = {},
+    options: {
+      capability?: boolean
+      model?: boolean
+      providerID?: string
+      timeout?: number
+      execute?: (
+        target: "responses" | "responses/compact",
+        input: { body: BodyInit; feature?: "remote-compaction-v2"; signal?: AbortSignal; timeout?: number },
+      ) => Promise<{ status: number; body: string }>
+    } = {},
   ) {
     const model = ProviderTest.model({
       id: ModelID.make("logical-model"),
-      providerID: ProviderID.make("third-party"),
+      providerID: ProviderID.make(options.providerID ?? "third-party"),
       api: { id: ModelID.make("gpt-5.4"), url: "https://provider.test/v1", npm: "@ai-sdk/openai" },
       wire_api: "responses",
       remote_compaction: options.model ?? true,
     })
-    const calls: Array<{ target: "responses" | "responses/compact"; body: Record<string, unknown>; feature?: string }> = []
+    const calls: Array<{
+      target: "responses" | "responses/compact"
+      body: Record<string, unknown>
+      feature?: string
+      signal?: AbortSignal
+      timeout?: number
+    }> = []
     const transport = {
       identity: {
         providerID: model.providerID,
@@ -3405,8 +3447,18 @@ describe("session.remote-compaction provider target", () => {
         compatibilityKey: "safe-binding",
         replay: { eligible: true } as const,
       },
-      execute: async (target: "responses" | "responses/compact", input: { body: BodyInit; feature?: "remote-compaction-v2" }) => {
-        calls.push({ target, body: JSON.parse(String(input.body)), feature: input.feature })
+      execute: async (
+        target: "responses" | "responses/compact",
+        input: { body: BodyInit; feature?: "remote-compaction-v2"; signal?: AbortSignal; timeout?: number },
+      ) => {
+        calls.push({
+          target,
+          body: JSON.parse(String(input.body)),
+          feature: input.feature,
+          signal: input.signal,
+          timeout: input.timeout,
+        })
+        if (options.execute) return options.execute(target, input)
         if (target === "responses" && success !== "v2") return { status: 500, body: "secret-marker-response" }
         if (target === "responses")
           return {
@@ -3436,6 +3488,7 @@ describe("session.remote-compaction provider target", () => {
                   profile: "codex-responses",
                   protocols: protocols as ["v2", "legacy"],
                   auth: "provider-bearer",
+                  ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
                 },
         },
         model,
@@ -3443,6 +3496,76 @@ describe("session.remote-compaction provider target", () => {
       getResponsesTransport: () => Effect.succeed(transport),
     })
     return { model, calls, provider }
+  }
+
+  function hangingTransport(onStart?: (input: { signal?: AbortSignal; timeout?: number }) => void) {
+    return (
+      _target: "responses" | "responses/compact",
+      input: { body: BodyInit; feature?: "remote-compaction-v2"; signal?: AbortSignal; timeout?: number },
+    ) =>
+      new Promise<{ status: number; body: string }>((_, reject) => {
+        onStart?.(input)
+        const abort = () => reject(input.signal?.reason ?? new Error("aborted"))
+        if (input.signal?.aborted) return abort()
+        input.signal?.addEventListener("abort", abort, { once: true })
+      })
+  }
+
+  function perAttemptTimeoutTransport(onStart?: (input: { signal?: AbortSignal; timeout?: number }) => void) {
+    return (
+      _target: "responses" | "responses/compact",
+      input: { body: BodyInit; feature?: "remote-compaction-v2"; signal?: AbortSignal; timeout?: number },
+    ) =>
+      new Promise<{ status: number; body: string }>((_, reject) => {
+        onStart?.(input)
+        const timer = setTimeout(
+          () => reject(new ResponsesTransport.Error("timeout", "Responses transport total timeout")),
+          input.timeout ?? 60_000,
+        )
+        const abort = () => {
+          clearTimeout(timer)
+          reject(input.signal?.reason ?? new Error("aborted"))
+        }
+        if (input.signal?.aborted) return abort()
+        input.signal?.addEventListener("abort", abort, { once: true })
+      })
+  }
+
+  function providerTimeoutTransport(delay: number) {
+    return (
+      _target: "responses" | "responses/compact",
+      input: { body: BodyInit; feature?: "remote-compaction-v2"; signal?: AbortSignal; timeout?: number },
+    ) =>
+      new Promise<{ status: number; body: string }>((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new ResponsesTransport.Error("timeout", "Responses transport total timeout")),
+          delay,
+        )
+        const abort = () => {
+          clearTimeout(timer)
+          reject(input.signal?.reason ?? new Error("aborted"))
+        }
+        if (input.signal?.aborted) return abort()
+        input.signal?.addEventListener("abort", abort, { once: true })
+      })
+  }
+
+  function providerRuntime(
+    fixture: ReturnType<typeof genericFixture>,
+    compaction: Config.Info["compaction"],
+    options: { attempts?: number; timeout?: Parameters<typeof Effect.sleep>[0] } = {},
+  ) {
+    return ManagedRuntime.make(
+      RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses", {
+        attempts: options.attempts ?? 1,
+        ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
+      }).pipe(
+        Layer.provide(authLayer()),
+        Layer.provide(cfg(compaction)),
+        Layer.provide(FetchHttpClient.layer),
+        Layer.provide(fixture.provider.layer),
+      ),
+    )
   }
 
   test("session lock resolution distinguishes model, route, and production state", async () => {
@@ -3638,6 +3761,344 @@ describe("session.remote-compaction provider target", () => {
     } finally {
       await rt.dispose()
     }
+  })
+
+  function compactProvider(fixture: ReturnType<typeof genericFixture>, sessionID: string) {
+    return RemoteCompaction.Service.use((svc) =>
+      svc.compact({
+        sessionID: SessionID.make(sessionID),
+        model: fixture.model,
+        messages: [],
+        instructions: "compact",
+      }),
+    )
+  }
+
+  function typedError<A, E>(exit: Exit.Exit<A, E>) {
+    if (Exit.isSuccess(exit)) throw new Error("expected remote compaction to fail")
+    const error = Cause.squash(exit.cause)
+    if (!(error instanceof RemoteCompaction.RemoteCompactionError))
+      throw new Error(`expected typed remote compaction error, got ${String(error)}`)
+    return error
+  }
+
+  test("applies the configured timeout as the total provider budget", async () => {
+    let signal: AbortSignal | undefined
+    const fixture = genericFixture(["v2"], "legacy", {
+      providerID: "third-party-timeout-budget",
+      timeout: 60,
+      execute: hangingTransport((input) => {
+        signal = input.signal
+      }),
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "v2" }, { attempts: 2 })
+    try {
+      const exit = await rt.runPromise(
+        compactProvider(fixture, "ses_provider_timeout_budget").pipe(Effect.timeout("2 seconds"), Effect.exit),
+      )
+      const error = typedError(exit)
+      expect(error.message).toContain("timed out after 60ms")
+      expect(error.retryable).toBe(false)
+      expect(error.timeout).toBe(true)
+      expect(error.implementation).toBe("responses_compaction_v2")
+      expect(error.attempts).toBe(1)
+      expect(fixture.calls).toHaveLength(1)
+      expect(fixture.calls[0]?.timeout).toBeUndefined()
+      expect(signal?.aborted).toBe(true)
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("shares the configured budget across retries and protocol fallback", async () => {
+    const fixture = genericFixture(["v2", "legacy"], "legacy", {
+      providerID: "third-party-shared-budget",
+      timeout: 600,
+      execute: async (target, input) => {
+        if (target === "responses") {
+          await wait(10)
+          return { status: 500, body: "retryable" }
+        }
+        return hangingTransport()(target, input)
+      },
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "auto" }, { attempts: 2 })
+    try {
+      const exit = await rt.runPromise(
+        compactProvider(fixture, "ses_provider_shared_budget").pipe(Effect.timeout("3 seconds"), Effect.exit),
+      )
+      const error = typedError(exit)
+      expect(error.message).toContain("timed out after 600ms")
+      expect(error.timeout).toBe(true)
+      expect(error.retryable).toBe(false)
+      expect(error.attempts).toBe(3)
+      expect(fixture.calls.map((call) => call.target)).toEqual([
+        "responses",
+        "responses",
+        "responses/compact",
+      ])
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("does not retry or fall back after the total budget expires", async () => {
+    const fixture = genericFixture(["v2", "legacy"], "legacy", {
+      providerID: "third-party-no-retry",
+      timeout: 50,
+      execute: hangingTransport(),
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "auto" }, { attempts: 2 })
+    try {
+      const exit = await rt.runPromise(
+        compactProvider(fixture, "ses_provider_no_retry").pipe(Effect.timeout("2 seconds"), Effect.exit),
+      )
+      const error = typedError(exit)
+      expect(error.message).toContain("timed out after 50ms")
+      expect(error.attempts).toBe(1)
+      expect(error.timeout).toBe(true)
+      expect(error.retryable).toBe(false)
+      expect(fixture.calls.map((call) => call.target)).toEqual(["responses"])
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("propagates interruption to the transport signal without a local fallback", async () => {
+    const started = defer()
+    let signal: AbortSignal | undefined
+    const fixture = genericFixture(["v2", "legacy"], "legacy", {
+      providerID: "third-party-interrupt",
+      timeout: 5_000,
+      execute: hangingTransport((input) => {
+        signal = input.signal
+        started.resolve()
+      }),
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "auto" }, { attempts: 2 })
+    try {
+      const exit = await rt.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* compactProvider(fixture, "ses_provider_interrupt").pipe(Effect.forkChild)
+          yield* Effect.promise(() => started.promise)
+          yield* Fiber.interrupt(fiber)
+          return yield* Fiber.await(fiber)
+        }).pipe(Effect.timeout("3 seconds")),
+      )
+      expect(signal?.aborted).toBe(true)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+      expect(fixture.calls.map((call) => call.target)).toEqual(["responses"])
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("5xx retry exhaustion returns a typed error with attempts and status", async () => {
+    const fixture = genericFixture(["v2"], "legacy", {
+      providerID: "third-party-retry-fields",
+      execute: async () => ({ status: 503, body: "unavailable" }),
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "v2" }, { attempts: 2 })
+    try {
+      const exit = await rt.runPromise(compactProvider(fixture, "ses_provider_retry_fields").pipe(Effect.exit))
+      const error = typedError(exit)
+      expect(error.message).toContain("HTTP 503")
+      expect(error.status).toBe(503)
+      expect(error.retryable).toBe(true)
+      expect(error.timeout).toBeUndefined()
+      expect(error.attempts).toBe(2)
+      expect(error.implementation).toBe("responses_compaction_v2")
+      expect(fixture.calls).toHaveLength(2)
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("retries network transport failures and reports the bounded attempt fields", async () => {
+    const fixture = genericFixture(["v2"], "legacy", {
+      providerID: "third-party-network-retry",
+      execute: async () => {
+        throw new ResponsesTransport.Error("network", "Responses transport network request failed")
+      },
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "v2" }, { attempts: 2 })
+    try {
+      const exit = await rt.runPromise(compactProvider(fixture, "ses_provider_network_retry").pipe(Effect.exit))
+      const error = typedError(exit)
+      expect(error.message).toContain("transport failed")
+      expect(error.message).not.toContain("network request failed")
+      expect(error.status).toBeUndefined()
+      expect(error.retryable).toBe(true)
+      expect(error.timeout).toBeUndefined()
+      expect(error.attempts).toBe(2)
+      expect(fixture.calls).toHaveLength(2)
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("keeps protocol fallback after bounded network retries", async () => {
+    const fixture = genericFixture(["v2", "legacy"], "legacy", {
+      providerID: "third-party-network-fallback",
+      execute: async (target) => {
+        if (target === "responses")
+          throw new ResponsesTransport.Error("network", "Responses transport network request failed")
+        return {
+          status: 200,
+          body: JSON.stringify({ output: [{ type: "compaction_summary", encrypted_content: "opaque" }] }),
+        }
+      },
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "auto" }, { attempts: 2 })
+    try {
+      const metadata = await rt.runPromise(compactProvider(fixture, "ses_provider_network_fallback"))
+      expect(metadata.implementation).toBe("responses_compact")
+      expect(fixture.calls.map((call) => call.target)).toEqual(["responses", "responses", "responses/compact"])
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("treats a layer-injected transport timeout as terminal for the provider target", async () => {
+    const fixture = genericFixture(["v2", "legacy"], "legacy", {
+      providerID: "third-party-injected-timeout",
+      execute: perAttemptTimeoutTransport(),
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "auto" }, { attempts: 2, timeout: "25 millis" })
+    try {
+      const exit = await rt.runPromise(
+        compactProvider(fixture, "ses_provider_injected_timeout").pipe(Effect.timeout("2 seconds"), Effect.exit),
+      )
+      const error = typedError(exit)
+      expect(error.message).toContain("transport timed out")
+      expect(error.timeout).toBe(true)
+      expect(error.retryable).toBe(false)
+      expect(error.attempts).toBe(1)
+      expect(fixture.calls.map((call) => call.target)).toEqual(["responses"])
+      expect(fixture.calls[0]?.timeout).toBe(25)
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("provider transport timeout inside the configured budget stops without retry or legacy fallback", async () => {
+    const fixture = genericFixture(["v2", "legacy"], "legacy", {
+      providerID: "third-party-provider-timeout",
+      timeout: 5_000,
+      execute: providerTimeoutTransport(10),
+    })
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "auto" }, { attempts: 2 })
+    try {
+      const exit = await rt.runPromise(
+        compactProvider(fixture, "ses_provider_provider_timeout").pipe(Effect.timeout("2 seconds"), Effect.exit),
+      )
+      const error = typedError(exit)
+      expect(error.message).toContain("transport timed out")
+      expect(error.timeout).toBe(true)
+      expect(error.retryable).toBe(false)
+      expect(error.attempts).toBe(1)
+      expect(fixture.calls.map((call) => call.target)).toEqual(["responses"])
+      expect(fixture.calls[0]?.timeout).toBeUndefined()
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("keeps the 60 second attempt default when no timeout is configured", async () => {
+    const fixture = genericFixture(["legacy"], "legacy")
+    const rt = providerRuntime(fixture, { remote: "on", remote_protocol: "legacy" }, { attempts: 1 })
+    try {
+      const metadata = await rt.runPromise(compactProvider(fixture, "ses_provider_default_timeout"))
+      expect(metadata.implementation).toBe("responses_compact")
+      expect(fixture.calls[0]?.timeout).toBe(60_000)
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("provider remote failure falls back locally with a visible notice", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const fixture = genericFixture(["v2"], "legacy", {
+          providerID: "third-party-local-fallback",
+          execute: async () => ({ status: 503, body: "unavailable" }),
+        })
+        const session = await svc.create({})
+        await user(session.id, "first", {
+          providerID: fixture.model.providerID,
+          modelID: fixture.model.id,
+        })
+        await SessionCompaction.create({
+          sessionID: session.id,
+          agent: "build",
+          model: { providerID: fixture.model.providerID, modelID: fixture.model.id },
+          auto: false,
+        })
+        const config = cfg({ remote: "on", remote_protocol: "v2", tail_turns: 0 })
+        const bus = Bus.layer
+        const remoteLayer = RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses", { attempts: 2 }).pipe(
+          Layer.provide(authLayer()),
+          Layer.provide(config),
+          Layer.provide(FetchHttpClient.layer),
+          Layer.provide(fixture.provider.layer),
+        )
+        const rt = ManagedRuntime.make(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+            Layer.provide(fixture.provider.layer),
+            Layer.provide(SessionNs.defaultLayer),
+            Layer.provide(layer("continue")),
+            Layer.provide(Agent.defaultLayer),
+            Layer.provide(Plugin.defaultLayer),
+            Layer.provide(bus),
+            Layer.provide(config),
+          ),
+        )
+        try {
+          const msgs = await svc.messages({ sessionID: session.id })
+          const parent = msgs.at(-1)?.info.id
+          expect(parent).toBeTruthy()
+          const result = await rt.runPromise(
+            SessionCompaction.Service.use((svc) =>
+              svc.process({
+                parentID: parent!,
+                messages: msgs,
+                sessionID: session.id,
+                auto: false,
+              }),
+            ),
+          )
+          const all = await svc.messages({ sessionID: session.id })
+          const compactionMessage = all.find((msg) => msg.info.id === parent)
+          const part = compactionMessage?.parts.find(
+            (item): item is MessageV2.CompactionPart => item.type === "compaction",
+          )
+          const notice = compactionMessage?.parts.find(
+            (item) => item.type === "text" && item.metadata?.remote_compaction_failure === true,
+          )
+          expect(result).toBe("continue")
+          expect(fixture.calls).toHaveLength(2)
+          expect(part?.remote).toBeUndefined()
+          expect(part?.remote_error).toMatchObject({
+            attempts: 2,
+            retryable: true,
+            status: 503,
+            implementation: "responses_compaction_v2",
+          })
+          expect(part?.remote_error?.message).toContain("HTTP 503")
+          expect(part?.remote_error?.message).not.toContain("unavailable")
+          expect(notice?.type).toBe("text")
+          if (notice?.type !== "text") throw new Error("missing remote compaction failure notice")
+          expect(notice.text).toContain("failed after 2 attempts")
+          expect(notice.text).toContain("falling back to local compaction")
+          expect(notice.text).not.toContain("unavailable")
+        } finally {
+          await rt.dispose()
+        }
+      },
+    })
   })
 
   test("explicit protocol mismatch resolves local without network", async () => {

@@ -65,6 +65,10 @@ const RemoteCompaction = Schema.Struct({
     Schema.mutable(Schema.Tuple([Schema.Literal("legacy"), Schema.Literal("v2")])),
   ]),
   auth: Schema.Literal("provider-bearer"),
+  timeout: Schema.optional(PositiveInt).annotate({
+    description:
+      "Total time budget in milliseconds for the entire remote compaction operation, including retries and protocol fallbacks. The budget is not reset per attempt. When unset, the existing 60000ms per-attempt timeout applies.",
+  }),
 })
 
 export const Model = Schema.Struct({

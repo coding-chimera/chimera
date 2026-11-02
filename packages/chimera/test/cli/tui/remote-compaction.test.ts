@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import type { RemoteCompactionResolution } from "@opencode-ai/sdk/v2"
+import type { CompactionPart, RemoteCompactionResolution } from "@opencode-ai/sdk/v2"
+import { RGBA } from "@opentui/core"
+import { testRender } from "@opentui/solid"
+import { createComponent, onMount } from "solid-js"
+import { ToastProvider, useToast } from "../../../src/cli/cmd/tui/ui/toast"
 
 const {
   nextRemoteCompactionMode,
@@ -21,7 +25,9 @@ const {
   remoteCompactionShortAlert,
   remoteCompactionSummary,
   remoteCompactionTarget,
+  reportRemoteCompactionFailure,
 } = await import("../../../src/cli/cmd/tui/util/remote-compaction")
+const { CompactionDivider } = await import("../../../src/cli/cmd/tui/routes/session/index")
 
 const ready = {
   configured: { mode: "auto", protocol: "auto" },
@@ -121,5 +127,169 @@ describe("TUI remote compaction helpers", () => {
     expect(remoteCompactionShortAlert(ready)).toBe("✓ remote")
     expect(remoteCompactionShortAlert(routeMismatch)).toBeUndefined()
     expect(remoteCompactionShortAlert(blocked)).toBe("⚠ blocked (provider/model mismatch)")
+  })
+
+  test("reports summarize failures and stays silent on success", async () => {
+    const reported: string[] = []
+
+    await reportRemoteCompactionFailure(Promise.resolve({ data: true, error: undefined }), (message) =>
+      reported.push(message),
+    )
+    expect(reported).toEqual([])
+
+    await reportRemoteCompactionFailure(
+      Promise.resolve({ error: { name: "UnknownError", data: { message: "remote compaction timed out" } } }),
+      (message) => reported.push(message),
+    )
+    expect(reported).toEqual(["remote compaction timed out"])
+  })
+
+  test("sanitizes stack traces, URLs, and credentials from summarize failures", async () => {
+    const reported: string[] = []
+
+    await reportRemoteCompactionFailure(
+      Promise.reject(
+        new Error(
+          "remote compaction failed at https://user:secret@example.test/v1?api_key=sk-secret12345678\n    at handler (server.ts:1:1)",
+        ),
+      ),
+      (message) => reported.push(message),
+    )
+    await reportRemoteCompactionFailure(
+      Promise.resolve({
+        error: {
+          name: "UnknownError",
+          data: { message: "upstream 500 authorization: Bearer topsecret token=abc123 password=hunter2" },
+        },
+      }),
+      (message) => reported.push(message),
+    )
+    await reportRemoteCompactionFailure(
+      Promise.resolve({
+        error: { name: "UnknownError", data: { message: "Error: upstream 500\n    at handler (server.ts:1:1)" } },
+      }),
+      (message) => reported.push(message),
+    )
+
+    expect(reported).toEqual([
+      "remote compaction failed at [redacted url]",
+      "upstream 500 authorization: [redacted] token=[redacted] password=[redacted]",
+      "Error: upstream 500",
+    ])
+  })
+
+  test("falls back to a generic message for empty or unknown failures", async () => {
+    const reported: string[] = []
+
+    await reportRemoteCompactionFailure(Promise.resolve({ error: {} }), (message) => reported.push(message))
+    await reportRemoteCompactionFailure(Promise.resolve({ error: "" }), (message) => reported.push(message))
+    await reportRemoteCompactionFailure(Promise.reject(undefined), (message) => reported.push(message))
+
+    expect(reported).toEqual(["unknown error", "unknown error", "unknown error"])
+  })
+
+  test("renders a sanitized summarize failure through the existing toast", async () => {
+    let toast: ReturnType<typeof useToast> | undefined
+
+    const Probe = () => {
+      const value = useToast()
+      toast = value
+      onMount(() => {
+        void reportRemoteCompactionFailure(
+          Promise.reject(new Error("summarize failed at https://user:secret@example.test/v1?token=abc")),
+          (message) => value.show({ variant: "error", message: `Compaction failed: ${message}`, duration: 5000 }),
+        )
+      })
+      return null
+    }
+
+    const app = await testRender(() =>
+      createComponent(ToastProvider, {
+        get children() {
+          return createComponent(Probe, {})
+        },
+      }),
+    )
+
+    try {
+      const waitForToast = async () => {
+        const start = Date.now()
+        while (Date.now() - start <= 2000) {
+          if (toast?.currentToast) return
+          await Bun.sleep(10)
+        }
+        throw new Error("timed out waiting for toast")
+      }
+      await waitForToast()
+      expect(toast?.currentToast).toMatchObject({
+        variant: "error",
+        message: "Compaction failed: summarize failed at [redacted url]",
+      })
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  const compactionPart = (remote_error?: CompactionPart["remote_error"]): CompactionPart => ({
+    id: "prt_compaction",
+    sessionID: "ses_test",
+    messageID: "msg_test",
+    type: "compaction",
+    auto: false,
+    ...(remote_error ? { remote_error } : {}),
+  })
+
+  test("renders remote compaction failure and local fallback from the compaction part", async () => {
+    const app = await testRender(() =>
+      createComponent(CompactionDivider, {
+        part: compactionPart({
+          providerID: "third-party",
+          endpoint: "provider",
+          implementation: "responses_compact",
+          modelID: "logical-model",
+          wireModelID: "wire-model",
+          message: "upstream 500 token=secret-value",
+          status: 500,
+          retryable: true,
+          time: 1,
+        }),
+        borderColor: RGBA.fromInts(255, 255, 255),
+        errorColor: RGBA.fromInts(255, 0, 0),
+        mutedColor: RGBA.fromInts(128, 128, 128),
+      }),
+    )
+
+    try {
+      await app.renderOnce()
+      const frame = app.captureCharFrame()
+      expect(frame).toContain("Compaction")
+      expect(frame).toContain("Remote compaction failed")
+      expect(frame).toContain("upstream 500")
+      expect(frame).toContain("Falling back to local compaction")
+      expect(frame).not.toContain("secret-value")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("keeps the compaction divider without a failure notice for a successful part", async () => {
+    const app = await testRender(() =>
+      createComponent(CompactionDivider, {
+        part: compactionPart(),
+        borderColor: RGBA.fromInts(255, 255, 255),
+        errorColor: RGBA.fromInts(255, 0, 0),
+        mutedColor: RGBA.fromInts(128, 128, 128),
+      }),
+    )
+
+    try {
+      await app.renderOnce()
+      const frame = app.captureCharFrame()
+      expect(frame).toContain("Compaction")
+      expect(frame).not.toContain("Remote compaction failed")
+      expect(frame).not.toContain("Falling back to local compaction")
+    } finally {
+      app.renderer.destroy()
+    }
   })
 })

@@ -24,7 +24,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { isRecord } from "@/util/record"
-import { optionalOmitUndefined, withStatics } from "@/util/schema"
+import { optionalOmitUndefined, PositiveInt, withStatics } from "@/util/schema"
 
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
@@ -1203,6 +1203,7 @@ const RemoteCompactionCapability = Schema.Struct({
     Schema.Tuple([Schema.Literal("legacy"), Schema.Literal("v2")]),
   ]),
   auth: Schema.Literal("provider-bearer"),
+  timeout: optionalOmitUndefined(PositiveInt),
 })
 
 export const Model = Schema.Struct({

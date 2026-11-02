@@ -55,6 +55,9 @@ type SseEvent = {
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const DEFAULT_COMPACTION_TIMEOUT = "60 seconds"
 const DEFAULT_COMPACTION_ATTEMPTS = 2
+// Legacy layer-injected per-attempt timeouts keep their old semantics; the total
+// guard gets a small grace so the final attempt can report its own typed error.
+const LEGACY_COMPACTION_BUDGET_GRACE_MS = 250
 const LEGACY_IMPLEMENTATION = "responses_compact" as const
 const V2_IMPLEMENTATION = "responses_compaction_v2" as const
 
@@ -75,6 +78,9 @@ export class RemoteCompactionError extends Schema.TaggedErrorClass<RemoteCompact
     implementation: Schema.optional(
       Schema.Union([Schema.Literal("responses_compact"), Schema.Literal("responses_compaction_v2")]),
     ),
+    // Internal control-flow marker: a timeout that ends the whole remote
+    // operation. It is never copied into persisted remote_error metadata.
+    timeout: Schema.optional(Schema.Boolean),
   },
 ) {}
 
@@ -599,6 +605,7 @@ function withImplementation(error: RemoteCompactionError, implementation: Remote
     retryable: error.retryable,
     attempts: error.attempts,
     implementation,
+    timeout: error.timeout,
   })
 }
 
@@ -938,6 +945,27 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
           ),
         )
         const requestInput = yield* responsesInput(input.messages, input.model)
+        const providerInfo = yield* provider.getProvider(input.model.providerID).pipe(
+          Effect.orElseSucceed(() => undefined),
+        )
+        const capabilityTimeout = providerInfo?.remote_compaction?.timeout
+        const configuredTimeoutMs =
+          typeof capabilityTimeout === "number" && Number.isFinite(capabilityTimeout) && capabilityTimeout > 0
+            ? capabilityTimeout
+            : undefined
+        const attemptTimeoutMs = Duration.toMillis(Duration.fromInputUnsafe(timeout))
+        const budgetMs =
+          configuredTimeoutMs ??
+          attemptTimeoutMs * attempts * Math.max(1, resolution.protocols.length) + LEGACY_COMPACTION_BUDGET_GRACE_MS
+        // A configured budget is the single wall-clock cap for the whole operation, so
+        // attempts must not also inherit the old per-attempt timeout.
+        const transportTimeoutMs =
+          options.timeout !== undefined
+            ? attemptTimeoutMs
+            : configuredTimeoutMs === undefined
+              ? attemptTimeoutMs
+              : undefined
+        let startedAttempts = 0
         const binding = bindingFromTransportIdentity(transport.identity)
         const body = {
           model: transport.identity.wireModelID,
@@ -962,20 +990,26 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
           const rewritten = rewriteRemoteCompactionInput(JSON.stringify(payload), binding)
           const execute: (attempt: number) => Effect.Effect<RemoteCompactionMetadata, RemoteCompactionError> = (attempt) =>
             Effect.tryPromise({
-              try: () =>
-                transport.execute(target, {
+              try: (signal) => {
+                startedAttempts += 1
+                return transport.execute(target, {
                   body: rewritten,
                   feature: protocol === "v2" ? "remote-compaction-v2" : undefined,
-                  timeout: Duration.toMillis(Duration.fromInputUnsafe(timeout)),
-                }),
-              catch: (cause) =>
-                new RemoteCompactionError({
-                  message: `provider ${input.model.providerID} ${protocol} remote compaction transport failed`,
-                  retryable:
-                    cause instanceof ResponsesTransport.Error &&
-                    (cause.kind === "timeout" || cause.kind === "network"),
+                  signal,
+                  ...(transportTimeoutMs === undefined ? {} : { timeout: transportTimeoutMs }),
+                })
+              },
+              catch: (cause) => {
+                const timeout = cause instanceof ResponsesTransport.Error && cause.kind === "timeout"
+                return new RemoteCompactionError({
+                  message: timeout
+                    ? `provider ${input.model.providerID} ${protocol} remote compaction transport timed out`
+                    : `provider ${input.model.providerID} ${protocol} remote compaction transport failed`,
+                  retryable: cause instanceof ResponsesTransport.Error && cause.kind === "network",
+                  ...(timeout ? { timeout: true, attempts: attempt } : {}),
                   implementation,
-                }),
+                })
+              },
             }).pipe(
               Effect.flatMap((response) => {
                 if (response.status < 200 || response.status >= 300)
@@ -1026,11 +1060,18 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
                 })
               }),
               Effect.catch((error) =>
-                error.retryable && attempt < attempts
+                error.retryable && !error.timeout && attempt < attempts
                   ? execute(attempt + 1)
                   : Effect.fail(
                       attempt > 1
-                        ? new RemoteCompactionError({ ...error, attempts: attempt, implementation })
+                        ? new RemoteCompactionError({
+                            message: error.message,
+                            status: error.status,
+                            retryable: error.retryable,
+                            attempts: attempt,
+                            implementation,
+                            timeout: error.timeout,
+                          })
                         : error,
                     ),
               ),
@@ -1047,11 +1088,28 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
             )
           return runProtocol(protocol).pipe(
             Effect.catch((error) =>
-              resolution.protocols[index + 1] ? runOrdered(index + 1) : Effect.fail(error),
+              // A terminal timeout must not resubmit the same prompt over another protocol.
+              !error.timeout && resolution.protocols[index + 1]
+                ? runOrdered(index + 1)
+                : Effect.fail(error),
             ),
           )
         }
-        return yield* runOrdered(0)
+        return yield* runOrdered(0).pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.millis(budgetMs),
+            orElse: () =>
+              Effect.fail(
+                new RemoteCompactionError({
+                  message: `remote compaction timed out after ${budgetMs}ms`,
+                  retryable: false,
+                  timeout: true,
+                  attempts: startedAttempts > 0 ? startedAttempts : undefined,
+                  implementation: firstImplementation,
+                }),
+              ),
+          }),
+        )
       }
       const stored = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
       if (!stored || stored.type !== "oauth") {
@@ -1191,6 +1249,7 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
                 retryable: result.error.retryable,
                 attempts: attempt,
                 implementation,
+                timeout: result.error.timeout,
               })
             }
             return yield* Effect.fail(withImplementation(result.error, implementation))

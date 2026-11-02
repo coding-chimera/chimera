@@ -1123,6 +1123,7 @@ export type ProviderConfig = {
     profile: "codex-responses"
     protocols: ["v2" | "legacy"] | ["v2", "legacy"] | ["legacy", "v2"]
     auth: "provider-bearer"
+    timeout?: number
   }
   backend_semantics?: "openai" | "codex" | "alibailian"
   search_model?: string
@@ -1843,6 +1844,7 @@ export type Provider = {
     profile: "codex-responses"
     protocols: ["v2" | "legacy"] | ["v2", "legacy"] | ["legacy", "v2"]
     auth: "provider-bearer"
+    timeout?: number
   }
   backend_semantics?: "openai" | "codex" | "alibailian"
   search_model?: string
