@@ -1290,6 +1290,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-evidence"
+version = "0.10.3"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "codewhale-execpolicy"
 version = "0.10.3"
 dependencies = [
