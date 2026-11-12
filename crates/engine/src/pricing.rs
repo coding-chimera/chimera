@@ -384,6 +384,10 @@ pub fn billing_surface_for_route(
                 UNCLASSIFIED_BILLING_SURFACE
             });
         }
+        // The Alibailian relay is an explicitly named profile whose billing
+        // basis is not a public price list; it stays unclassified rather
+        // than guessed into per-token dollars.
+        ProviderKind::Alibailian => return Some(UNCLASSIFIED_BILLING_SURFACE),
         // A named custom endpoint is never assumed to be metered; the billing
         // presentation layer decides that from explicit config.
         ProviderKind::Custom => return Some(UNCLASSIFIED_BILLING_SURFACE),

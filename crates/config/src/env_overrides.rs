@@ -119,6 +119,8 @@ pub(crate) struct EnvRuntimeOverrides {
     pub(crate) modelstudio_token_plan_model: Option<String>,
     pub(crate) modelstudio_coding_plan_base_url: Option<String>,
     pub(crate) modelstudio_coding_plan_model: Option<String>,
+    pub(crate) alibailian_base_url: Option<String>,
+    pub(crate) alibailian_model: Option<String>,
 }
 
 /// The first of `names` that is set to a non-blank value. A variable exported
@@ -511,6 +513,12 @@ impl EnvRuntimeOverrides {
             modelstudio_coding_plan_model: std::env::var("MODELSTUDIO_CODING_PLAN_MODEL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            alibailian_base_url: std::env::var("ALIBAILIAN_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            alibailian_model: std::env::var("ALIBAILIAN_MODEL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -597,6 +605,9 @@ impl EnvRuntimeOverrides {
             ProviderKind::ModelstudioCodingPlan | ProviderKind::ModelstudioCodingPlanAnthropic => {
                 self.modelstudio_coding_plan_base_url.clone()
             }
+            // The relay's endpoint is controlled configuration; the env
+            // override is the operator's own declaration, not a default.
+            ProviderKind::Alibailian => self.alibailian_base_url.clone(),
             // No dedicated CODEWHALE_CUSTOM_BASE_URL env override: a custom
             // provider's base URL comes from its `[providers.<name>]` table.
             ProviderKind::Custom => None,
@@ -649,6 +660,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::ModelstudioCodingPlan | ProviderKind::ModelstudioCodingPlanAnthropic => {
                 self.modelstudio_coding_plan_model.clone()
             }
+            ProviderKind::Alibailian => self.alibailian_model.clone(),
             ProviderKind::OllamaCloud => self.ollama_cloud_model.clone(),
             _ => None,
         }?;

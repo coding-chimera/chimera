@@ -39,6 +39,7 @@ use super::CodewhaleClient;
 use super::prepared::WireDialect;
 use super::reasoning_effort::apply_reasoning_effort;
 use super::role_placement::{RolePlacement, role_placement};
+use super::alibailian;
 use super::wire::{
     ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK, SSE_BACKPRESSURE_SLEEP_MS,
     SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, bounded_error_text, from_api_tool_name,
@@ -1257,6 +1258,23 @@ pub fn build_chat_wire_body_with_window(
         && body.get("tools").is_some()
     {
         body["tool_choice"] = mapped;
+    }
+    if provider == ProviderKind::Alibailian {
+        if let Some(backstop) = alibailian::map_tool_choice_for_relay(
+            provider,
+            body.get("tools")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0),
+            request.tool_choice.as_ref().unwrap_or(&serde_json::Value::Null),
+        ) {
+            body["tool_choice"] = backstop;
+        }
+        alibailian::apply_structured_output(&mut body, request);
+        alibailian::strip_sampling_for_forced_reasoning(
+            &mut body,
+            request.reasoning_effort.as_deref().is_some(),
+        );
     }
     apply_route_reasoning_controls(
         &mut body,
@@ -6666,7 +6684,7 @@ mod image_block_wire_tests {
     //! `{"type":"image_url","image_url":{"url":…}}`.
     use super::{ProviderKind, build_chat_messages, build_chat_wire_body};
     use codewhale_models::Role;
-    use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest};
+    use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest, Tool};
 
     const DATA_URL: &str = "data:image/png;base64,QUJD";
 
@@ -7001,6 +7019,188 @@ mod image_block_wire_tests {
             temperature: None,
             top_p: None,
         }
+    }
+
+    fn alibailian_relay_request() -> MessageRequest {
+        MessageRequest {
+            model: "qwen3.8-max".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "extract the answer".to_string(),
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: 128,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+        }
+    }
+
+    #[test]
+    fn alibailian_zero_tool_structured_request_attaches_json_schema() {
+        let mut request = alibailian_relay_request();
+        request.metadata = Some(json!({
+            "response_schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}}
+            }
+        }));
+        let wire = build_chat_wire_body(
+            &request,
+            ProviderKind::Alibailian,
+            "https://relay.internal.example/v1",
+            false,
+            None,
+        )
+        .expect("relay wire body");
+        let format = wire.body.get("response_format").expect("response_format");
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["json_schema"]["schema"]["type"], "object");
+        assert!(wire.body.get("tools").is_none());
+    }
+
+    #[test]
+    fn alibailian_tool_request_never_attaches_response_format() {
+        let mut request = alibailian_relay_request();
+        request.tools = Some(vec![Tool {
+            tool_type: Some("function".to_string()),
+            name: "web_search".to_string(),
+            description: "search the web".to_string(),
+            input_schema: json!({"type": "object"}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }]);
+        request.metadata = Some(json!({
+            "response_schema": {"type": "object"}
+        }));
+        let wire = build_chat_wire_body(
+            &request,
+            ProviderKind::Alibailian,
+            "https://relay.internal.example/v1",
+            false,
+            None,
+        )
+        .expect("relay wire body");
+        assert!(wire.body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn alibailian_multi_tool_forced_choice_becomes_named_backstop() {
+        let mut request = alibailian_relay_request();
+        let tools = ["read_file", "write_file"].map(|name| Tool {
+            tool_type: Some("function".to_string()),
+            name: name.to_string(),
+            description: "a tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        });
+        request.tools = Some(tools.to_vec());
+        request.tool_choice = Some(json!("required"));
+        let wire = build_chat_wire_body(
+            &request,
+            ProviderKind::Alibailian,
+            "https://relay.internal.example/v1",
+            false,
+            None,
+        )
+        .expect("relay wire body");
+        assert_eq!(wire.body["tool_choice"]["type"], "function");
+        assert_eq!(
+            wire.body["tool_choice"]["function"]["name"],
+            "StructuredOutput"
+        );
+    }
+
+    #[test]
+    fn alibailian_forced_reasoning_strips_sampling_parameters() {
+        let mut request = alibailian_relay_request();
+        request.reasoning_effort = Some("high".to_string());
+        let wire = build_chat_wire_body(
+            &request,
+            ProviderKind::Alibailian,
+            "https://relay.internal.example/v1",
+            false,
+            None,
+        )
+        .expect("relay wire body");
+        assert!(wire.body.get("temperature").is_none());
+        assert!(wire.body.get("top_p").is_none());
+    }
+
+    #[test]
+    fn alibailian_unforced_reasoning_keeps_sampling_parameters() {
+        let request = alibailian_relay_request();
+        let wire = build_chat_wire_body(
+            &request,
+            ProviderKind::Alibailian,
+            "https://relay.internal.example/v1",
+            false,
+            None,
+        )
+        .expect("relay wire body");
+        assert_eq!(wire.body["temperature"], 0.7);
+        assert_eq!(wire.body["top_p"], 0.9);
+    }
+
+    #[test]
+    fn modelstudio_never_inherits_alibailian_structured_output_or_backstop() {
+        // The official Model Studio kind must not take the relay's
+        // response_format or the Named backstop: the two profiles are separate
+        // judgments even though both surfaces are "Bailian".
+        let mut request = alibailian_relay_request();
+        request.metadata = Some(json!({
+            "response_schema": {"type": "object"}
+        }));
+        request.tools = Some(vec![Tool {
+            tool_type: Some("function".to_string()),
+            name: "a".to_string(),
+            description: "a tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }, Tool {
+            tool_type: Some("function".to_string()),
+            name: "b".to_string(),
+            description: "a tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }]);
+        request.tool_choice = Some(json!("required"));
+        let wire = build_chat_wire_body(
+            &request,
+            ProviderKind::ModelstudioTokenPlan,
+            "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            false,
+            None,
+        )
+        .expect("model studio wire body");
+        assert!(wire.body.get("response_format").is_none());
+        assert_ne!(
+            wire.body["tool_choice"]["function"]["name"],
+            "StructuredOutput"
+        );
     }
 
     #[test]

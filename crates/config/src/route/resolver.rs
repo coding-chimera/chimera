@@ -32,9 +32,9 @@ use super::candidate::{
     SourcedLimitOverride, ValidationReport,
 };
 use super::capabilities::{
-    RouteCapabilities, documented_deepseek_files_api_for_route,
-    documented_deepseek_image_input_for_route, documented_moonshot_web_search_for_route,
-    documented_zai_web_search_for_route,
+    RouteCapabilities, documented_alibailian_web_search_for_route,
+    documented_deepseek_files_api_for_route, documented_deepseek_image_input_for_route,
+    documented_moonshot_web_search_for_route, documented_zai_web_search_for_route,
 };
 use super::descriptor::ProviderDescriptor;
 use super::errors::RouteError;
@@ -480,6 +480,10 @@ impl RouteResolver {
                 selected.wire_model_id.as_str(),
                 effective_base_url,
             );
+        }
+        if provider_kind == ProviderKind::Alibailian {
+            selected.capabilities.server_side_web_search =
+                documented_alibailian_web_search_for_route(provider_kind);
         }
         if provider_kind == ProviderKind::Moonshot {
             let effective_base_url = req

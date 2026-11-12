@@ -2079,6 +2079,45 @@
       "selector_aliases": []
     },
     {
+      "kind": "Alibailian",
+      "id": "alibailian",
+      "label": "Alibailian Relay",
+      "base_url": "https://alibailian.invalid/v1",
+      "default_model": "qwen3.8-max",
+      "env_vars": [
+        "ALIBAILIAN_API_KEY"
+      ],
+      "config_key": "alibailian",
+      "aliases": [
+        "ali-bailian",
+        "ali_bailian",
+        "bailian-relay",
+        "bailian_relay"
+      ],
+      "wire_policy": "chat_completions",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://bailian.console.aliyun.com/",
+        "docs_url": "https://www.alibabacloud.com/help/en/model-studio/",
+        "guidance": "Alibailian is an explicitly named Model Studio relay profile, distinct from the official Model Studio provider. Set its endpoint and API key in [providers.alibailian]; the endpoint is controlled configuration, never a committed default."
+      },
+      "selectable": true,
+      "retired": false,
+      "secret_store_slot": "alibailian",
+      "family": "alibailian",
+      "web": {
+        "order": 50
+      },
+      "selection_order": 46,
+      "tui_wire_tag": "alibailian",
+      "tui_order": 53,
+      "catalog_id": "alibailian",
+      "catalog_source_id": "alibailian",
+      "subagent_aliases": [],
+      "table_field": "alibailian",
+      "selector_aliases": []
+    },
+    {
       "kind": "Custom",
       "id": "custom",
       "label": "Custom (OpenAI-compatible)",
