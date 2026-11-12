@@ -155,6 +155,28 @@ fn flag_off_means_no_client_no_file_and_off_status() {
 }
 
 #[test]
+fn enabled_without_a_source_is_refused_and_never_fetches_upstream() {
+    let _lock = lock();
+    overlay::clear();
+    let dir = tempfile::tempdir().unwrap();
+    // No url, no local_path: enabling the layer alone must not fall back to
+    // the upstream template host — refresh refuses with the operator-facing
+    // error instead, and nothing is written or fetched.
+    let s = settings(&dir, None);
+    configure_with_keys(&s, test_keys());
+    assert_eq!(maybe_load_persisted_cache_with_keys(&s, test_keys()), None);
+    let err = rt()
+        .block_on(refresh_fixture(&s, true, test_keys()))
+        .unwrap_err();
+    assert_eq!(err, RefreshError::NoSource);
+    assert!(
+        err.to_string().contains("CODEWHALE_CLOUD_FACTS_URL"),
+        "the error must name the operator override: {err}"
+    );
+    assert!(!dir.path().join("facts").exists());
+}
+
+#[test]
 fn enabled_with_no_active_key_is_inert_and_never_fetches() {
     let _lock = lock();
     overlay::clear();

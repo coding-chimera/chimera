@@ -27,7 +27,7 @@ fn env_off_beats_cli_on_end_to_end() {
     let on = dispatch_and_read_telemetry(None);
     let dry_run = on
         .dry_run
-        .expect("current consent plus `--telemetry true` must write the dry-run sink");
+        .expect("`--telemetry true` plus the dry-run endpoint must write the sink");
     assert!(
         dry_run.contains("\"event\":\"session_start\"")
             && dry_run.contains("\"event\":\"session_end\""),
@@ -170,37 +170,42 @@ fn config_set_true_reenables_a_historical_decline_through_settings() {
 }
 
 #[test]
-fn missing_preference_defaults_on_without_inventing_acceptance() {
+fn missing_preference_stays_off_without_inventing_acceptance() {
     for version in [None, Some("1"), Some("4")] {
-        let evidence = dispatch_and_read_telemetry_with_endpoint(None, Some(""), version, false);
-        let batch: serde_json::Value = serde_json::from_str(
-            evidence
-                .dry_run
-                .as_ref()
-                .expect("default-on writes dry run")
-                .lines()
-                .next()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(batch["schema_version"], 4);
-        assert_eq!(batch["notice_version"], 6);
-        assert!(batch.get("consent_version").is_none());
-        let state = evidence.setup.expect("disclosure display marker");
-        assert_eq!(
-            state.telemetry_notice_shown_for.as_deref(),
-            Some(TELEMETRY_NOTICE_VERSION)
-        );
-        assert_eq!(state.telemetry_notice_decided_for.as_deref(), version);
-        assert!(!state.telemetry_accepted(TELEMETRY_NOTICE_VERSION));
-        assert!(evidence.stderr.contains("on by default"));
-        assert!(evidence.stderr.contains("Codewhale and PostHog"));
+        // No consent preference and no endpoint: the shipped default is off
+        // with no destination, so the run must leave no telemetry state at
+        // all — no dry-run batch, no disclosure, no acceptance inferred.
+        let evidence = dispatch_and_read_telemetry_with_endpoint(None, None, version, false);
         assert!(
-            evidence
-                .stderr
-                .contains("codewhale config set telemetry false")
+            !evidence.telemetry_dir_exists && evidence.dry_run.is_none(),
+            "an unconfigured run must not arm telemetry or write any state"
         );
     }
+}
+
+#[test]
+fn an_explicit_blank_endpoint_arms_the_dry_run_without_inference() {
+    let evidence = dispatch_and_read_telemetry_with_endpoint(None, Some(""), None, true);
+    let batch: serde_json::Value = serde_json::from_str(
+        evidence
+            .dry_run
+            .as_ref()
+            .expect("an explicit dry-run endpoint plus `--telemetry true` writes the sink")
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(batch["schema_version"], 4);
+    assert_eq!(
+        batch["notice_version"],
+        TELEMETRY_NOTICE_VERSION.parse::<u8>().unwrap()
+    );
+    assert!(batch.get("consent_version").is_none());
+    assert!(
+        !evidence.stderr.contains("on by default"),
+        "the disclosure must not claim a default this build does not ship"
+    );
 }
 
 struct DispatchEvidence {

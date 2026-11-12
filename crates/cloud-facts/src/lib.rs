@@ -9,7 +9,9 @@
 //!   synchronous disk read; all network happens in [`spawn_background_refresh`].
 //! - Off by default (`[cloud_facts].enabled = false`); `CODEWHALE_CLOUD_FACTS=1`
 //!   flips it, `CODEWHALE_DISABLE_CLOUD_FACTS=1` beats everything, CI markers
-//!   suppress the fetch.
+//!   suppress the fetch. Enabling without an operator-owned `url` (or local
+//!   envelope path) refuses to fetch: there is no first-party source to fall
+//!   back to.
 //! - The disk cache is re-verified on every load; untrusted bytes are cleared while the rollback floor is retained.
 //! - The fetch sends only a fixed user agent and `If-None-Match`; no
 //!   identifiers, cookies, or query parameters (PRD §5).
@@ -29,6 +31,11 @@ use codewhale_config::persistence::atomic_write;
 use serde::{Deserialize, Serialize};
 
 /// `{channel}` is replaced with the channel slug.
+///
+/// This template is reachable only through an explicitly configured URL: this
+/// build has no first-party facts service, so an unconfigured `Settings.url`
+/// refuses refresh (see [`RefreshError::NoSource`]) instead of contacting the
+/// upstream host.
 pub const DEFAULT_URL_TEMPLATE: &str = "https://codewhale.net/api/facts/v1/{channel}";
 /// Refresh interval for a verified payload (6 h).
 pub const DEFAULT_TTL_SECS: u64 = 6 * 60 * 60;
@@ -136,7 +143,12 @@ impl Settings {
         self
     }
 
-    /// The effective envelope URL.
+    /// The effective envelope URL, with `{channel}` substituted.
+    ///
+    /// With no configured URL this still renders the template, but refresh
+    /// never uses it: `source()` refuses a `None` URL with
+    /// [`RefreshError::NoSource`] first, so the upstream host stays
+    /// unreachable unless an operator names it.
     #[must_use]
     pub fn url(&self) -> String {
         self.url
@@ -191,6 +203,12 @@ fn hard_disabled() -> bool {
 fn source(settings: &Settings) -> Result<String, RefreshError> {
     if !valid_channel(&settings.channel) {
         return Err(RefreshError::InvalidSettings("invalid channel".into()));
+    }
+    // This build has no first-party facts service, so enabling the layer
+    // without naming an operator-owned URL (or a local envelope path) has no
+    // destination: refuse rather than falling back to a host nobody chose.
+    if settings.local_path.is_none() && settings.url.is_none() {
+        return Err(RefreshError::NoSource);
     }
     if let Some(path) = &settings.local_path {
         let path = if path.is_absolute() {
@@ -402,6 +420,7 @@ fn save_cache(path: &Path, cache: &PersistedCache) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefreshError {
     Disabled,
+    NoSource,
     Inert,
     Suppressed,
     Superseded,
@@ -417,6 +436,12 @@ impl std::fmt::Display for RefreshError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Disabled => write!(f, "cloud facts disabled"),
+            Self::NoSource => write!(
+                f,
+                "no cloud-facts source is configured: set [cloud_facts] url \
+                 (or CODEWHALE_CLOUD_FACTS_URL) to your own facts endpoint; this \
+                 build has no first-party source"
+            ),
             Self::Inert => write!(f, "no active trusted key"),
             Self::Suppressed => write!(f, "production network fetch suppressed by CI"),
             Self::Superseded => write!(f, "facts settings changed before publication"),

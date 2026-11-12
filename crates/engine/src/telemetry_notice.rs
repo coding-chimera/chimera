@@ -168,7 +168,7 @@ pub fn record_presented() {
 
 /// Return the saved telemetry preference shown by `/settings`.
 ///
-/// A missing preference defaults on. An existing
+/// A missing preference defaults off. An existing
 /// unreadable record may contain an opt-out, so the Settings row fails closed
 /// and shows Off rather than guessing.
 pub fn saved_preference_enabled(config: &codewhale_runtime::config::Config) -> bool {

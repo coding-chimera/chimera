@@ -504,26 +504,29 @@ async fn an_unparseable_telemetry_env_value_sends_zero_requests() {
     );
 }
 
-/// A fresh headless run defaults on and records presentation, not acceptance.
+/// A fresh headless run stays off: no consent preference and an explicit
+/// endpoint configured only for the harness still leave the default off, so
+/// nothing is buffered and no acceptance is invented.
 #[tokio::test(flavor = "current_thread")]
-async fn telemetry_defaults_on_without_notice_buffers_a_complete_session() {
+async fn telemetry_defaults_off_without_notice_and_writes_nothing() {
     let server = start_recorder().await;
     let fixture = Fixture::new().with_endpoint(&server.uri());
-    // Deliberately no `record_notice`.
+    // Deliberately no `record_notice` and no `telemetry = true`.
 
     let output = fixture.run_short_command();
 
-    assert_short_cli_persistence_without_network(&fixture, &server, &output, "default-on usage")
-        .await;
-    let state = SetupState::load_from(&fixture.setup_state_path()).expect("shown state");
-    assert_eq!(
-        state.telemetry_notice_shown_for.as_deref(),
-        Some(TELEMETRY_NOTICE_VERSION)
+    assert_no_batches(&server, "default-off usage").await;
+    assert!(
+        !fixture.telemetry_root().exists(),
+        "a fresh default-off run must create no telemetry state"
     );
-    assert!(!state.telemetry_accepted(TELEMETRY_NOTICE_VERSION));
+    assert!(
+        !output.stderr.contains("on by default"),
+        "the disclosure must not claim a default this build does not ship"
+    );
 }
 
-/// A previous acceptance remains enabled under the default-on policy.
+/// A previous acceptance stays on with an explicit config-file enable.
 #[tokio::test(flavor = "current_thread")]
 async fn a_stale_accepted_notice_remains_on_without_synthesizing_current_acceptance() {
     let server = start_recorder().await;
@@ -537,7 +540,7 @@ async fn a_stale_accepted_notice_remains_on_without_synthesizing_current_accepta
 
     let output = fixture.run_short_command();
 
-    assert_short_cli_persistence_without_network(&fixture, &server, &output, "default-on usage")
+    assert_short_cli_persistence_without_network(&fixture, &server, &output, "explicit config-on")
         .await;
     let state = SetupState::load_from(&fixture.setup_state_path()).expect("shown state");
     assert_eq!(
@@ -775,7 +778,7 @@ async fn batch_contains_no_planted_sentinel() {
     );
     for batch in &batches {
         assert_eq!(batch["schema_version"], 4);
-        assert_eq!(batch["notice_version"], 6);
+        assert_eq!(batch["notice_version"], 7);
         assert!(batch.get("consent_version").is_none());
     }
     let shown = SetupState::load_from(&fixture.setup_state_path()).expect("disclosure marker");
@@ -1134,13 +1137,12 @@ fn sentinel_config(base_url: &str, telemetry: bool) -> String {
 }
 
 fn plant_sentinels(fixture: &Fixture, base_url: &str) {
+    // Keep `telemetry = true`: batches only exist through an explicit enable
+    // now that the shipped default is off, and this fixture exists to inspect
+    // a batch that was actually sent.
     let config = sentinel_config(base_url, true);
-    fixture.write_config(
-        config
-            .strip_prefix("telemetry = true\n")
-            .expect("fixture preference"),
-    );
-    // No saved preference or acceptance: the real exec path must use default-on.
+    fixture.write_config(&config);
+    // No saved preference or acceptance: the real exec path stays off by default.
     std::fs::write(
         fixture.workspace.join(SENTINEL_FILENAME),
         "sentinel workspace file\n",

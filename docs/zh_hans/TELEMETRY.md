@@ -3,7 +3,7 @@
 > 英文原文：[TELEMETRY.md](../TELEMETRY.md)（schema v3 / 告知版本 5）。
 > 最后与英文同步日期（last synced with English revision）：2026-09-29。
 
-**当前源码默认开启使用统计，可随时退出。** 首次交互启动显示本地化、非阻塞告知，列明 **Codewhale 和 PostHog**，并提供关闭入口。第 `5` 版告知说明这一默认开启政策；显示告知不等于代替用户记录同意。新安装缺少旧同意记录时仍默认开启；此前明确退出的选择继续有效，隐私状态不可读时保持关闭。环境和命令行关闭开关仍然优先。
+**当前源码默认关闭使用统计，且没有出厂端点。** 本构建没有第一方采集服务：未配置的 `telemetry_endpoint` 意味着没有目的地，从未解析出端点的会话会完全保持关闭。开启采集需要写入 `telemetry = true` **并且** 用 `telemetry_endpoint` 指定你自己的接收端（显式空值保留本地 dry-run 文件）。首次交互启动仍会显示本地化、非阻塞告知。第 `7` 版告知说明这一政策；显示告知不等于代替用户记录同意。此前明确退出的选择继续有效，隐私状态不可读时保持关闭。环境和命令行关闭开关仍然优先。
 
 PostHog 转发是可选的，在采集服务的运维方明确配置项目令牌和获准的区域主机、并记录预发布验证证据（证明实际出口路径不会转发原始客户端 IP）之前不会生效。源码就绪不代表已经部署、已激活处理服务、已有出口回执或已设置保留期限。
 
@@ -11,7 +11,7 @@ PostHog 转发是可选的，在采集服务的运维方明确配置项目令牌
 
 Codewhale 不会收集对话、代码、提示词、文件、文件/仓库/分支名称、模型内容或凭据。它不发送任何按回合或按工具的时间线。它只发送下面这个封闭的聚合 schema：版本和平台类别、会话时长/结果、功能/错误计数器，以及一个每 90 天轮换一次的随机安装 id。
 
-**现在有了一个真实的端点。** 已启用的会话会将其批次发送到第一方采集服务 `https://telemetry.codewhale.net/v1/telemetry`，这也是 `telemetry_endpoint` 的出厂默认值。该服务是什么、存储什么、结构上不可能存储什么，都在下面的"端点做什么"一节中说明。
+**没有出厂端点。** 已启用的会话只会把批次发送到运维者配置的 `telemetry_endpoint`——你自己的接收端。未配置端点时本次运行保持关闭；显式空值 `telemetry_endpoint = ""` 是本地审计接收端：批次会被追加到你本机的 `$CODEWHALE_HOME/telemetry/dryrun.jsonl`，与服务端本会收到的内容逐字节一致，而且永远不会构造任何 HTTP 客户端。这个文件就是你对照现实审计本文档的方式。
 
 **要想不向任何地方发送任何内容，请关闭遥测**（见"关闭遥测"）。想保持启用但不联系任何人，请设置 `telemetry_endpoint = ""`：此时批次会被追加到你本机的 `$CODEWHALE_HOME/telemetry/dryrun.jsonl`，与服务端本会收到的内容逐字节一致，而且永远不会构造任何 HTTP 客户端。这个文件就是你对照现实审计本文档的方式。
 
@@ -64,7 +64,7 @@ Codewhale 没有恢复出厂设置命令，因此本文档也不会声称有。
 
 没有启动时 flush、会话中途 flush、按回合 flush 或按工具调用 flush。每次网络关闭 flush 都会在执行前立即从磁盘重新解析你的设置，因此从另一个终端写入的 `codewhale config set telemetry false` 会阻止一个已经在运行的会话的 flush。
 
-一次 flush 就是对已解析端点的一次 **`POST`**——默认是 `https://telemetry.codewhale.net/v1/telemetry`。请求携带 `content-type: application/json` 头、`user-agent: codewhale-telemetry/<app_version>` 头，以及批次主体。仅此而已：没有 cookie（HTTP 客户端在构建时就没有可禁用的 cookie jar）、没有重定向（直接拒绝）、没有 `Authorization` 头、没有自定义头、没有查询字符串。响应主体被丢弃不读；只查看状态类别。
+一次 flush 就是对已解析端点的一次 **`POST`**——即运维者配置的 `telemetry_endpoint`，没有默认值。请求携带 `content-type: application/json` 头、`user-agent: codewhale-telemetry/<app_version>` 头，以及批次主体。仅此而已：没有 cookie（HTTP 客户端在构建时就没有可禁用的 cookie jar）、没有重定向（直接拒绝）、没有 `Authorization` 头、没有自定义头、没有查询字符串。响应主体被丢弃不读；只查看状态类别。
 
 `https://` 是必需的。普通的 `http://` 只对回环主机接受，因此你可以把客户端指向自己的一台记录器并直接读取线上格式；没有任何环境变量能覆盖这一拒绝。客户端拒绝的端点会让本次运行的遥测关闭，而不是回退到其他目的地。
 
@@ -273,7 +273,7 @@ Codewhale 没有恢复出厂设置命令，因此本文档也不会声称有。
 
 ### 端点做什么——发布门槛，而非脚注
 
-本节曾是配置任何非回环端点的门槛。端点现在默认已配置，因此这是对已存在服务的描述，而不是对可能存在的服务的承诺。
+本节描述本仓库源码可以部署的采集服务。本分叉默认不配置它：批次只会发送到运维者指定的 `telemetry_endpoint`，未配置的构建不向任何地方发送任何内容。
 
 **它是什么。** `https://telemetry.codewhale.net/v1/telemetry` ——一个名为 `codewhale-telemetry-ingest` 的 Cloudflare Worker，其完整源码就在本仓库的 [`telemetry-ingest/`](../../telemetry-ingest/) 中。它是唯一的 schema 与存储权威；浏览器应用可使用只转发主体的同源代理。没有遥测队列或第二套运行时采集器。它只写：Worker 中没有任何东西能回读已存储的内容，查询通过 Cloudflare 的 SQL API、以所有者的令牌带外进行。主机名刻意自描述，因此任何检查自己网络流量的人光看名字就能知道它是什么。
 

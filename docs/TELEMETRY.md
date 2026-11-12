@@ -2,13 +2,16 @@
 
 > 阅读简体中文版：[zh_hans/TELEMETRY.md](zh_hans/TELEMETRY.md)
 
-**Usage analytics are on by default in the current source.** The first
-interactive launch gives a localized, nonblocking disclosure naming **Codewhale
-and PostHog**, with a direct route to turn counting off. Notice version `6`
-describes this policy; displaying it is not recorded as human acceptance.
-Missing an older acceptance record does not turn a fresh installation off.
-Existing explicit opt-outs remain off across upgrades, and unreadable privacy
-state fails closed. Environment and CLI kill switches still take precedence.
+**Usage analytics are off by default, and there is no shipped endpoint.** This
+build has no first-party ingest service: an unconfigured `telemetry_endpoint`
+means no destination, and a session that never resolves one stays off entirely.
+Turning collection on means writing `telemetry = true` **and** naming your own
+sink with `telemetry_endpoint` (an explicitly empty value keeps the local
+dry-run file). The first interactive launch still gives a localized,
+nonblocking disclosure. Notice version `7` describes this policy; displaying it
+is not recorded as human acceptance. Existing explicit opt-outs remain off
+across upgrades, and unreadable privacy state fails closed. Environment and CLI
+kill switches still take precedence.
 
 Read the disclosure with `codewhale config telemetry`. Turn usage off in
 `/settings` or run `codewhale config set telemetry false`. Turning it back on
@@ -29,17 +32,13 @@ It does send the closed, aggregate schema below: version and platform classes,
 session duration/outcome, feature/error counters, and a random install id that
 rotates every 90 days.
 
-**There is now a real endpoint.** An enabled session sends its batches to the
-first-party ingest service at `https://telemetry.codewhale.net/v1/telemetry`,
-which is the shipped default for `telemetry_endpoint`. What that service is,
-what it stores, and what it structurally cannot store is spelled out in "What
-the endpoint does" below.
-
-**To send nothing anywhere, turn telemetry off** (see "Turning it off"). To stay
-enabled but contact nobody, set `telemetry_endpoint = ""`: batches are then
-appended to `$CODEWHALE_HOME/telemetry/dryrun.jsonl` on your own machine, byte
-for byte what the server would have received, and no HTTP client is ever
-constructed. That file is how you audit this document against reality.
+**There is no shipped endpoint.** An enabled session sends its batches only to
+the `telemetry_endpoint` an operator configured — your own sink. An
+unconfigured endpoint keeps the run off; an explicitly empty one,
+`telemetry_endpoint = ""`, is the local audit sink: batches are then appended
+to `$CODEWHALE_HOME/telemetry/dryrun.jsonl` on your own machine, byte for byte
+what a server would have received, and no HTTP client is ever constructed. That
+file is how you audit this document against reality.
 
 This document is the schema. It is not a summary of the schema: a test in
 `crates/telemetry` parses the field names out of this file and asserts set
@@ -139,8 +138,8 @@ flush. Every network shutdown flush re-resolves your setting from disk
 immediately beforehand, so `codewhale config set telemetry false` written from
 another terminal stops the flush of a session that is already running.
 
-A flush is **one `POST`** to the resolved endpoint — by default
-`https://telemetry.codewhale.net/v1/telemetry`. The request carries a
+A flush is **one `POST`** to the resolved endpoint — the
+`telemetry_endpoint` an operator configured; there is no default. The request carries a
 `content-type: application/json` header, a
 `user-agent: codewhale-telemetry/<app_version>`, and the batch body. That is
 all: no cookies (the HTTP client is built without a cookie jar to disable), no
@@ -162,7 +161,7 @@ most once per flush point and never grows a queue.
 
 ## Event schema
 
-`SCHEMA_VERSION = 4`. `notice_version = 6` identifies the disclosed default-on
+`SCHEMA_VERSION = 4`. `notice_version = 7` identifies the disclosed default-off
 policy; it does not assert human consent or that a notice was seen. Schema 4
 adds the `model_usage` and `tool_usage` events and the `ci` session source.
 Schema-3 batches with `notice_version = 5` are still accepted without them, which
@@ -213,8 +212,9 @@ new fields, surfaces, and `product_usage` events.
 ### Which surfaces emit
 
 Every runtime surface uses the same `decide` and flush recheck: readable privacy
-state, resolvable home, valid endpoint, and no persistent opt-out or run kill
-switch. Missing preferences default on. The interactive TUI shows the disclosure;
+state, resolvable home, valid configured endpoint, and no persistent opt-out or
+run kill switch. Missing preferences default off, and a missing endpoint has no
+destination at all. The interactive TUI shows the disclosure;
 headless commands never synthesize consent. Existing runtime events and counters
 are unchanged; adding PostHog does not add a second runtime collector.
 
@@ -486,9 +486,9 @@ arguments.
 
 ### What the endpoint does — a shipping gate, not a footnote
 
-This section was a gate on configuring any non-loopback endpoint. The endpoint is now configured by default, so this is a description of a service that exists rather than a promise about one that might.
+This section describes the ingest service this repository's source can deploy. This fork does not configure it by default: batches only ever go to the `telemetry_endpoint` an operator names, so an unconfigured build sends nothing anywhere.
 
-**What it is.** `https://telemetry.codewhale.net/v1/telemetry` — a Cloudflare Worker named `codewhale-telemetry-ingest`, whose complete source is in this repository at [`telemetry-ingest/`](../telemetry-ingest/). It is the single schema and storage authority; browser applications may use a same-origin proxy that forwards only the body. There is no telemetry queue or additional runtime collector. It is write-only: nothing in the Worker can read back what was stored, and querying happens out of band through Cloudflare's SQL API with the owner's token. The hostname is deliberately self-describing, so anyone inspecting their own network traffic can tell what it is from the name alone.
+**What it is (when an operator deploys it).** a Cloudflare Worker named `codewhale-telemetry-ingest`, whose complete source is in this repository at [`telemetry-ingest/`](../telemetry-ingest/). It is the single schema and storage authority; browser applications may use a same-origin proxy that forwards only the body. There is no telemetry queue or additional runtime collector. It is write-only: nothing in the Worker can read back what was stored, and querying happens out of band through Cloudflare's SQL API with the owner's token. The hostname is deliberately self-describing, so anyone inspecting their own network traffic can tell what it is from the name alone.
 
 **What it stores.** Everything in this document and nothing else, in Workers Analytics Engine — one row per event. The validator in `telemetry-ingest/src/schema.ts` is a **closed** field set: an unknown key anywhere in a batch rejects the whole batch with `400`. A future client bug that starts attaching a path, a prompt, or a provider table name gets refused by the server rather than quietly stored. `telemetry-ingest/test/schema-doc.test.ts` parses the field names and enum spellings back out of *this file* and asserts set equality against the validator, and `telemetry-ingest/test/ingest.test.ts` posts the Rust client's own pinned golden batch and asserts it is accepted byte for byte — so this document, the client, and the endpoint cannot drift apart without a red test.
 

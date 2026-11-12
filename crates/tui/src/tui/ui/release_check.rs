@@ -23,6 +23,21 @@ pub(crate) fn resolve_version_check_source(
     config: &UpdateConfig,
     suppression: Option<codewhale_release::SuppressionReason>,
 ) -> StartupVersionCheckSource {
+    resolve_version_check_source_with_mirror(config, suppression, release_mirror_env_configured())
+}
+
+/// Pure form with the mirror-environment fact passed in, so the decision is
+/// testable without mutating process-global state.
+///
+/// This build ships no first-party release endpoint, so the release resolver
+/// is only a usable source when an operator mirror is configured; with no
+/// mirror and no `update_uri` the check stays off rather than contacting an
+/// upstream release host nobody chose.
+pub(crate) fn resolve_version_check_source_with_mirror(
+    config: &UpdateConfig,
+    suppression: Option<codewhale_release::SuppressionReason>,
+    mirror_env_configured: bool,
+) -> StartupVersionCheckSource {
     if !config.check_for_updates {
         return StartupVersionCheckSource::Disabled;
     }
@@ -39,7 +54,10 @@ pub(crate) fn resolve_version_check_source(
     if let Some(update_uri) = config.update_uri() {
         return StartupVersionCheckSource::ConfiguredUrl(update_uri.to_string());
     }
-    StartupVersionCheckSource::ReleaseResolver
+    if mirror_env_configured {
+        return StartupVersionCheckSource::ReleaseResolver;
+    }
+    StartupVersionCheckSource::Disabled
 }
 
 /// Where the throttling cache for the startup check lives.
