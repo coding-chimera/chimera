@@ -21,7 +21,8 @@ fn assert_workflow_trace_schema(conn: &Connection) {
     // continuation-count column and the v3 workflow-trace + thread_goals tables.
     // v6 adds `thread_runtime_links` (client thread -> runtime thread).
     // v7 adds bound canonical alias/operation receipts on this same connection.
-    assert_eq!(user_version, 7);
+    // v8 adds durable turn admission/lease/idempotency tables.
+    assert_eq!(user_version, 8);
 
     for table in [
         "workflow_runs",
@@ -34,6 +35,11 @@ fn assert_workflow_trace_schema(conn: &Connection) {
         "state_store_identity",
         "thread_runtime_receipts",
         "thread_runtime_operations",
+        "turn_boots",
+        "turn_leases",
+        "turn_pending",
+        "turn_terminal",
+        "turn_events",
     ] {
         let exists: bool = conn
             .query_row(
