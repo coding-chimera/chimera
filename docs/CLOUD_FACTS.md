@@ -1,9 +1,12 @@
 # Signed cloud facts
 
 Cloud facts are an optional signed overlay for model metadata and unset provider
-model defaults. They are **off by default**. The production trust tables in Rust
-and the website are empty, so enabling the setting currently reports an inert
-layer and does not fetch or trust a production channel.
+model defaults. They are **off by default**, and this build has no first-party
+facts service: enabling the layer without configuring an operator-owned `url`
+(or a local envelope path) refuses to fetch rather than falling back to an
+upstream host. The production trust tables in Rust and the website are empty,
+so enabling the setting currently reports an inert layer and does not fetch or
+trust a production channel.
 
 This source slice does not establish a deployed endpoint, published database
 row, signing-key custody, or a real provider request. The JSON under
@@ -26,7 +29,10 @@ ttl_hours = 6
 `CODEWHALE_DISABLE_CLOUD_FACTS=1` is the hard disable. Channel, URL and local
 signed-envelope overrides are `CODEWHALE_CLOUD_FACTS_CHANNEL`,
 `CODEWHALE_CLOUD_FACTS_URL` (optional `{channel}` placeholder) and
-`CODEWHALE_CLOUD_FACTS_PATH`. A local file is still subject to all trust checks.
+`CODEWHALE_CLOUD_FACTS_PATH`. A local file is still subject to all trust checks,
+and `[cloud_facts]` without a `url` (or `CODEWHALE_CLOUD_FACTS_PATH`) refuses
+refresh with the no-source error — there is no default endpoint to fall back
+to.
 Production network refresh is suppressed in CI; tests opt into an explicit
 loopback fixture transport policy.
 

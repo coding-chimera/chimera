@@ -40,12 +40,13 @@ pub struct ConfigToml {
     pub telemetry: Option<bool>,
     /// Where telemetry batches are sent, when telemetry is enabled at all.
     ///
-    /// Unset here means "take the shipped default",
-    /// `DEFAULT_TELEMETRY_ENDPOINT` — not "send nowhere". Setting it to the
-    /// empty string is the way to say send nowhere: that resolves to no
-    /// endpoint, which appends batches to `dryrun.jsonl` and constructs no HTTP
-    /// client. Either way a persistent or run-scoped opt-out still prevents any
-    /// batch from being constructed.
+    /// Unset here means "no destination": this build ships no first-party
+    /// endpoint, so a session with no configured `telemetry_endpoint` stays
+    /// off rather than contacting a host nobody chose. Setting it to a URL
+    /// names your own sink; setting it to the empty string is the local
+    /// dry-run sink, which appends batches to `dryrun.jsonl` and constructs
+    /// no HTTP client. Either way a persistent or run-scoped opt-out still
+    /// prevents any batch from being constructed.
     ///
     /// Kept as a scalar sibling of `telemetry` rather than folded into a
     /// `[telemetry]` table. `telemetry` is already a scalar and every section

@@ -7,8 +7,9 @@
 //!
 //! Two properties of the wording are deliberate and load-bearing:
 //!
-//! 1. **Usage defaults on with durable opt-out.** Disclosure presentation
-//!    records only that it was shown, never fictional human acceptance.
+//! 1. **Usage defaults off, and delivery requires an operator-configured
+//!    endpoint.** Disclosure presentation records only that it was shown,
+//!    never fictional human acceptance.
 //! 2. **The red lines are stated as "not collected", not as "anonymized".**
 //!    Sampling and hashing are not the same promise, and a notice that implies
 //!    them when neither is true is worse than no notice.
@@ -37,11 +38,12 @@ every 90 days. Change your mind any time:
 
 Full schema, field by field:  docs/TELEMETRY.md
 
-Usage reporting is on by default. Codewhale and PostHog process these
-counts when delivery is configured. No IP is collected.";
+Usage reporting is off by default. Nothing is sent unless you configure
+telemetry_endpoint to your own sink; an empty value writes the local
+dry-run file instead. No IP is collected.";
 
 /// Concise disclosure for every armed runtime surface, including headless CLI.
-pub const STARTUP_DISCLOSURE: &str = "Usage reporting is on by default: Codewhale and PostHog process aggregate version/platform, session, feature, error, model/token and built-in tool counts when delivery is configured. No content or IP. Turn off: codewhale config set telemetry false. Details: codewhale config telemetry";
+pub const STARTUP_DISCLOSURE: &str = "Usage reporting is off by default: nothing is sent unless telemetry_endpoint names your own sink. Counts cover aggregate version/platform, session, feature, error, model/token and built-in tool use when delivery is configured. No content or IP. Turn on: codewhale config set telemetry true. Details: codewhale config telemetry";
 
 /// Present the policy once per revision without recording human acceptance.
 /// Failure to save the display marker only causes a later repeat disclosure.

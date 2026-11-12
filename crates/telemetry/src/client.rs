@@ -1,10 +1,10 @@
 //! Transport. One POST, or — with no endpoint — a local file.
 //!
-//! The shipped default endpoint is `codewhale_config::DEFAULT_TELEMETRY_ENDPOINT`,
-//! the first-party ingest service documented in `docs/TELEMETRY.md`. That
-//! default decides only *where* a batch goes, never *whether* one exists: this
-//! module is reached only by a session that resolved telemetry on after every
-//! persistent and run-scoped opt-out was applied.
+//! There is no shipped endpoint: this build has no first-party ingest service,
+//! so a session reaches this module only with an endpoint somebody configured,
+//! after telemetry resolved on through every persistent and run-scoped opt-out.
+//! That configuration decides only *where* a batch goes, never *whether* one
+//! exists.
 //!
 //! `None` here is the dry-run sink, reachable by configuring an empty endpoint:
 //! batches are serialized with the same serializer a real endpoint would see and

@@ -140,9 +140,10 @@ pub struct ResolvedRuntimeOptions {
     pub telemetry_explicit_off: bool,
     /// Where a telemetry batch would be sent, if telemetry were on.
     ///
-    /// Already resolved: `DEFAULT_TELEMETRY_ENDPOINT` when nobody configured
-    /// one, the configured value when somebody did, and `None` when somebody
-    /// configured an empty one — which means the dry-run sink, not "unset".
+    /// Already resolved: the configured value when somebody set one, and
+    /// `None` both when somebody configured an empty one — the dry-run sink —
+    /// and when nobody configured anything, which means no destination at
+    /// all (there is no first-party endpoint to fall back to).
     /// Which schemes are actually contactable is decided where a batch would be
     /// sent, not here — a user must be able to stage a value.
     pub telemetry_endpoint: Option<String>,

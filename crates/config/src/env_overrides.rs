@@ -188,12 +188,10 @@ impl EnvRuntimeOverrides {
             telemetry,
             telemetry_env_invalid,
             telemetry_floor,
-            // Empty is kept, not discarded. Since the config file's *absent*
-            // endpoint now resolves to `DEFAULT_TELEMETRY_ENDPOINT`, dropping
-            // an explicitly emptied variable here would make
-            // `CODEWHALE_TELEMETRY_ENDPOINT=` select the shipped endpoint —
-            // the opposite of what anyone typing it means. Resolution reads an
-            // empty override as "contact nobody, write the dry-run file".
+            // Empty is kept, not discarded: an explicitly emptied variable
+            // says "contact nobody, write the dry-run file", which differs
+            // from an unset one ("no destination, telemetry stays off"), so
+            // dropping it here would change what the user typed.
             telemetry_endpoint: std::env::var("CODEWHALE_TELEMETRY_ENDPOINT")
                 .or_else(|_| std::env::var("DEEPSEEK_TELEMETRY_ENDPOINT"))
                 .ok(),

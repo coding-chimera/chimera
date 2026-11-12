@@ -18652,25 +18652,27 @@ fn version_hint_ignores_draft_prerelease_and_current_versions() {
 #[test]
 fn startup_version_check_source_respects_update_config() {
     assert_eq!(
-        resolve_version_check_source(
+        resolve_version_check_source_with_mirror(
             &UpdateConfig {
                 check_for_updates: false,
                 update_uri: Some("https://mirror.example/releases/latest".to_string()),
                 ..UpdateConfig::default()
             },
-            None
+            None,
+            true
         ),
         StartupVersionCheckSource::Disabled
     );
 
     assert_eq!(
-        resolve_version_check_source(
+        resolve_version_check_source_with_mirror(
             &UpdateConfig {
                 check_for_updates: true,
                 update_uri: Some("  https://mirror.example/releases/latest  ".to_string()),
                 ..UpdateConfig::default()
             },
-            None
+            None,
+            true
         ),
         StartupVersionCheckSource::ConfiguredUrl(
             "https://mirror.example/releases/latest".to_string()
@@ -18678,8 +18680,19 @@ fn startup_version_check_source_respects_update_config() {
     );
 
     assert_eq!(
-        resolve_version_check_source(&UpdateConfig::default(), None),
+        resolve_version_check_source_with_mirror(&UpdateConfig::default(), None, true),
         StartupVersionCheckSource::ReleaseResolver
+    );
+}
+
+#[test]
+fn startup_version_check_is_disabled_without_a_release_source() {
+    // The fork's hard stop: no update_uri and no operator mirror means the
+    // startup check must not fall back to a first-party release host — this
+    // build has none, so the check stays off entirely.
+    assert_eq!(
+        resolve_version_check_source_with_mirror(&UpdateConfig::default(), None, false),
+        StartupVersionCheckSource::Disabled
     );
 }
 
@@ -18692,13 +18705,14 @@ fn startup_version_check_is_disabled_in_ci_and_on_opt_out() {
         codewhale_release::SuppressionReason::OptOut("CODEWHALE_NO_UPDATE_CHECK"),
     ] {
         assert_eq!(
-            resolve_version_check_source(
+            resolve_version_check_source_with_mirror(
                 &UpdateConfig {
                     check_for_updates: true,
                     update_uri: Some("https://mirror.example/releases/latest".to_string()),
                     ..UpdateConfig::default()
                 },
-                Some(reason)
+                Some(reason),
+                true
             ),
             StartupVersionCheckSource::Disabled,
             "{} should suppress the check",
