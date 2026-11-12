@@ -316,6 +316,11 @@ pub fn provider_base_url_is_official(provider: ProviderKind, base_url: &str) -> 
         // Custom routes have no Codewhale-owned official endpoint. The
         // descriptor URL is a schema placeholder, never a credential scope.
         ProviderKind::Custom => false,
+        // The Alibailian relay has no official endpoint family: its base URL
+        // is operator-controlled configuration, so any URL — including the
+        // placeholder default — is treated as custom and keeps its own
+        // model-id namespace and credential scope.
+        ProviderKind::Alibailian => false,
         _ => {
             normalized
                 == default_base_url_for_provider(provider)
@@ -337,6 +342,8 @@ pub fn provider_published_pricing_base_urls(provider: ProviderKind) -> Vec<&'sta
             "https://api.deepseek.com/anthropic",
             "https://api.deepseek.com/anthropic/v1",
         ],
+        // A relay endpoint is never a pricing-provenance URL.
+        ProviderKind::Alibailian => vec![],
         ProviderKind::Custom => vec![],
         _ => vec![default_base_url_for_provider(provider)],
     }

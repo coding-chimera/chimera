@@ -97,6 +97,22 @@ pub(crate) fn documented_zai_web_search_for_route(
     documented_server_side_web_search("zai", wire_model_id)
 }
 
+/// Return the hosted web-search fact for the explicit Alibailian relay.
+///
+/// The relay declares a hosted `web_search` tool on its Responses dialect;
+/// this is a relay-profile fact only. The official Model Studio kinds keep
+/// their own Token Plan Harness projection and never inherit this one, and a
+/// custom endpoint never earns it by URL similarity.
+#[must_use]
+pub(crate) fn documented_alibailian_web_search_for_route(
+    provider: ProviderKind,
+) -> CapabilityState {
+    if provider != ProviderKind::Alibailian {
+        return CapabilityState::Unknown;
+    }
+    CapabilityState::Supported
+}
+
 /// Return the native-search fact for exact Moonshot direct and Kimi Code
 /// product routes. Adjacent coding paths and cross-product model ids remain
 /// unknown even though they share one provider identity.

@@ -7163,6 +7163,11 @@ impl CodewhaleClient {
     }
 }
 
+mod alibailian;
+
+pub(crate) fn alibailian_fallback_chain() -> &'static [ProviderKind] {
+    alibailian::websearch_fallback_chain()
+}
 mod anthropic;
 mod chat;
 mod deepseek_effort;
