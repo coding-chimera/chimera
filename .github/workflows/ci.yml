@@ -612,11 +612,12 @@ jobs:
       # both `#[allow(dead_code)]` and `#[expect(dead_code)]`, because counting
       # one spelling let a sweep rewrite allows as expects and book it as
       # progress (#6241).
-      - name: Test dead-code and blocking-calls budget scripts
+      - name: Test dead-code, blocking-calls, and Rust-only guard scripts
         if: needs.changes.outputs.heavy == 'true'
         run: |
           python3 scripts/test_check_dead_code_budget.py
           python3 scripts/test_check_blocking_calls_budget.py
+          python3 scripts/test_check_migration_rust_only.py
       # The four budget ratchets below (dead-code, blocking-calls,
       # runtime-contract, persistence-backlog) assert whole-repo properties.
       # They used to be advisory on every pull request and fatal on push, so
@@ -662,6 +663,9 @@ jobs:
           bash scripts/ratchet-gate.sh --name blocking-calls
           --update "python3 scripts/check-blocking-calls-budget.py --update"
           -- python3 scripts/check-blocking-calls-budget.py
+      - name: Check Rust-only migration
+        if: needs.changes.outputs.heavy == 'true'
+        run: python3 scripts/check-migration-rust-only.py
       - name: Test runtime-contract measurement harness
         if: needs.changes.outputs.heavy == 'true'
         run: |

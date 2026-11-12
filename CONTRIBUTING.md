@@ -338,7 +338,7 @@ maintainer to approve the first run for a brand-new GitHub account.
 
 | Check | What it runs | When it is red |
 | --- | --- | --- |
-| `Lint` (required) | `cargo fmt --check`, clippy on every target, and the fast drift checks (locales, READMEs, provider registry, dead-code and blocking-call budgets) | Run `cargo fmt --all` and the clippy command in [Pre-push verification](#pre-push-verification); the log names the file and the check |
+| `Lint` (required) | `cargo fmt --check`, clippy on every target, and the fast drift checks (locales, READMEs, provider registry, dead-code and blocking-call budgets, Rust-only migration guard) | Run `cargo fmt --all` and the clippy command in [Pre-push verification](#pre-push-verification); the log names the file and the check |
 | `Test (windows-latest)` (required) | Compiles every workspace target for Windows with warnings denied, and the installer PATH helper tests | Usually a `cfg(windows)` path or an import only Windows sees; the log has the compiler error |
 | `Version drift` | Version files, the `feat:` release-note rule, release helper tests and contributor credit | The credit step only reports: a maintainer adds your credit when the PR merges |
 

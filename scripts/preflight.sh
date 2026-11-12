@@ -32,6 +32,8 @@
 #   - dead-code / blocking-calls         each ratchet's --update, committed in the
 #     (and with --full runtime-contract, same PR with the reason in the PR body
 #     persistence-backlog)
+#   - Rust-only migration               no new TS; unsafe additions need exact
+#                                       scripts/migration-rust-only.json entries
 #   - feature release-note receipts      add each feat commit's #issue to
 #     for this branch's own commits      CHANGELOG.md in the same PR
 #   - clippy (with --clippy)            the Lint job's exact command; fix the lint
