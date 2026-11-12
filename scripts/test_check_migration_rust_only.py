@@ -5,7 +5,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-migration-rust-only.py"
@@ -53,6 +53,22 @@ class MigrationRustOnlyTest(unittest.TestCase):
             mod.git_diff("abc123", "--name-only", "--diff-filter=AM")
         command = run.call_args.args[0]
         self.assertEqual(command, ["git", "diff", "--name-only", "--diff-filter=AM", "abc123", "--"])
+        with patch.object(mod.subprocess, "run") as run:
+            run.return_value.stdout = ""
+            mod.git_diff("abc123", "--unified=0", paths=["*.rs"])
+        self.assertEqual(run.call_args.args[0], ["git", "diff", "--unified=0", "abc123", "--", "*.rs"])
+
+    def test_main_passes_rust_glob_without_duplicate_separator(self) -> None:
+        with patch.object(mod, "git_diff", side_effect=["crates/demo/lib.rs\n", ""]) as diff:
+            with patch.object(sys, "argv", ["check-migration-rust-only.py"]):
+                self.assertEqual(mod.main(), 0)
+        self.assertEqual(
+            diff.call_args_list,
+            [
+                call("d6f6783", "--name-only", "--diff-filter=AM"),
+                call("d6f6783", "--unified=0", paths=["*.rs"]),
+            ],
+        )
 
 
 if __name__ == "__main__":

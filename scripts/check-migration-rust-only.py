@@ -64,9 +64,9 @@ def added_rust_lines(diff: str) -> dict[str, list[str]]:
     return result
 
 
-def git_diff(base: str, *args: str) -> str:
+def git_diff(base: str, *options: str, paths: list[str] | None = None) -> str:
     return subprocess.run(
-        ["git", "diff", *args, base, "--"],
+        ["git", "diff", *options, base, "--", *(paths or [])],
         cwd=REPO_ROOT,
         check=True,
         text=True,
@@ -81,7 +81,7 @@ def main() -> int:
     policy = load_policy()
     base = args.base or policy.get("base", "d6f6783")
     changed = git_diff(base, "--name-only", "--diff-filter=AM").splitlines()
-    violations = evaluate(changed, added_rust_lines(git_diff(base, "--unified=0", "--", "*.rs")), policy)
+    violations = evaluate(changed, added_rust_lines(git_diff(base, "--unified=0", paths=["*.rs"])), policy)
     if violations:
         for violation in violations:
             print(f"[rust-only] FAIL: {violation}", file=sys.stderr)
