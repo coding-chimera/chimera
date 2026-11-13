@@ -243,6 +243,7 @@ fn collect_unsupported_paths(prefix: &str, value: &serde_json::Value, paths: &mu
         paths.push(prefix.to_string());
     }
 }
+
 fn build_outcome(
     object: serde_json::Map<String, serde_json::Value>,
     scope: ImportScope,
