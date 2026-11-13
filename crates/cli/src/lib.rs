@@ -46,7 +46,7 @@ fn parse_catalog_route(value: &str) -> std::result::Result<ProviderKind, String>
     }
     parse_route_kind(value).ok_or_else(|| {
         format!(
-            "unknown route '{value}'; expected a catalog route id (see `codewhale providers export --json`)"
+            "unknown route '{value}'; expected a catalog route id (see `chimera providers export --json`)"
         )
     })
 }
@@ -82,10 +82,10 @@ fn parse_provider_identifier(value: &str) -> std::result::Result<String, String>
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "codewhale",
+    name = "chimera",
     version = env!("CODEWHALE_BUILD_VERSION"),
-    bin_name = "codewhale",
-    override_usage = "codewhale [OPTIONS] [PROMPT]\n       codewhale [OPTIONS] <COMMAND> [ARGS]"
+    bin_name = "chimera",
+    override_usage = "chimera [OPTIONS] [PROMPT]\n       chimera [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct Cli {
     #[command(flatten)]
@@ -117,7 +117,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "BOOL",
-        help = "Control aggregate usage counting (default on; Codewhale + PostHog; \
+        help = "Control aggregate usage counting (default on; Chimera + PostHog; \
                 durable off: config set telemetry false; CODEWHALE_TELEMETRY=0 always wins)"
     )]
     telemetry: Option<bool>,
@@ -147,7 +147,7 @@ struct Cli {
         conflicts_with_all = ["continue_session", "session_id"]
     )]
     resume: Option<String>,
-    /// Alias of `--resume` matching `codewhale exec --session-id`.
+    /// Alias of `--resume` matching `chimera exec --session-id`.
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
@@ -191,23 +191,23 @@ impl std::ops::DerefMut for Cli {
 enum Commands {
     /// Run an interactive or non-interactive task.
     Run(RunArgs),
-    /// Run Codewhale diagnostics.
+    /// Run Chimera diagnostics.
     #[command(
-        override_usage = "codewhale doctor [OPTIONS]",
+        override_usage = "chimera doctor [OPTIONS]",
         after_help = codewhale_tui::doctor_options_help()
     )]
     Doctor(TuiPassthroughArgs),
     /// Summarize local session failure signals without raw content.
     #[command(
-        override_usage = "codewhale session-diagnostics <JSONL>",
-        after_help = "JSONL is a saved session log; `codewhale sessions` lists saved sessions."
+        override_usage = "chimera session-diagnostics <JSONL>",
+        after_help = "JSONL is a saved session log; `chimera sessions` lists saved sessions."
     )]
     SessionDiagnostics(TuiPassthroughArgs),
     /// Score recorded turn metrics against an optional baseline.
     Scorecard(TuiPassthroughArgs),
     /// List cached models; use --update to refresh configured provider catalogs.
     #[command(
-        after_help = "Examples:\n  codewhale models --update\n  codewhale models --update --provider openai\n  codewhale models --provider openai-codex --json\n\n--update (alias: --refresh) refreshes configured provider catalogs. --provider ID limits the scope."
+        after_help = "Examples:\n  chimera models --update\n  chimera models --update --provider openai\n  chimera models --provider openai-codex --json\n\n--update (alias: --refresh) refreshes configured provider catalogs. --provider ID limits the scope."
     )]
     Models(TuiPassthroughArgs),
     /// Generate speech audio with Xiaomi MiMo TTS models.
@@ -216,16 +216,16 @@ enum Commands {
     /// List saved sessions.
     Sessions(TuiPassthroughArgs),
     /// Show what a session did: files, commands, web and MCP calls, agents,
-    /// approvals, and failures. `codewhale receipts [ID|--last] [--format md|json]`.
+    /// approvals, and failures. `chimera receipts [ID|--last] [--format md|json]`.
     #[command(
         visible_alias = "receipt",
-        override_usage = "codewhale receipts [ID|--last] [--format <md|json>]",
-        after_help = "Receipt options:\n      --last             Show the most recent session\n      --format <FORMAT>  Output format: md or json\n\nID is a saved session id or prefix; `codewhale sessions` lists them."
+        override_usage = "chimera receipts [ID|--last] [--format <md|json>]",
+        after_help = "Receipt options:\n      --last             Show the most recent session\n      --format <FORMAT>  Output format: md or json\n\nID is a saved session id or prefix; `chimera sessions` lists them."
     )]
     Receipts(TuiPassthroughArgs),
     /// Resume a saved session.
     Resume(TuiPassthroughArgs),
-    /// Launch an interactive session and hand it to the Codewhale web app.
+    /// Launch an interactive session and hand it to the Chimera web app.
     Rc(TuiPassthroughArgs),
     /// Fork a saved session.
     Fork(TuiPassthroughArgs),
@@ -236,24 +236,24 @@ enum Commands {
     #[command(
         about = "Inspect, review, trust, enable, disable or revoke plugin bundles",
         alias = "plugin",
-        override_usage = "codewhale plugins <COMMAND>",
+        override_usage = "chimera plugins <COMMAND>",
         after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot\n  trust <NAME> [--json]  Show the capability review; in a terminal, then ask\n  trust <NAME> --review-token T [--yes] [--json]  Trust exactly the content the bundle review token names\n  enable <NAME> [--json]  Enable a trusted plugin\n  disable <NAME> [--json]  Disable a plugin, keeping its trust\n  revoke <NAME> [--json]  Revoke trust\n\nThe bundle review token ties trust to exact content; it does not show that anyone read the review,\nand it is not the host-service review token. A --yes trust is recorded as the command line. When\nCODEWHALE_AGENT_PROJECT marks the process, as it does every command the agent runs, trust and enable\nare the agent's, for that project only; that mark is a label the agent could remove in Full Access."
     )]
     Plugins(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
-    /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge).
+    /// Generate a remote Chimera agent deploy bundle (cloud + chat bridge).
     RemoteSetup(RemoteSetupArgs),
     /// Run a non-interactive prompt.
     #[command(after_help = "\
 Examples:
-  codewhale exec \"explain this function\"
-  codewhale exec --auto \"list crates/ with ls\"
-  codewhale exec --auto --output-format stream-json \"fix the failing test\"
+  chimera exec \"explain this function\"
+  chimera exec --auto \"list crates/ with ls\"
+  chimera exec --auto --output-format stream-json \"fix the failing test\"
 
 Run options such as --model, --provider, --config and --profile work before or after exec:
-  codewhale --model MODEL exec \"explain this function\"
-  codewhale exec --model MODEL \"explain this function\"
+  chimera --model MODEL exec \"explain this function\"
+  chimera exec --model MODEL \"explain this function\"
 
 Common forwarded flags:
   --auto                           Enable tools with automatic approvals and Full Access by default
@@ -265,14 +265,14 @@ Common forwarded flags:
   --output-format <FORMAT>         Output format: text or stream-json
   --hooks                          Opt in to configured hooks (tool_call_before, shell_env)
 
-Plain `codewhale exec` runs the agent with the normal tool surface under the
+Plain `chimera exec` runs the agent with the normal tool surface under the
 configured sandbox and approval posture. Use `--no-tools` for one answer with
 no tools. `--auto` selects automatic approvals and Full Access by default. A
 reply cut off at the provider's output limit is continued in the same turn, at
 most 8 model steps unless `--max-turns` says otherwise.
 --auto defaults to Full Access: no shell sandbox and trust mode on. Use --sandbox workspace-write to keep the shell sandbox and file-tool workspace restrictions; stricter configured policies also apply. A denied sandbox retry requires --allow-sandbox-elevation or --sandbox danger-full-access.
 Any --sandbox other than danger-full-access (or an equivalent sandbox_mode in config) disables trust mode.
-Runs that offer tools, stream-json runs, and resumed sessions are saved for codewhale sessions, exec --continue, and codewhale receipts <id>. Answer-only (--no-tools) text/--json runs are not saved unless compaction needs recovery.
+Runs that offer tools, stream-json runs, and resumed sessions are saved for chimera sessions, exec --continue, and chimera receipts <id>. Answer-only (--no-tools) text/--json runs are not saved unless compaction needs recovery.
 Put flags before the prompt. Put -- before a prompt starting with - or containing literal exec flags.
 Piped stdin is the prompt when no prompt argument is given, or is appended to it; with a prompt argument, stdin that sends nothing for 2 seconds is ignored with a note on stderr.
 ")]
@@ -282,9 +282,9 @@ Piped stdin is the prompt when no prompt argument is given, or is appended to it
         name = "fleet",
         after_help = "\
 Examples:
-  codewhale fleet init
-  codewhale fleet run tasks.json --max-workers 4
-  codewhale fleet status
+  chimera fleet init
+  chimera fleet run tasks.json --max-workers 4
+  chimera fleet status
 
 The durable ledger `.codewhale/fleet.jsonl`, saved rosters `fleets/<name>.toml`,
 the `[fleet]` and `[fleets.*]` config tables, and `workflow run --fleet` keep
@@ -300,8 +300,8 @@ the Fleet name across versions."
     /// Run checked-in Workflows through a Lane Runtime backend.
     #[command(after_help = "\
 Examples:
-  codewhale workflow run stopship --fleet stopship --runtime tmux --goal verify-release-candidate
-  codewhale workflow run stopship --fleet stopship --runtime inline --verify
+  chimera workflow run stopship --fleet stopship --runtime tmux --goal verify-release-candidate
+  chimera workflow run stopship --fleet stopship --runtime inline --verify
 
 `workflow run` validates the checked-in Workflow source and named Fleet roster,
 creates a Lane record, then dispatches the Workflow tool directly through the
@@ -311,13 +311,13 @@ selected Runtime backend without an operator model turn.
     /// Manage running workflow instances (Lanes) and Runtime backends (#4176).
     #[command(after_help = "\
 Examples:
-  codewhale lane list
-  codewhale lane status <lane-id>
-  codewhale lane attach <lane-id>
-  codewhale lane logs <lane-id>
-  codewhale lane interrupt <lane-id>
-  codewhale lane interrupt <lane-id>@<lifecycle-seq>
-  codewhale lane start --workflow stopship --fleet stopship --runtime tmux --goal verify-release-candidate -- echo hello
+  chimera lane list
+  chimera lane status <lane-id>
+  chimera lane attach <lane-id>
+  chimera lane logs <lane-id>
+  chimera lane interrupt <lane-id>
+  chimera lane interrupt <lane-id>@<lifecycle-seq>
+  chimera lane start --workflow stopship --fleet stopship --runtime tmux --goal verify-release-candidate -- echo hello
 
 Lane records persist under $CODEWHALE_HOME/lanes/. tmux durability belongs to
 Runtime, not Fleet.
@@ -338,7 +338,7 @@ lifecycle generation you observed.
     Eval(TuiPassthroughArgs),
     /// Manage MCP servers.
     #[command(
-        override_usage = "codewhale mcp [OPTIONS] <COMMAND>",
+        override_usage = "chimera mcp [OPTIONS] <COMMAND>",
         after_help = codewhale_tui::mcp_subcommand_help()
     )]
     Mcp(TuiPassthroughArgs),
@@ -348,13 +348,13 @@ lifecycle generation you observed.
     Pet(TuiPassthroughArgs),
     /// Inspect feature flags.
     #[command(
-        override_usage = "codewhale features <COMMAND>",
+        override_usage = "chimera features <COMMAND>",
         after_help = "Commands:\n  list    List feature flags and their state"
     )]
     Features(TuiPassthroughArgs),
-    /// Connect third-party harnesses through Codewhale (e.g. `integrations dsh status`).
+    /// Connect third-party harnesses through Chimera (e.g. `integrations dsh status`).
     Integrations(TuiPassthroughArgs),
-    /// Run a local Codewhale server.
+    /// Run a local Chimera server.
     #[command(after_help = "\
 Forwarded serve options:
       --mcp                 Start MCP server over stdio
@@ -369,30 +369,30 @@ Forwarded serve options:
       --cors-origin <URL>   Additional CORS origin to allow (repeatable)
       --auth-token <TOKEN>  Require this bearer token for /v1/* runtime API routes
       --insecure            Disable runtime API auth when no token is configured
-      --full-access         Run with Full Access: no approval prompts, no Codewhale sandbox (alias: --yolo)
+      --full-access         Run with Full Access: no approval prompts, no Chimera sandbox (alias: --yolo)
 
-`codewhale serve --http` and `codewhale serve --mobile` remain compatibility
-aliases for `codewhale app-server --http` and `codewhale app-server --mobile`.
-New integrations should prefer `codewhale app-server --http` for the full Engine API.")]
+`chimera serve --http` and `chimera serve --mobile` remain compatibility
+aliases for `chimera app-server --http` and `chimera app-server --mobile`.
+New integrations should prefer `chimera app-server --http` for the full Engine API.")]
     Serve(TuiPassthroughArgs),
     /// Open the first-class local browser client over the canonical Runtime API.
     #[command(
         after_help = "The browser receives a one-time loopback bootstrap capability, never the Runtime token.\nThe capability is exchanged for a bounded, process-local HttpOnly, SameSite=Strict web session and then invalidated."
     )]
     Web(WebArgs),
-    /// Sign in to your Codewhale account through the browser.
+    /// Sign in to your Chimera account through the browser.
     #[command(
-        after_help = "Local use does not require a Codewhale account.\nConnect a model in the TUI with /connect, or run `codewhale auth set --provider <provider>`.\nSigning in preserves your selected model and does not upload existing local keys."
+        after_help = "Local use does not require a Chimera account.\nConnect a model in the TUI with /connect, or run `chimera auth set --provider <provider>`.\nSigning in preserves your selected model and does not upload existing local keys."
     )]
     Login(LoginArgs),
-    /// Sign out of Codewhale, keeping local model connections and work.
+    /// Sign out of Chimera, keeping local model connections and work.
     Logout(LogoutArgs),
     /// Manage authentication credentials and provider mode.
     Auth(AuthArgs),
-    /// Manage your Codewhale account and its available features.
+    /// Manage your Chimera account and its available features.
     #[command(visible_alias = "cloud")]
     Account(codewhale_account_cli::CloudArgs),
-    /// Run a task on a Codewhale cloud computer using your configured model.
+    /// Run a task on a Chimera cloud computer using your configured model.
     Dispatch(codewhale_account_cli::dispatch::DispatchArgs),
     /// Run MCP server mode over stdio.
     McpServer,
@@ -407,12 +407,12 @@ New integrations should prefer `codewhale app-server --http` for the full Engine
     /// Expose the full Engine API with --http, or smaller compatibility controls.
     #[command(after_help = "\
 Transports:
-  codewhale app-server --http              Full HTTP/SSE runtime API (/v1/*) on 127.0.0.1:7878
-  codewhale app-server --mobile            Runtime API + phone control page (127.0.0.1 only)
-  codewhale app-server --stdio             Compatibility JSON-RPC controls and tool-free turns
-  codewhale app-server                     Initialized JSONL control over stdio on the canonical owner
+  chimera app-server --http              Full HTTP/SSE runtime API (/v1/*) on 127.0.0.1:7878
+  chimera app-server --mobile            Runtime API + phone control page (127.0.0.1 only)
+  chimera app-server --stdio             Compatibility JSON-RPC controls and tool-free turns
+  chimera app-server                     Initialized JSONL control over stdio on the canonical owner
 
-`--http` and `--mobile` serve the same mature runtime API as `codewhale serve
+`--http` and `--mobile` serve the same mature runtime API as `chimera serve
 --http`/`--mobile`, which remain as compatibility aliases. The runtime API token
 is read from --auth-token, CODEWHALE_RUNTIME_TOKEN, or DEEPSEEK_RUNTIME_TOKEN.
 
@@ -424,37 +424,37 @@ See docs/RUNTIME_API.md.")]
     /// Generate shell completions.
     #[command(
         visible_alias = "completions",
-        after_help = r#"Every script completes both `codewhale` and the `codew` shorthand.
+        after_help = r#"Every script completes the `chimera` command.
 
 Examples:
   Bash (current shell only):
-    source <(codewhale completion bash)
+    source <(chimera completion bash)
 
   Bash (persistent, Linux/bash-completion):
     mkdir -p ~/.local/share/bash-completion/completions
-    codewhale completion bash > ~/.local/share/bash-completion/completions/codewhale
+    chimera completion bash > ~/.local/share/bash-completion/completions/chimera
     # Requires bash-completion to be installed and loaded by your shell.
 
   Zsh:
     mkdir -p ~/.zfunc
-    codewhale completion zsh > ~/.zfunc/_codewhale
+    chimera completion zsh > ~/.zfunc/_chimera
     # Add to ~/.zshrc if needed:
     #   fpath=(~/.zfunc $fpath)
     #   autoload -Uz compinit && compinit
 
   Fish:
     mkdir -p ~/.config/fish/completions
-    codewhale completion fish > ~/.config/fish/completions/codewhale.fish
+    chimera completion fish > ~/.config/fish/completions/chimera.fish
 
   PowerShell (current shell only):
-    codewhale completion powershell | Out-String | Invoke-Expression
+    chimera completion powershell | Out-String | Invoke-Expression
 
   PowerShell (persistent):
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PROFILE)
-    codewhale completion powershell >> $PROFILE
+    chimera completion powershell >> $PROFILE
 
   Elvish:
-    codewhale completion elvish >> ~/.config/elvish/rc.elv
+    chimera completion elvish >> ~/.config/elvish/rc.elv
 
 The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#
     )]
@@ -481,7 +481,7 @@ The command prints the completion script to stdout; redirect it to a path your s
         yes: bool,
         #[arg(
             long,
-            help = "Also delete Codewhale's own data directory (config, secrets file, sessions); previewed unless --yes"
+            help = "Also delete Chimera's own data directory (config, secrets file, sessions); previewed unless --yes"
         )]
         purge_data: bool,
     },
@@ -509,17 +509,10 @@ enum ProvidersCommand {
 /// type. Completion scripts must register *this*, not the in-tree
 /// `codewhale-tui` binary that used to render them (#5526).
 ///
-/// GitHub releases do not ship a separately compiled TUI: `release-artifacts.yml`
-/// builds `-p codewhale-cli` and publishes `codewhale` plus a byte-identical
-/// `codew` copy. The `codewhale-tui-*` filenames still attached to the release
-/// are that same binary (a v0.9.4 updater bridge), not a third runtime.
-const COMPLETION_BIN_NAME: &str = "codewhale";
-
-/// Releases publish `codew` as a byte-identical copy of `codewhale`
-/// (`release-artifacts.yml` copies the binary and `cmp`s it), so a completion
-/// script that fires only for `codewhale` is half-installed for anyone who
-/// types the short name.
-const COMPLETION_ALIAS_NAME: &str = "codew";
+/// The Chimera-rs rename ships exactly one user command. The former
+/// `chimera`/`codew` executable aliases are not kept in the first release,
+/// so there is no shorthand to register beside the primary name.
+const COMPLETION_BIN_NAME: &str = "chimera";
 
 const ADVANCED_COMMANDS: &[&str] = &[
     "run",
@@ -567,7 +560,7 @@ fn user_facing_command() -> clap::Command {
         }
     }
     let mut paragraph =
-        String::from("Advanced commands (`codewhale help <command>` for details):\n ");
+        String::from("Advanced commands (`chimera help <command>` for details):\n ");
     let mut width = 1;
     for name in listed {
         if width + name.len() + 1 > 78 {
@@ -582,62 +575,12 @@ fn user_facing_command() -> clap::Command {
 }
 
 /// Render the completion script for `shell` from this binary's own clap tree,
-/// registered for both published command names.
+/// registered for the single published command name.
 fn render_completion_script(shell: Shell) -> String {
     let mut cmd = Cli::command();
     let mut buf = Vec::new();
     generate(shell, &mut cmd, COMPLETION_BIN_NAME, &mut buf);
-    let script = String::from_utf8_lossy(&buf).into_owned();
-    register_completion_alias(shell, script)
-}
-
-/// Extend a clap_complete script so the `codew` shorthand completes too.
-///
-/// Each shell gets its own idiomatic hook rather than a second copy of the
-/// script: bash re-binds the generated function, zsh widens the `#compdef`
-/// tag line, fish wraps the primary command, PowerShell registers an array
-/// of command names, and Elvish aliases the completer map entry. `Shell` is
-/// non-exhaustive, so any future variant falls through unchanged.
-fn register_completion_alias(shell: Shell, script: String) -> String {
-    let bin = COMPLETION_BIN_NAME;
-    let alias = COMPLETION_ALIAS_NAME;
-    match shell {
-        Shell::Bash => format!(
-            "{script}\n\
-             if [[ \"${{BASH_VERSINFO[0]}}\" -eq 4 && \"${{BASH_VERSINFO[1]}}\" -ge 4 || \"${{BASH_VERSINFO[0]}}\" -gt 4 ]]; then\n    \
-             complete -F _{bin} -o nosort -o bashdefault -o default {alias}\n\
-             else\n    \
-             complete -F _{bin} -o bashdefault -o default {alias}\n\
-             fi\n"
-        ),
-        // Two install paths, two hooks. Autoloaded from `fpath` the tag line
-        // on the first line is what binds the names; sourced directly, the
-        // `compdef` call clap emits at the bottom is. Cover both, and reuse
-        // clap's own `funcstack` guard so the appended call is skipped when
-        // the body runs as the completion function itself.
-        Shell::Zsh => {
-            let tagged = match script.strip_prefix(&format!("#compdef {bin}\n")) {
-                Some(rest) => format!("#compdef {bin} {alias}\n{rest}"),
-                None => script,
-            };
-            format!(
-                "{tagged}\nif [ \"$funcstack[1]\" != \"_{bin}\" ]; then\n    \
-                 compdef _{bin} {alias}\n\
-                 fi\n"
-            )
-        }
-        Shell::Fish => format!("{script}\ncomplete -c {alias} -w {bin}\n"),
-        Shell::PowerShell => script.replacen(
-            &format!("-CommandName '{bin}'"),
-            &format!("-CommandName '{bin}','{alias}'"),
-            1,
-        ),
-        Shell::Elvish => format!(
-            "{script}\n\
-             set edit:completion:arg-completer[{alias}] = $edit:completion:arg-completer[{bin}]\n"
-        ),
-        _ => script,
-    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 fn command_accepts_raw_provider(command: Option<&Commands>) -> bool {
@@ -806,7 +749,7 @@ struct LaneLogProxyArgs {
     command: Vec<String>,
 }
 
-/// `codewhale lane …` — running workflow instances (#4176).
+/// `chimera lane …` — running workflow instances (#4176).
 #[derive(Debug, Args)]
 struct LaneArgs {
     #[command(subcommand)]
@@ -914,7 +857,7 @@ enum LaneCommand {
     },
 }
 
-/// `codewhale workflow …` — Workflow entrypoints backed by Lanes (#4177/#4178).
+/// `chimera workflow …` — Workflow entrypoints backed by Lanes (#4177/#4178).
 #[derive(Debug, Args)]
 struct WorkflowArgs {
     #[command(subcommand)]
@@ -1007,7 +950,7 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
     let log_proxy = (kind == RuntimeBackendKind::Tmux)
         .then(std::env::current_exe)
         .transpose()
-        .context("resolve current Codewhale executable for tmux log proxy")?;
+        .context("resolve current Chimera executable for tmux log proxy")?;
     let reg = LaneRegistry::open_default()?;
     let mut record = reg.create_pending(workflow, fleet, issue, goal, kind, worktree_ttl_secs)?;
     let worktree = worktree_request.map(|(repo_root, branch_name, worktree_path)| {
@@ -1139,7 +1082,7 @@ fn run_lane_control(
         if json {
             println!("[]");
         } else {
-            println!("No lanes yet. Start one with `codewhale lane start`.");
+            println!("No lanes yet. Start one with `chimera lane start`.");
         }
         return Ok(());
     }
@@ -1627,10 +1570,10 @@ fn workflow_exec_command(spec: WorkflowExecSpec<'_>) -> Result<WorkflowProcessSp
         // Build argv with explicit config path like the previous dispatcher did.
         let mut args = Vec::new();
         let executable = std::env::current_exe()
-            .context("resolve current Codewhale executable for workflow lane")?;
+            .context("resolve current Chimera executable for workflow lane")?;
         let executable = executable.into_os_string().into_string().map_err(|path| {
             anyhow!(
-                "current Codewhale executable path is not valid UTF-8: {}",
+                "current Chimera executable path is not valid UTF-8: {}",
                 PathBuf::from(path).display()
             )
         })?;
@@ -1699,7 +1642,7 @@ fn lane_process_spec_from_argv(argv: &[String]) -> Result<WorkflowProcessSpec> {
     })
 }
 
-/// Flags for `codewhale remote-setup`. Forwarded to the TUI binary, which owns
+/// Flags for `chimera remote-setup`. Forwarded to the TUI binary, which owns
 /// the interactive wizard and bundle generation.
 #[derive(Debug, Args, Clone, Default)]
 struct RemoteSetupArgs {
@@ -1826,8 +1769,8 @@ enum AuthCommand {
 
     /// Sign in to xAI/Grok with an SSH-friendly device code; run again to switch accounts.
     ///
-    /// The account you approve on the xAI page replaces the Codewhale-owned
-    /// xAI sign-in. `codewhale auth status --provider xai` shows which
+    /// The account you approve on the xAI page replaces the Chimera-owned
+    /// xAI sign-in. `chimera auth status --provider xai` shows which
     /// account is signed in.
     #[command(name = "xai-device")]
     XaiDevice,
@@ -1837,7 +1780,7 @@ enum AuthCommand {
     /// in, so you can choose a different account than the one the browser
     /// is using; if it does not, open the printed URL in a private window.
     /// The account you choose replaces the Codewhale-owned ChatGPT sign-in.
-    /// `codewhale auth status --provider openai-codex` shows which account
+    /// `chimera auth status --provider openai-codex` shows which account
     /// is signed in.
     #[command(name = "chatgpt")]
     Chatgpt,
@@ -1852,7 +1795,7 @@ enum AuthCommand {
     /// exchanges the authorization code for a durable `sk-orca-...` API key.
     /// The key is billed to your OrcaRouter account and revocable there.
     /// To paste an existing key instead, use
-    /// `codewhale auth set --provider orcarouter`.
+    /// `chimera auth set --provider orcarouter`.
     #[command(name = "orcarouter")]
     Orcarouter,
     /// Explicitly allow read-only access to one credential file owned by
@@ -1957,7 +1900,7 @@ enum ConfigCommand {
     Unset {
         key: String,
     },
-    /// Review aggregate usage counting by Codewhale and PostHog (default on).
+    /// Review aggregate usage counting by Chimera and PostHog (default on).
     Telemetry {
         /// Optional compatibility form: enable future sessions under this policy version.
         #[arg(long, value_name = "VERSION")]
@@ -1980,7 +1923,7 @@ enum ConfigCommand {
     Export(config_bundles::ExportArgs),
     /// Move legacy top-level `base_url` / `api_key` into their
     /// `[providers.<name>]` tables, keeping comments. Writes a one-time,
-    /// credential-free backup first. Codewhale already reads the old shape;
+    /// credential-free backup first. Chimera already reads the old shape;
     /// this only tidies the file.
     Migrate {
         /// Print what would move without writing anything.
@@ -1996,7 +1939,7 @@ enum ConfigCommand {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum LegacyRootPreferArg {
-    /// Keep the top-level value (the key Codewhale sends today).
+    /// Keep the top-level value (the key Chimera sends today).
     TopLevel,
     /// Keep the `[providers.<name>]` value.
     Table,
@@ -2118,11 +2061,11 @@ impl From<ApprovalModeArg> for AskForApproval {
 struct AppServerArgs {
     /// Serve the full HTTP/SSE runtime API (`/v1/*`: sessions, threads, turns,
     /// approvals, events, usage, fleet, tasks). This is the canonical runtime
-    /// API surface; it delegates to the same server as `codewhale serve --http`.
+    /// API surface; it delegates to the same server as `chimera serve --http`.
     #[arg(long, conflicts_with_all = ["stdio", "mobile"])]
     http: bool,
     /// Serve the runtime API plus the phone-friendly mobile control page.
-    /// Equivalent to the legacy `codewhale serve --mobile`.
+    /// Equivalent to the legacy `chimera serve --mobile`.
     #[arg(long, conflicts_with = "stdio")]
     mobile: bool,
     /// Run initialized compatibility control over stdio (also the bare default).
@@ -2130,7 +2073,7 @@ struct AppServerArgs {
     #[arg(long, default_value_t = false)]
     stdio: bool,
     /// Run as the desktop daemon: the same JSON-RPC control transport as
-    /// `--stdio`, served on a user-private local endpoint under the Codewhale
+    /// `--stdio`, served on a user-private local endpoint under the Chimera
     /// runtime directory (Unix socket or Windows named pipe). Clients must
     /// authenticate and `daemon/attach` first.
     #[arg(long, default_value_t = false, conflicts_with_all = ["stdio", "http", "mobile"])]
@@ -2194,7 +2137,7 @@ pub fn run_cli() -> std::process::ExitCode {
             for cause in err.chain().skip(1) {
                 eprintln!("  caused by: {cause}");
             }
-            // A Codewhale account failure carries a class: CI logs must be
+            // A Chimera account failure carries a class: CI logs must be
             // able to tell a bad credential from an unconfigured agent model
             // without parsing English, and the machine-readable code beside
             // it names the control-plane branch that was taken.
@@ -2202,7 +2145,7 @@ pub fn run_cli() -> std::process::ExitCode {
                 err.downcast_ref::<codewhale_account_cli::machine::MachineError>()
             {
                 eprintln!(
-                    "  codewhale: code={} status={}",
+                    "  chimera: code={} status={}",
                     machine.code, machine.status
                 );
                 if let Ok(code) = u8::try_from(machine.exit_code) {
@@ -2385,7 +2328,7 @@ fn argv_secret_warning(cli: &Cli, command: Option<&Commands>) -> Option<&'static
             command: AuthCommand::PrintApiKey { .. },
         })) => None,
         _ if cli.api_key.is_some() => Some(
-            "warning: --api-key is visible in the process list; use `codewhale auth set --api-key-stdin` or the provider's API-key env var instead",
+            "warning: --api-key is visible in the process list; use `chimera auth set --api-key-stdin` or the provider's API-key env var instead",
         ),
         _ => None,
     }
@@ -2523,7 +2466,7 @@ fn run() -> Result<()> {
     };
     // Root session flags only reach the TUI through the `None` branch below;
     // no subcommand handler reads them. Accepting them silently resumes
-    // nothing -- `codewhale --resume abc exec "..."` would start a fresh
+    // nothing -- `chimera --resume abc exec "..."` would start a fresh
     // session while looking like it continued one.
     if command.is_some()
         && (cli.continue_session || cli.resume.is_some() || cli.session_id.is_some())
@@ -2531,7 +2474,7 @@ fn run() -> Result<()> {
         anyhow::bail!(
             "--continue/--resume/--session-id apply to the interactive session and \
              cannot be combined with a subcommand. Run them without a subcommand, or \
-             use the subcommand's own flag (for example `codewhale exec --session-id <id>`)."
+             use the subcommand's own flag (for example `chimera exec --session-id <id>`)."
         );
     }
     // Only config inspection needs the store overlay. Runtime overrides use
@@ -2663,7 +2606,7 @@ fn run() -> Result<()> {
         Some(Commands::SessionDiagnostics(args)) => {
             if args.args.is_empty() {
                 bail!(
-                    "session-diagnostics needs a session log path (<JSONL>); run `codewhale sessions` to list saved sessions"
+                    "session-diagnostics needs a session log path (<JSONL>); run `chimera sessions` to list saved sessions"
                 );
             }
             let resolved_runtime =
@@ -2950,13 +2893,13 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
         .or(cli.session_id.as_deref())
         .map(str::trim);
     if resume_session_id.is_some_and(str::is_empty) {
-        // A shell expanding an unset variable -- `codewhale --resume
+        // A shell expanding an unset variable -- `chimera --resume
         // "$SESSION_ID"` -- must not quietly become a fresh session. The user
         // asked to resume; starting new loses the session they meant, and the
         // mistake is invisible until the history is gone.
         bail!(
             "--resume/--session-id needs a session id, but got an empty value \
-             (an unset shell variable?). Use `codewhale --continue` to resume \
+             (an unset shell variable?). Use `chimera --continue` to resume \
              the most recent session."
         );
     }
@@ -2979,12 +2922,12 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
     if !prompt.is_empty() {
         if cli.continue_session {
             bail!(
-                "`codewhale --continue` resumes the interactive TUI. Use `codewhale exec --continue <PROMPT>` to continue a session non-interactively."
+                "`chimera --continue` resumes the interactive TUI. Use `chimera exec --continue <PROMPT>` to continue a session non-interactively."
             );
         }
         if let Some(session_id) = resume_session_id {
             bail!(
-                "`codewhale --resume {session_id}` resumes the interactive TUI. Use `codewhale exec --resume {session_id} <PROMPT>` to continue a session non-interactively."
+                "`chimera --resume {session_id}` resumes the interactive TUI. Use `chimera exec --resume {session_id} <PROMPT>` to continue a session non-interactively."
             );
         }
         forwarded.push("--prompt".to_string());
@@ -3172,7 +3115,7 @@ fn capture_exec_startup_options(cli: &mut Cli) -> Result<()> {
     let Some(Commands::Exec(args)) = cli.command.as_ref() else {
         return Ok(());
     };
-    let mut startup = vec!["codewhale".to_string()];
+    let mut startup = vec!["chimera".to_string()];
     let mut forwarded = Vec::with_capacity(args.args.len());
     let mut seen = std::collections::HashSet::new();
     let mut args = args.args.iter();
@@ -3224,7 +3167,7 @@ fn capture_exec_startup_options(cli: &mut Cli) -> Result<()> {
     Ok(())
 }
 
-/// `codewhale login` used to configure provider API keys; that surface moved
+/// `chimera login` used to configure provider API keys; that surface moved
 /// to `auth set --provider`. The hidden legacy flags stay parseable so the
 /// redirect below can name the replacement instead of an unknown-flag error.
 fn reject_legacy_login_provider_args(args: &LoginArgs) -> Result<()> {
@@ -3232,16 +3175,16 @@ fn reject_legacy_login_provider_args(args: &LoginArgs) -> Result<()> {
         return Ok(());
     }
     bail!(
-        "`codewhale login` now signs in to your Codewhale account via the browser device flow. \
-         To configure a provider key, run `codewhale auth set --provider <provider>` (hidden prompt) \
-         or `codewhale auth set --provider <provider> --api-key-stdin`."
+        "`chimera login` now signs in to your Chimera account via the browser device flow. \
+         To configure a provider key, run `chimera auth set --provider <provider>` (hidden prompt) \
+         or `chimera auth set --provider <provider> --api-key-stdin`."
     )
 }
 
 const LOGOUT_CONFIRM_PROMPT: &str = "This deletes every saved provider API key and OAuth login, \
-the Codewhale account session. Type 'yes' to log out: ";
+the Chimera account session. Type 'yes' to log out: ";
 
-/// `codewhale logout --all` wipes every provider credential at once, so it must
+/// `chimera logout --all` wipes every provider credential at once, so it must
 /// not run on a stray keystroke. Non-interactive callers opt in with `--all --yes`.
 fn confirm_logout(yes: bool) -> Result<()> {
     if yes {
@@ -3422,7 +3365,7 @@ fn clear_auth_provider(
 
 /// Remove only Codewhale-owned state for the retired Antigravity route.
 ///
-/// This deliberately operates on the already-loaded Codewhale config and its
+/// This deliberately operates on the already-loaded Chimera config and its
 /// own secret slot. It never resolves an external credential path, reads an
 /// environment credential, or invokes a Google/Antigravity logout or revoke
 /// flow.
@@ -4073,7 +4016,7 @@ fn chatgpt_auth_diagnostics(
     });
     let source = if official_endpoint {
         if store.config.providers.openai_codex.auth_mode.as_deref() != Some("oauth") {
-            "missing (run `codewhale auth chatgpt` to register an official grant)".to_string()
+            "missing (run `chimera auth chatgpt` to register an official grant)".to_string()
         } else {
             match owned_oauth_account(store, ProviderKind::OpenaiCodex) {
                 Ok(Some(account)) => format!(
@@ -4084,7 +4027,7 @@ fn chatgpt_auth_diagnostics(
                         .to_string()
                 }
                 Err(reason) => format!(
-                    "missing (Codewhale-owned ChatGPT sign-in is unusable: {reason}; run `codewhale auth chatgpt`)"
+                    "missing (Codewhale-owned ChatGPT sign-in is unusable: {reason}; run `chimera auth chatgpt`)"
                 ),
             }
         }
@@ -4179,7 +4122,7 @@ fn chatgpt_auth_status_lines(
         "external credentials: inactive for this route (no file was probed)".to_string(),
     ];
     if diagnostics.official_endpoint {
-        lines.push("switch account: `CODEWHALE_CHATGPT_NEW_ACCOUNT=1 codewhale auth chatgpt` (choose another account, then restart open Codewhale sessions); `/auth chatgpt` reauthorizes the selected account".to_string());
+        lines.push("switch account: `CODEWHALE_CHATGPT_NEW_ACCOUNT=1 chimera auth chatgpt` (choose another account, then restart open Chimera sessions); `/auth chatgpt` reauthorizes the selected account".to_string());
     }
     lines
 }
@@ -4345,8 +4288,8 @@ fn auth_status_all_providers_with_runtime(
 
     lines.push(String::new());
     lines.push("* = active provider (from config or CODEWHALE_PROVIDER)".to_string());
-    lines.push("Run `codewhale auth status --provider <id>` for detailed info.".to_string());
-    lines.push("Account sign-in is `codewhale login`.".to_string());
+    lines.push("Run `chimera auth status --provider <id>` for detailed info.".to_string());
+    lines.push("Account sign-in is `chimera login`.".to_string());
     lines
 }
 
@@ -4439,7 +4382,7 @@ fn auth_diagnostic_lines(store: &ConfigStore, provider: Option<ProviderKind>) ->
     let home = match resolved_home {
         Ok(Some(path)) => {
             lines.push(format!(
-                "codewhale home: {} (source: {}; state: {})",
+                "chimera home: {} (source: {}; state: {})",
                 codewhale_config::quote_os_path(&path),
                 if explicit_home {
                     "CODEWHALE_HOME (isolated)"
@@ -4451,11 +4394,11 @@ fn auth_diagnostic_lines(store: &ConfigStore, provider: Option<ProviderKind>) ->
             Some(path)
         }
         Ok(None) => {
-            lines.push("codewhale home: unavailable (no user home resolved)".to_string());
+            lines.push("chimera home: unavailable (no user home resolved)".to_string());
             None
         }
         Err(error) => {
-            lines.push(format!("codewhale home: unavailable ({error})"));
+            lines.push(format!("chimera home: unavailable ({error})"));
             None
         }
     };
@@ -4473,7 +4416,7 @@ fn auth_diagnostic_lines(store: &ConfigStore, provider: Option<ProviderKind>) ->
             diagnostic_path_state(&settings, false),
         ));
     } else {
-        lines.push("settings: unavailable (Codewhale home unresolved)".to_string());
+        lines.push("settings: unavailable (Chimera home unresolved)".to_string());
     }
 
     let backend = codewhale_secrets::diagnose_secret_backend();
@@ -4548,7 +4491,7 @@ fn run_auth_diagnostic(store: &ConfigStore, provider: Option<ProviderKind>) -> R
 }
 
 /// Account label (email, plan) of the Codewhale-owned subscription sign-in
-/// the provider's config points at. The generation file is Codewhale's own;
+/// the provider's config points at. The generation file is Chimera's own;
 /// reading its ID-token claims needs no consent, refresh or network, and the
 /// label never carries token material. `Ok(None)`: usable sign-in whose ID
 /// token has no email. `Err`: a fixed reason the sign-in is unusable.
@@ -4866,7 +4809,7 @@ fn xai_auth_status_lines_for_provider(
                 ),
             });
             lines.push(
-                "switch account: `codewhale auth xai-device` (choose the other xAI account; replaces the Codewhale-owned sign-in)"
+                "switch account: `chimera auth xai-device` (choose the other xAI account; replaces the Codewhale-owned sign-in)"
                     .to_string(),
             );
             lines.push(
@@ -4881,7 +4824,7 @@ fn xai_auth_status_lines_for_provider(
                     .to_string(),
             );
             lines.push(
-                "repair: run `codewhale auth xai-device` to replace the owned generation, or switch [providers.xai] auth_mode to \"api_key\" and remove oauth_credential_generation. Grok CLI consent remains blocked until the pointer is absent."
+                "repair: run `chimera auth xai-device` to replace the owned generation, or switch [providers.xai] auth_mode to \"api_key\" and remove oauth_credential_generation. Grok CLI consent remains blocked until the pointer is absent."
                     .to_string(),
             );
             return lines;
@@ -5117,7 +5060,7 @@ fn run_auth_command_with_secrets_and_runtime(
                 codewhale_config::EXTERNAL_CREDENTIAL_READ_ONLY_SEMANTICS,
             );
             println!(
-                "revoke with: codewhale auth external-revoke --provider {}",
+                "revoke with: chimera auth external-revoke --provider {}",
                 provider.as_str()
             );
             Ok(())
@@ -5211,7 +5154,7 @@ fn run_auth_command_with_secrets_and_runtime(
             } else {
                 println!("saved API key for {slot} to {}", store.path().display());
             }
-            println!("model unchanged; run `codewhale model resolve` to see the active model");
+            println!("model unchanged; run `chimera model resolve` to see the active model");
             Ok(())
         }
         AuthCommand::Get { provider } => {
@@ -5289,7 +5232,7 @@ fn external_consent_preview_lines(
         ),
         "  managed: unavailable (no reviewed schema-safe preservation adapter)".to_string(),
         format!(
-            "  revoke: codewhale auth external-revoke --provider {}",
+            "  revoke: chimera auth external-revoke --provider {}",
             provider.as_str()
         ),
     ]
@@ -5596,7 +5539,7 @@ fn run_config_command(
                         "Usage reporting: {}",
                         telemetry_preference_status(store.config.telemetry)
                     );
-                    println!("Details: codewhale config telemetry");
+                    println!("Details: chimera config telemetry");
                 } else {
                     println!("{value}");
                 }
@@ -5679,8 +5622,8 @@ fn run_config_command(
                     "Usage reporting: {}",
                     telemetry_preference_status(store.config.telemetry)
                 );
-                println!("To enable: codewhale config set telemetry true");
-                println!("To opt out: codewhale config set telemetry false");
+                println!("To enable: chimera config set telemetry true");
+                println!("To opt out: chimera config set telemetry false");
             }
             Ok(())
         }
@@ -5711,7 +5654,7 @@ fn run_config_command(
             // `#` keeps the header safe for `key = value` line parsers.
             println!("# configured values ({})", store.path().display());
             println!(
-                "# a running session keeps the route it resolved at launch; `codewhale model resolve` reports the route a new session would take"
+                "# a running session keeps the route it resolved at launch; `chimera model resolve` reports the route a new session would take"
             );
             for (key, value) in store.config.list_values() {
                 println!("{key} = {value}");
@@ -5816,7 +5759,7 @@ fn legacy_root_doctor_lines(
         match note {
             LegacyRootNote::Conflict { .. } => lines.push(format!("warning: {note}")),
             _ => lines.push(format!(
-                "note: {note} (in memory; the next save or `codewhale config migrate` updates the file)"
+                "note: {note} (in memory; the next save or `chimera config migrate` updates the file)"
             )),
         }
     }
@@ -5851,7 +5794,7 @@ fn note_unread_config_copy(store: &ConfigStore, key: &str) {
     if store.config.extras.contains_key(key.trim()) {
         eprintln!(
             "note: {} also has `{key}`, which nothing reads; remove it with \
-             `codewhale config unset {key}`",
+             `chimera config unset {key}`",
             store.path().display()
         );
     }
@@ -6037,7 +5980,7 @@ fn run_model_command(
             // Only `model resolve --provider X` is a hypothetical. The
             // top-level `--provider` is the route this process is actually on,
             // and it is already folded into `resolved_runtime` — treating it as
-            // a hypothetical made `codewhale --provider moonshot --model
+            // a hypothetical made `chimera --provider moonshot --model
             // kimi-k3 model resolve` re-derive a registry default and report
             // `kimi-k2.7-code` while the runtime used `kimi-k3` (v0.9.1 kimi-k3 dogfood report). The
             // top-level `--model` was not consulted at all on that path.
@@ -6582,7 +6525,7 @@ fn app_server_config_path(cli: &Cli, args: &AppServerArgs) -> Option<PathBuf> {
 }
 
 /// Build the `serve` argv forwarded to the TUI binary for
-/// `codewhale app-server --http`/`--mobile`. Maps app-server flags onto the
+/// `chimera app-server --http`/`--mobile`. Maps app-server flags onto the
 /// matching `serve` flags (note `--insecure-no-auth` → `--insecure`). The
 /// subcommand-level `--config` is bridged through the global `--config` in the
 /// dispatcher, so it is intentionally not part of this passthrough. An auth
@@ -6665,7 +6608,7 @@ fn run_dispatcher_resume_picker(
 
     println!();
     println!("Windows note: enter a session id or prefix from the list above.");
-    println!("You can also run `codewhale resume --last` to skip this prompt.");
+    println!("You can also run `chimera resume --last` to skip this prompt.");
     print!("Session id/prefix (Enter to cancel): ");
     io::stdout().flush()?;
 
@@ -6829,7 +6772,7 @@ fn run_providers_command(args: ProvidersArgs) -> Result<()> {
     match args.command {
         ProvidersCommand::Export { json } => {
             if !json {
-                bail!("`codewhale providers export` requires `--json`");
+                bail!("`chimera providers export` requires `--json`");
             }
             let export = ProvidersExport::from_registry(env!("CODEWHALE_BUILD_VERSION"));
             serde_json::to_writer_pretty(io::stdout(), &export)
@@ -7137,7 +7080,7 @@ mod tests {
             let mut keyring_runtime = resolved_runtime_for_test(provider, ProviderSource::Cli);
             keyring_runtime.api_key = Some(keyring_key.clone());
             keyring_runtime.api_key_source = Some(RuntimeApiKeySource::Keyring);
-            let keyring_cli = parse_ok(&["codewhale", "--provider", provider_arg]);
+            let keyring_cli = parse_ok(&["chimera", "--provider", provider_arg]);
 
             apply_tui_env(&keyring_cli, &keyring_runtime, &[]);
 
@@ -7166,7 +7109,7 @@ mod tests {
             clear_bridge();
             let explicit_key = format!("{provider_arg}-explicit-key");
             let explicit_cli = parse_ok(&[
-                "codewhale",
+                "chimera",
                 "--provider",
                 provider_arg,
                 "--api-key",
@@ -7211,7 +7154,7 @@ mod tests {
             ScopedEnvVar::remove("DEEPSEEK_YOLO"),
         ];
 
-        let cli = parse_ok(&["codewhale", "--yolo"]);
+        let cli = parse_ok(&["chimera", "--yolo"]);
         let runtime = resolved_runtime_for_test(ProviderKind::NvidiaNim, ProviderSource::Cli);
         apply_tui_env(&cli, &runtime, &[]);
 
@@ -7295,19 +7238,19 @@ mod tests {
             }))
         ));
         assert!(matches!(
-            parse_ok(&["codewhale", "config", "edit"]).command,
+            parse_ok(&["chimera", "config", "edit"]).command,
             Some(Commands::Config(ConfigArgs {
                 command: ConfigCommand::Edit
             }))
         ));
         assert!(matches!(
-            parse_ok(&["codewhale", "config", "doctor"]).command,
+            parse_ok(&["chimera", "config", "doctor"]).command,
             Some(Commands::Config(ConfigArgs {
                 command: ConfigCommand::Doctor
             }))
         ));
         assert!(matches!(
-            parse_ok(&["codewhale", "config", "dump"]).command,
+            parse_ok(&["chimera", "config", "dump"]).command,
             Some(Commands::Config(ConfigArgs {
                 command: ConfigCommand::Dump
             }))
@@ -7317,7 +7260,7 @@ mod tests {
     #[test]
     fn parses_repeatable_global_set_overrides() {
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--set",
             "verbosity=concise",
             "--set",
@@ -7611,7 +7554,7 @@ mod tests {
                 .expect_err("invalid overlay");
             let rendered = format!("{error:#}");
             assert!(!rendered.contains(&token), "{rendered}");
-            assert!(rendered.contains("fix: codewhale config set"), "{rendered}");
+            assert!(rendered.contains("fix: chimera config set"), "{rendered}");
             assert_eq!(toml::to_string(&store.config).unwrap(), before);
             assert_eq!(std::fs::read(&path).unwrap(), bytes_before);
         }
@@ -7764,7 +7707,7 @@ verbosity = "concise"
         )
         .expect("write project bundle");
         let argv = [
-            OsString::from("codewhale"),
+            OsString::from("chimera"),
             OsString::from("config"),
             OsString::from("import"),
             bundle_path.as_os_str().to_owned(),
@@ -7784,7 +7727,7 @@ verbosity = "concise"
         assert_eq!(global.config.verbosity.as_deref(), Some("global-only"));
 
         let explicit_argv = [
-            OsString::from("codewhale"),
+            OsString::from("chimera"),
             OsString::from("--config"),
             global_path.as_os_str().to_owned(),
             OsString::from("config"),
@@ -7825,7 +7768,7 @@ verbosity = "concise"
         write_config_fixture(&global_path, "verbosity = \"global-only\"\n");
 
         let argv = [
-            OsString::from("codewhale"),
+            OsString::from("chimera"),
             OsString::from("config"),
             OsString::from("export"),
             OsString::from("--portable"),
@@ -7855,7 +7798,7 @@ verbosity = "concise"
 
         let explicit_output_path = temp.path().join("explicit-portable.toml");
         let explicit_argv = [
-            OsString::from("codewhale"),
+            OsString::from("chimera"),
             OsString::from("--config"),
             global_path.as_os_str().to_owned(),
             OsString::from("config"),
@@ -7888,7 +7831,7 @@ verbosity = "concise"
 
     #[test]
     fn parses_update_beta_flag() {
-        let cli = parse_ok(&["codewhale", "update"]);
+        let cli = parse_ok(&["chimera", "update"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Update(UpdateArgs {
@@ -7899,7 +7842,7 @@ verbosity = "concise"
             }))
         ));
 
-        let cli = parse_ok(&["codewhale", "update", "--beta"]);
+        let cli = parse_ok(&["chimera", "update", "--beta"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Update(UpdateArgs {
@@ -7910,7 +7853,7 @@ verbosity = "concise"
             }))
         ));
 
-        let cli = parse_ok(&["codewhale", "update", "--check"]);
+        let cli = parse_ok(&["chimera", "update", "--check"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Update(UpdateArgs {
@@ -7921,7 +7864,7 @@ verbosity = "concise"
             }))
         ));
 
-        let cli = parse_ok(&["codewhale", "update", "--proxy", "socks5://127.0.0.1:1080"]);
+        let cli = parse_ok(&["chimera", "update", "--proxy", "socks5://127.0.0.1:1080"]);
         let Some(Commands::Update(args)) = cli.command else {
             panic!("expected update command");
         };
@@ -8000,7 +7943,7 @@ verbosity = "concise"
         );
         assert_eq!(model_command_provider_hint(None, None), None);
 
-        let cli = parse_ok(&["codewhale", "--provider", "zai", "model", "list"]);
+        let cli = parse_ok(&["chimera", "--provider", "zai", "model", "list"]);
         assert_eq!(cli.provider.as_deref(), Some("zai"));
         assert!(matches!(
             cli.command,
@@ -8210,7 +8153,7 @@ verbosity = "concise"
     #[test]
     fn thread_fork_validates_new_owner_receipt_instead_of_parent_identity() {
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "thread",
             "fork",
             "parent",
@@ -8261,7 +8204,7 @@ verbosity = "concise"
     #[test]
     fn thread_control_startup_selection_resolves_only_explicit_paths() {
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--workspace",
             "selected",
             "--profile",
@@ -8276,7 +8219,7 @@ verbosity = "concise"
         assert_eq!(selected.workspace, Some(startup.join("selected")));
         assert_eq!(selected.config_profile.as_deref(), Some("reviewed"));
         assert_eq!(selected.config_source, Some(startup.join("chosen.toml")));
-        let cli = parse_ok(&["codewhale", "--profile", "reviewed", "thread", "list"]);
+        let cli = parse_ok(&["chimera", "--profile", "reviewed", "thread", "list"]);
         let selected = thread_control_selection(&cli, startup).unwrap();
         assert!(selected.workspace.is_none() && selected.config_source.is_none());
     }
@@ -8284,7 +8227,7 @@ verbosity = "concise"
     #[test]
     fn thread_history_cli_normalized_route_and_policy_reach_typed_owner_request() {
         let mut cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--provider",
             "owned-route",
             "--model",
@@ -8335,7 +8278,7 @@ verbosity = "concise"
             "no resolved Config or ambient path is copied"
         );
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--provider",
             "openai-codex",
             "thread",
@@ -8356,7 +8299,7 @@ verbosity = "concise"
     fn thread_history_cli_refuses_credentials_and_unsupported_settings_without_values() {
         for argv in [
             vec![
-                "codewhale",
+                "chimera",
                 "--api-key",
                 "private-control-sentinel",
                 "thread",
@@ -8364,7 +8307,7 @@ verbosity = "concise"
                 "source",
             ],
             vec![
-                "codewhale",
+                "chimera",
                 "--base-url",
                 "https://private-control-sentinel.invalid",
                 "thread",
@@ -8372,7 +8315,7 @@ verbosity = "concise"
                 "source",
             ],
             vec![
-                "codewhale",
+                "chimera",
                 "--set",
                 "api_key=private-control-sentinel",
                 "thread",
@@ -8380,7 +8323,7 @@ verbosity = "concise"
                 "source",
             ],
             vec![
-                "codewhale",
+                "chimera",
                 "--set",
                 "telemetry=true",
                 "thread",
@@ -8413,7 +8356,7 @@ verbosity = "concise"
                 _ => "workspace-write",
             };
             let cli = parse_ok(&[
-                "codewhale",
+                "chimera",
                 flag,
                 value,
                 "thread",
@@ -8434,7 +8377,7 @@ verbosity = "concise"
             );
         }
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "thread",
             "fork",
             "source",
@@ -8458,7 +8401,7 @@ verbosity = "concise"
 
     #[test]
     fn thread_control_without_selection_never_mints_ambient_workspace() {
-        let cli = parse_ok(&["codewhale", "thread", "list"]);
+        let cli = parse_ok(&["chimera", "thread", "list"]);
         assert!(thread_control_selection(&cli, Path::new("/unrelated-startup")).is_none());
     }
 
@@ -8476,7 +8419,7 @@ verbosity = "concise"
     #[test]
     fn app_server_in_process_transports_honor_the_global_config() {
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--config",
             "/tmp/global-config.toml",
             "app-server",
@@ -8491,7 +8434,7 @@ verbosity = "concise"
         );
 
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--config",
             "/tmp/global-config.toml",
             "app-server",
@@ -8837,18 +8780,17 @@ verbosity = "concise"
         );
     }
 
-    /// Issue #5526: `codewhale completions <shell>` used to forward to the
+    /// Issue #5526: `chimera completions <shell>` used to forward to the
     /// in-tree `codewhale-tui` binary, so every generated script registered
     /// `codewhale-tui` — not a GitHub-release command — and exposed the TUI's
-    /// smaller subcommand tree. Pin the registered names per shell.
+    /// smaller subcommand tree. Pin the registered name per shell, and prove
+    /// the retired `codewhale`/`codew` aliases no longer appear anywhere.
     #[test]
     fn generated_completion_scripts_register_the_published_command_names() {
         let bin = declared_bin_name();
-        let alias = COMPLETION_ALIAS_NAME;
 
-        // Match whole lines throughout: `codew` is a prefix of `codewhale`,
-        // so a substring check for the alias is satisfied by the primary
-        // binding and would pass on an unfixed build.
+        // Match whole lines throughout: a substring check for the command
+        // name would pass on incidental text and miss a broken binding.
         let has_line =
             |script: &str, wanted: &str| script.lines().any(|line| line.trim() == wanted);
 
@@ -8860,27 +8802,16 @@ verbosity = "concise"
             ),
             "bash script must bind the real binary name:\n{bash}"
         );
-        assert!(
-            has_line(
-                &bash,
-                &format!("complete -F _{bin} -o bashdefault -o default {alias}")
-            ),
-            "bash script must bind the {alias} shorthand too"
-        );
 
         let zsh = render_completion_script(Shell::Zsh);
         assert_eq!(
             zsh.lines().next(),
-            Some(format!("#compdef {bin} {alias}").as_str()),
-            "zsh compdef tag line must list both published command names"
+            Some(format!("#compdef {bin}").as_str()),
+            "zsh compdef tag line must name the published command"
         );
         assert!(
             has_line(&zsh, &format!("compdef _{bin} {bin}")),
             "zsh script must bind {bin} on the sourced path"
-        );
-        assert!(
-            has_line(&zsh, &format!("compdef _{bin} {alias}")),
-            "zsh script must bind {alias} on the sourced path too"
         );
 
         let fish = render_completion_script(Shell::Fish);
@@ -8888,17 +8819,13 @@ verbosity = "concise"
             fish.contains(&format!("complete -c {bin} ")),
             "fish script must complete the real binary name"
         );
-        assert!(
-            has_line(&fish, &format!("complete -c {alias} -w {bin}")),
-            "fish script must wrap the {alias} shorthand onto {bin}"
-        );
 
         let powershell = render_completion_script(Shell::PowerShell);
         assert!(
             powershell.contains(&format!(
-                "Register-ArgumentCompleter -Native -CommandName '{bin}','{alias}'"
+                "Register-ArgumentCompleter -Native -CommandName '{bin}'"
             )),
-            "PowerShell script must register both published command names"
+            "PowerShell script must register the published command name"
         );
 
         let elvish = render_completion_script(Shell::Elvish);
@@ -8908,15 +8835,6 @@ verbosity = "concise"
                 &format!("set edit:completion:arg-completer[{bin}] = {{|@words|")
             ),
             "elvish script must bind the real binary name:\n{elvish}"
-        );
-        assert!(
-            has_line(
-                &elvish,
-                &format!(
-                    "set edit:completion:arg-completer[{alias}] = $edit:completion:arg-completer[{bin}]"
-                )
-            ),
-            "elvish script must alias the {alias} shorthand onto {bin}"
         );
 
         for (shell, script) in [
@@ -8930,6 +8848,12 @@ verbosity = "concise"
                 !script.contains("codewhale-tui"),
                 "{shell} completions leaked the in-tree codewhale-tui name (#5526)"
             );
+            for retired in ["codewhale", "codew"] {
+                assert!(
+                    !script.contains(retired),
+                    "{shell} completions still register the retired `{retired}` name"
+                );
+            }
         }
     }
 
@@ -8956,7 +8880,7 @@ verbosity = "concise"
     #[test]
     fn completions_is_an_alias_for_completion() {
         assert!(matches!(
-            parse_ok(&["codewhale", "completions", "powershell"]).command,
+            parse_ok(&["chimera", "completions", "powershell"]).command,
             Some(Commands::Completion {
                 shell: Shell::PowerShell
             })
@@ -9113,7 +9037,7 @@ verbosity = "concise"
 
     #[test]
     fn web_command_is_typed_and_delegates_without_auth_material() {
-        let cli = parse_ok(&["codewhale", "web", "--port", "9091"]);
+        let cli = parse_ok(&["chimera", "web", "--port", "9091"]);
         let args = match cli.command {
             Some(Commands::Web(args)) => args,
             other => panic!("expected web command, got {other:?}"),
@@ -9126,12 +9050,12 @@ verbosity = "concise"
 
     #[test]
     fn web_command_defaults_to_runtime_port_and_documents_bootstrap_boundary() {
-        let cli = parse_ok(&["codewhale", "web"]);
+        let cli = parse_ok(&["chimera", "web"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Web(WebArgs { port: 7878 }))
         ));
-        let help = help_for(&["codewhale", "web", "--help"]);
+        let help = help_for(&["chimera", "web", "--help"]);
         assert!(help.contains("--port"));
         assert!(help.contains("one-time loopback bootstrap"));
         assert!(!help.contains("--auth-token"));
@@ -9139,7 +9063,7 @@ verbosity = "concise"
 
     #[test]
     fn serve_help_documents_forwarded_runtime_modes() {
-        let help = help_for(&["codewhale", "serve", "--help"]);
+        let help = help_for(&["chimera", "serve", "--help"]);
         for flag in ["--http", "--mobile", "--web", "--mcp", "--acp"] {
             assert!(
                 help.contains(flag),
@@ -9176,7 +9100,7 @@ verbosity = "concise"
                 if args == &["--skills", "--local"]
         ));
 
-        let cli = parse_ok(&["codewhale", "fleet", "init"]);
+        let cli = parse_ok(&["chimera", "fleet", "init"]);
         assert!(cli.prompt.is_empty());
         assert!(matches!(
             cli.command,
@@ -9184,7 +9108,7 @@ verbosity = "concise"
         ));
 
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "fleet",
             "run",
             "tasks.json",
@@ -9199,7 +9123,7 @@ verbosity = "concise"
         ));
 
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "workflow",
             "run",
             "stopship",
@@ -9237,7 +9161,7 @@ verbosity = "concise"
             vec!["run", "tasks.json", "--max-workers", "2"],
         ] {
             let fleet = parse_ok(
-                &std::iter::once("codewhale")
+                &std::iter::once("chimera")
                     .chain(["fleet"])
                     .chain(tail.iter().copied())
                     .collect::<Vec<_>>(),
@@ -9249,7 +9173,7 @@ verbosity = "concise"
             assert!(fleet.prompt.is_empty(), "{tail:?}");
 
             let retired = parse_ok(
-                &std::iter::once("codewhale")
+                &std::iter::once("chimera")
                     .chain(["pod"])
                     .chain(tail.iter().copied())
                     .collect::<Vec<_>>(),
@@ -9266,7 +9190,7 @@ verbosity = "concise"
         }
 
         // Help advertises fleet only.
-        let help = help_for(&["codewhale", "--help"]);
+        let help = help_for(&["chimera", "--help"]);
         let commands = help
             .lines()
             .map(str::trim_start)
@@ -9289,9 +9213,9 @@ verbosity = "concise"
 
         // `fleet --help` forwards to the delegated binary; the wrapper's own
         // help (with these examples) stays reachable as `help fleet`.
-        let fleet_help = help_for(&["codewhale", "help", "fleet"]);
+        let fleet_help = help_for(&["chimera", "help", "fleet"]);
         assert!(fleet_help.contains("Manage durable Agent fleet runs"));
-        assert!(fleet_help.contains("codewhale fleet run tasks.json --max-workers 4"));
+        assert!(fleet_help.contains("chimera fleet run tasks.json --max-workers 4"));
 
         // The inner command token matches the canonical name so receipts
         // and any echoed invocation never regress to the retired name.
@@ -9307,7 +9231,7 @@ verbosity = "concise"
 
     #[test]
     fn exec_and_fleet_accept_builtin_and_raw_provider_identifiers() {
-        let builtin = parse_ok(&["codewhale", "--provider", "openrouter", "exec", "Reply OK"]);
+        let builtin = parse_ok(&["chimera", "--provider", "openrouter", "exec", "Reply OK"]);
         assert_eq!(builtin.provider.as_deref(), Some("openrouter"));
         assert_eq!(
             top_level_provider_override(builtin.provider.as_deref(), builtin.command.as_ref())
@@ -9330,7 +9254,7 @@ verbosity = "concise"
             ("lm-studio", vec!["exec", "Reply OK"]),
             ("lm-studio", vec!["fleet", "status"]),
         ] {
-            let argv = std::iter::once("codewhale")
+            let argv = std::iter::once("chimera")
                 .chain(["--provider", provider])
                 .chain(command.iter().copied())
                 .collect::<Vec<_>>();
@@ -9374,7 +9298,7 @@ verbosity = "concise"
             assert!(error.contains("google"), "{error}");
             assert!(error.contains("GEMINI_API_KEY"), "{error}");
 
-            let clear = parse_ok(&["codewhale", "auth", "clear", "--provider", alias]);
+            let clear = parse_ok(&["chimera", "auth", "clear", "--provider", alias]);
             assert!(matches!(
                 clear.command,
                 Some(Commands::Auth(AuthArgs {
@@ -9385,13 +9309,13 @@ verbosity = "concise"
             ));
 
             for argv in [
-                vec!["codewhale", "auth", "set", "--provider", alias],
-                vec!["codewhale", "auth", "get", "--provider", alias],
-                vec!["codewhale", "auth", "print-api-key", "--provider", alias],
-                vec!["codewhale", "auth", "status", "--provider", alias],
-                vec!["codewhale", "auth", "external-revoke", "--provider", alias],
+                vec!["chimera", "auth", "set", "--provider", alias],
+                vec!["chimera", "auth", "get", "--provider", alias],
+                vec!["chimera", "auth", "print-api-key", "--provider", alias],
+                vec!["chimera", "auth", "status", "--provider", alias],
+                vec!["chimera", "auth", "external-revoke", "--provider", alias],
                 vec![
-                    "codewhale",
+                    "chimera",
                     "auth",
                     "external-consent",
                     "--provider",
@@ -9400,8 +9324,8 @@ verbosity = "concise"
                     "read-only",
                     "--yes",
                 ],
-                vec!["codewhale", "model", "list", "--provider", alias],
-                vec!["codewhale", "model", "resolve", "--provider", alias],
+                vec!["chimera", "model", "list", "--provider", alias],
+                vec!["chimera", "model", "resolve", "--provider", alias],
             ] {
                 let error = Cli::try_parse_from(argv)
                     .expect_err("legacy Antigravity route must be rejected outside auth clear");
@@ -9448,7 +9372,7 @@ verbosity = "concise"
             );
         }
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--provider",
             "minimax-anthropic",
             "exec",
@@ -9476,19 +9400,19 @@ verbosity = "concise"
 
     #[test]
     fn raw_provider_ids_remain_restricted_to_exec_and_fleet() {
-        let cli = parse_ok(&["codewhale", "--provider", "lm-studio", "model", "list"]);
+        let cli = parse_ok(&["chimera", "--provider", "lm-studio", "model", "list"]);
         let err = top_level_provider_override(cli.provider.as_deref(), cli.command.as_ref())
             .expect_err("model registry commands still require a built-in provider");
         assert!(err.to_string().contains(
             "configured custom providers are accepted by exec, fleet and thread resume/fork"
         ));
 
-        let err = Cli::try_parse_from(["codewhale", "auth", "set", "--provider", "lm-studio"])
+        let err = Cli::try_parse_from(["chimera", "auth", "set", "--provider", "lm-studio"])
             .expect_err("auth keeps enum-only provider validation");
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
 
         let err = Cli::try_parse_from([
-            "codewhale",
+            "chimera",
             "--provider",
             "../../lm-studio",
             "exec",
@@ -9504,7 +9428,7 @@ verbosity = "concise"
     #[test]
     fn hidden_lane_log_proxy_parses_child_argv_and_preserves_other_commands() {
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "lane-log-proxy",
             "--log-path",
             "/tmp/lane.ndjson",
@@ -9530,7 +9454,7 @@ verbosity = "concise"
             ["/bin/echo", "--child-flag", "hello"].map(str::to_string)
         );
 
-        let cli = parse_ok(&["codewhale", "lane", "list", "--json"]);
+        let cli = parse_ok(&["chimera", "lane", "list", "--json"]);
         let (proxy, command) = split_lane_log_proxy_command(cli.command);
         assert!(proxy.is_none());
         assert!(matches!(
@@ -9549,7 +9473,7 @@ verbosity = "concise"
 
         for descriptor in codewhale_lane::control::operations_for_domain(ControlDomain::Lane) {
             let argv = [
-                "codewhale".to_string(),
+                "chimera".to_string(),
                 "lane".to_string(),
                 descriptor.verb.to_string(),
             ];
@@ -9576,7 +9500,7 @@ verbosity = "concise"
             };
             assert_eq!(
                 parsed, descriptor.operation,
-                "`codewhale lane {}` must map to {}",
+                "`chimera lane {}` must map to {}",
                 descriptor.verb, descriptor.id
             );
             assert!(
@@ -9599,7 +9523,7 @@ verbosity = "concise"
                 "{spelling}"
             );
         }
-        let stop = parse_ok(&["codewhale", "lane", "stop", "lane-a1b2c3d4"]);
+        let stop = parse_ok(&["chimera", "lane", "stop", "lane-a1b2c3d4"]);
         assert!(matches!(
             stop.command,
             Some(Commands::Lane(LaneArgs {
@@ -9624,14 +9548,14 @@ verbosity = "concise"
 
     #[test]
     fn lane_stop_accepts_json_like_interrupt() {
-        let stop = parse_ok(&["codewhale", "lane", "stop", "lane-a1b2c3d4", "--json"]);
+        let stop = parse_ok(&["chimera", "lane", "stop", "lane-a1b2c3d4", "--json"]);
         assert!(matches!(
             stop.command,
             Some(Commands::Lane(LaneArgs {
                 command: LaneCommand::Stop { ref lane_id, json: true }
             })) if lane_id == "lane-a1b2c3d4"
         ));
-        let plain = parse_ok(&["codewhale", "lane", "stop", "lane-a1b2c3d4"]);
+        let plain = parse_ok(&["chimera", "lane", "stop", "lane-a1b2c3d4"]);
         assert!(matches!(
             plain.command,
             Some(Commands::Lane(LaneArgs {
@@ -9707,7 +9631,7 @@ verbosity = "concise"
             .join("..")
             .join("..");
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--profile",
             "workflow-profile",
             "--model",
@@ -9808,7 +9732,7 @@ verbosity = "concise"
     #[test]
     fn exec_keeps_global_looking_flags_as_passthrough_args() {
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "exec",
             "--provider",
             "definitely-not-a-provider",
@@ -9832,7 +9756,7 @@ verbosity = "concise"
     #[test]
     fn exec_routes_provider_after_subcommand_once() {
         let before = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--provider",
             "openai",
             "--model",
@@ -9841,7 +9765,7 @@ verbosity = "concise"
             "Reply OK",
         ]);
         let mut after = parse_ok(&[
-            "codewhale",
+            "chimera",
             "exec",
             "--provider",
             "openai",
@@ -9866,7 +9790,7 @@ verbosity = "concise"
     fn exec_rejects_duplicate_startup_options_across_positions() {
         for tail in ["openai", "openrouter"] {
             let mut cli = parse_ok(&[
-                "codewhale",
+                "chimera",
                 "--provider",
                 "openai",
                 "exec",
@@ -9881,7 +9805,7 @@ verbosity = "concise"
             assert_eq!(cli.provider.as_deref(), Some("openai"));
         }
         let mut cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "exec",
             "--provider=openai",
             "--provider=openai",
@@ -9894,7 +9818,7 @@ verbosity = "concise"
     #[test]
     fn exec_allows_documented_forwarded_flags() {
         let mut cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "exec",
             "--auto",
             "--model=gpt-5.6",
@@ -9916,7 +9840,7 @@ verbosity = "concise"
     #[test]
     fn exec_allows_literal_prompt_flags_after_separator() {
         let mut cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "exec",
             "--",
             "--provider",
@@ -9930,7 +9854,7 @@ verbosity = "concise"
         assert_eq!(args.args, ["--", "--provider", "is literal prompt text"]);
 
         let mut cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--provider=openai",
             "exec",
             "--",
@@ -9953,7 +9877,7 @@ verbosity = "concise"
     #[test]
     fn exec_captures_config_and_profile_before_runtime_precedence() {
         let mut cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "exec",
             "--config=chosen.toml",
             "--profile",
@@ -9976,7 +9900,7 @@ verbosity = "concise"
             "--model",
         ] {
             let mut cli = parse_ok(&[
-                "codewhale",
+                "chimera",
                 flag,
                 "first",
                 "exec",
@@ -10050,11 +9974,11 @@ verbosity = "concise"
         );
     }
 
-    /// `codewhale login` now means the Codewhale account device flow: the
+    /// `chimera login` now means the Chimera account device flow: the
     /// account-login flags parse through and reach the cloud path.
     #[test]
     fn login_parses_account_device_flow_flags() {
-        let cli = parse_ok(&["codewhale", "login", "--no-open", "--timeout-seconds", "5"]);
+        let cli = parse_ok(&["chimera", "login", "--no-open", "--timeout-seconds", "5"]);
         let Some(Commands::Login(args)) = cli.command else {
             panic!("expected Login");
         };
@@ -10063,7 +9987,7 @@ verbosity = "concise"
         assert!(args.api_key.is_none());
         assert!(args.provider.is_none());
 
-        let cli = parse_ok(&["codewhale", "login"]);
+        let cli = parse_ok(&["chimera", "login"]);
         let Some(Commands::Login(args)) = cli.command else {
             panic!("expected Login");
         };
@@ -10113,13 +10037,13 @@ verbosity = "concise"
     /// sign-in; the subcommand help must say so.
     #[test]
     fn login_help_describes_account_signin() {
-        let help = help_for(&["codewhale", "login", "--help"]);
+        let help = help_for(&["chimera", "login", "--help"]);
         assert!(
-            help.contains("Codewhale account"),
+            help.contains("Chimera account"),
             "login help must describe account sign-in: {help}"
         );
         assert!(
-            help.contains("Local use does not require a Codewhale account"),
+            help.contains("Local use does not require a Chimera account"),
             "login help must explain that local use does not require an account: {help}"
         );
         assert!(
@@ -10478,17 +10402,17 @@ verbosity = "concise"
 
     #[test]
     fn auth_help_describes_runtime_effective_diagnostics() {
-        let get = help_for(&["codewhale", "auth", "get", "--help"]);
+        let get = help_for(&["chimera", "auth", "get", "--help"]);
         assert!(get.contains("effective credential route"), "{get}");
         assert!(get.contains("structural OAuth/repair state"), "{get}");
 
-        let status = help_for(&["codewhale", "auth", "status", "--help"]);
+        let status = help_for(&["chimera", "auth", "status", "--help"]);
         assert!(
             status.contains("runtime-effective credential route state"),
             "{status}"
         );
 
-        let list = help_for(&["codewhale", "auth", "list", "--help"]);
+        let list = help_for(&["chimera", "auth", "list", "--help"]);
         assert!(list.contains("runtime-effective auth state"), "{list}");
     }
 
@@ -10991,7 +10915,7 @@ verbosity = "concise"
         let output = auth_diagnostic_lines(&store, Some(ProviderKind::Deepseek)).join("\n");
         assert!(
             output.contains(&format!(
-                "codewhale home: {} (source: CODEWHALE_HOME (isolated); state: present)",
+                "chimera home: {} (source: CODEWHALE_HOME (isolated); state: present)",
                 codewhale_config::quote_os_path(&home)
             )),
             "{output}"
@@ -11104,7 +11028,7 @@ verbosity = "concise"
         let output = auth_status_all_providers(&store, &secrets).join("\n");
 
         assert!(output.contains("account:"), "{output}");
-        assert!(output.contains("codewhale login"), "{output}");
+        assert!(output.contains("chimera login"), "{output}");
         assert!(!output.to_lowercase().contains("daytona"), "{output}");
         assert!(!output.contains("set-slot"), "{output}");
 
@@ -11167,7 +11091,7 @@ verbosity = "concise"
             "{status}"
         );
         assert!(
-            status.contains("CODEWHALE_CHATGPT_NEW_ACCOUNT=1 codewhale auth chatgpt"),
+            status.contains("CODEWHALE_CHATGPT_NEW_ACCOUNT=1 chimera auth chatgpt"),
             "{status}"
         );
         assert!(
@@ -11425,14 +11349,14 @@ verbosity = "concise"
         );
         assert!(
             codex.contains(
-                "switch account: `CODEWHALE_CHATGPT_NEW_ACCOUNT=1 codewhale auth chatgpt`"
+                "switch account: `CODEWHALE_CHATGPT_NEW_ACCOUNT=1 chimera auth chatgpt`"
             ),
             "{codex}"
         );
         let xai = auth_status_lines_for_provider(&store, &secrets, ProviderKind::Xai).join("\n");
         assert!(xai.contains("signed-in account: grok@example.com"), "{xai}");
         assert!(
-            xai.contains("switch account: `codewhale auth xai-device`"),
+            xai.contains("switch account: `chimera auth xai-device`"),
             "{xai}"
         );
         let list = auth_list_lines(&store, &secrets).join("\n");
@@ -11463,7 +11387,7 @@ verbosity = "concise"
                 "{codex}"
             );
             assert!(
-                codex.contains("CODEWHALE_CHATGPT_NEW_ACCOUNT=1 codewhale auth chatgpt"),
+                codex.contains("CODEWHALE_CHATGPT_NEW_ACCOUNT=1 chimera auth chatgpt"),
                 "{codex}"
             );
             assert!(
@@ -11668,7 +11592,7 @@ verbosity = "concise"
         );
         assert!(scoped.contains("external credentials: blocked by the invalid Codewhale-owned xAI OAuth generation pointer"), "{scoped}");
         assert!(
-            scoped.contains("repair: run `codewhale auth xai-device`"),
+            scoped.contains("repair: run `chimera auth xai-device`"),
             "{scoped}"
         );
         assert!(
@@ -12051,7 +11975,7 @@ verbosity = "concise"
             .find(|line| line.starts_with("openai-codex"))
             .unwrap_or_else(|| panic!("missing openai-codex row:\n{output}"));
         assert!(
-            row.contains("missing (run `codewhale auth chatgpt`"),
+            row.contains("missing (run `chimera auth chatgpt`"),
             "{row}"
         );
         assert!(!row.contains("external-consent"), "{row}");
@@ -12485,7 +12409,7 @@ verbosity = "concise"
 
     #[test]
     fn logout_parses_yes_flag() {
-        let cli = parse_ok(&["codewhale", "logout", "--yes"]);
+        let cli = parse_ok(&["chimera", "logout", "--yes"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Logout(LogoutArgs {
@@ -12493,7 +12417,7 @@ verbosity = "concise"
                 all: false
             }))
         ));
-        let cli = parse_ok(&["codewhale", "logout"]);
+        let cli = parse_ok(&["chimera", "logout"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Logout(LogoutArgs {
@@ -12501,7 +12425,7 @@ verbosity = "concise"
                 all: false
             }))
         ));
-        let cli = parse_ok(&["codewhale", "logout", "--all", "--yes"]);
+        let cli = parse_ok(&["chimera", "logout", "--all", "--yes"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Logout(LogoutArgs {
@@ -13017,7 +12941,7 @@ verbosity = "concise"
                 && telemetry_line.contains("wins"),
             "the help string must document the always-winning opt-out: {telemetry_line}"
         );
-        let help = help_for(&["codewhale", "config", "telemetry", "--help"]);
+        let help = help_for(&["chimera", "config", "telemetry", "--help"]);
         assert!(help.contains("PostHog"));
         assert!(help.contains("--accept-notice"));
     }
@@ -13135,7 +13059,7 @@ verbosity = "concise"
         let help = Cli::command().render_long_help().to_string();
         assert!(
             !help.contains("TUI"),
-            "root help must describe what Codewhale does, not its internal UI/runtime layers:\n{help}"
+            "root help must describe what Chimera does, not its internal UI/runtime layers:\n{help}"
         );
     }
 
@@ -13168,7 +13092,7 @@ verbosity = "concise"
 
     #[test]
     fn parses_no_project_config_before_subcommand() {
-        let cli = parse_ok(&["codewhale", "--no-project-config", "exec", "list the files"]);
+        let cli = parse_ok(&["chimera", "--no-project-config", "exec", "list the files"]);
         assert!(cli.no_project_config);
         match cli.command {
             Some(Commands::Exec(args)) => {
@@ -13183,7 +13107,7 @@ verbosity = "concise"
         // `exec` captures trailing args (`trailing_var_arg`), so a misplaced
         // `--no-project-config` is NOT honored as the dispatcher flag — it must
         // appear before the subcommand, exactly like `--skip-onboarding`.
-        let cli = parse_ok(&["codewhale", "exec", "--no-project-config", "hi"]);
+        let cli = parse_ok(&["chimera", "exec", "--no-project-config", "hi"]);
         assert!(!cli.no_project_config);
         match cli.command {
             Some(Commands::Exec(args)) => {
@@ -13208,7 +13132,7 @@ verbosity = "concise"
     #[test]
     fn root_launch_facts_are_typed_and_prompt_whitespace_is_preserved() {
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "--workspace",
             "workspace with spaces",
             "--fresh",
@@ -13243,7 +13167,7 @@ verbosity = "concise"
     #[test]
     fn root_prompt_tail_does_not_reinterpret_literal_launch_flags() {
         let cli = parse_ok(&[
-            "codewhale",
+            "chimera",
             "Explain",
             "--fresh",
             "--mouse-capture",
@@ -13295,7 +13219,7 @@ verbosity = "concise"
             b"/tmp/workspace-\xff".to_vec(),
         ));
         let cli = Cli::try_parse_from([
-            std::ffi::OsString::from("codewhale"),
+            std::ffi::OsString::from("chimera"),
             std::ffi::OsString::from("--workspace"),
             path.clone().into_os_string(),
         ])
@@ -13306,7 +13230,7 @@ verbosity = "concise"
 
     #[test]
     fn parses_top_level_continue_for_interactive_resume() {
-        let cli = parse_ok(&["codewhale", "--continue"]);
+        let cli = parse_ok(&["chimera", "--continue"]);
 
         assert!(cli.continue_session);
         assert!(cli.prompt_flag.is_none());
@@ -13316,15 +13240,15 @@ verbosity = "concise"
 
     #[test]
     fn parses_top_level_resume_flags_for_interactive_resume() {
-        // The operations runbook advertises `codewhale --resume <id>`. Before
+        // The operations runbook advertises `chimera --resume <id>`. Before
         // the root flag existed, the trailing prompt positional swallowed it
         // and forwarded `--prompt "--resume <id>"` to the TUI (exit 2).
         for argv in [
-            &["codewhale", "--resume", "800596e6"][..],
-            &["codewhale", "--resume=800596e6"][..],
-            &["codewhale", "-r", "800596e6"][..],
-            &["codewhale", "--session-id", "800596e6"][..],
-            &["codewhale", "--session-id=800596e6"][..],
+            &["chimera", "--resume", "800596e6"][..],
+            &["chimera", "--resume=800596e6"][..],
+            &["chimera", "-r", "800596e6"][..],
+            &["chimera", "--session-id", "800596e6"][..],
+            &["chimera", "--session-id=800596e6"][..],
         ] {
             let cli = parse_ok(argv);
             assert!(
@@ -13344,13 +13268,13 @@ verbosity = "concise"
 
     #[test]
     fn empty_resume_identifier_is_rejected_rather_than_starting_fresh() {
-        // `codewhale --resume "$SESSION_ID"` with the variable unset used to
+        // `chimera --resume "$SESSION_ID"` with the variable unset used to
         // trim to empty, filter to None, and start a brand-new session while
         // looking like it resumed one. Losing the session the user asked for
         // must be loud.
         for argv in [
-            &["codewhale", "--resume", ""][..],
-            &["codewhale", "--session-id", "   "][..],
+            &["chimera", "--resume", ""][..],
+            &["chimera", "--session-id", "   "][..],
         ] {
             let cli = parse_ok(argv);
             let err = root_tui_passthrough(&cli)
@@ -13364,22 +13288,22 @@ verbosity = "concise"
 
     #[test]
     fn top_level_resume_rejects_startup_prompt_and_conflicting_flags() {
-        let cli = parse_ok(&["codewhale", "--resume", "800596e6", "-p", "follow up"]);
+        let cli = parse_ok(&["chimera", "--resume", "800596e6", "-p", "follow up"]);
         let err = root_tui_passthrough(&cli).expect_err("prompted resume should be rejected");
         assert!(
             err.to_string()
-                .contains("codewhale exec --resume 800596e6 <PROMPT>"),
+                .contains("chimera exec --resume 800596e6 <PROMPT>"),
             "{err}"
         );
 
-        assert!(Cli::try_parse_from(["codewhale", "--resume", "800596e6", "--continue"]).is_err());
-        assert!(Cli::try_parse_from(["codewhale", "--resume", "a", "--session-id", "b"]).is_err());
-        assert!(Cli::try_parse_from(["codewhale", "--session-id", "b", "-c"]).is_err());
+        assert!(Cli::try_parse_from(["chimera", "--resume", "800596e6", "--continue"]).is_err());
+        assert!(Cli::try_parse_from(["chimera", "--resume", "a", "--session-id", "b"]).is_err());
+        assert!(Cli::try_parse_from(["chimera", "--session-id", "b", "-c"]).is_err());
     }
 
     #[test]
     fn parses_rc_as_the_account_owned_interactive_handoff() {
-        let cli = parse_ok(&["codewhale", "rc"]);
+        let cli = parse_ok(&["chimera", "rc"]);
 
         let Some(Commands::Rc(args)) = cli.command else {
             panic!("rc should parse as the remote-control TUI handoff");
@@ -13389,12 +13313,12 @@ verbosity = "concise"
 
     #[test]
     fn top_level_continue_rejects_startup_prompt() {
-        let cli = parse_ok(&["codewhale", "--continue", "-p", "follow up"]);
+        let cli = parse_ok(&["chimera", "--continue", "-p", "follow up"]);
 
         let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
         assert!(
             err.to_string()
-                .contains("codewhale exec --continue <PROMPT>")
+                .contains("chimera exec --continue <PROMPT>")
         );
     }
 
@@ -13502,21 +13426,21 @@ verbosity = "concise"
             "speech",
         ] {
             for flag in ["--help", "-h"] {
-                let error = Cli::try_parse_from(["codewhale", subcommand, flag])
+                let error = Cli::try_parse_from(["chimera", subcommand, flag])
                     .expect_err("help must exit before dispatch");
                 assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
                 assert!(
                     error
                         .to_string()
-                        .contains(&format!("Usage: codewhale {subcommand}")),
+                        .contains(&format!("Usage: chimera {subcommand}")),
                     "{subcommand} must show its own help: {error}"
                 );
             }
         }
-        let exec = help_for(&["codewhale", "exec", "--help"]);
+        let exec = help_for(&["chimera", "exec", "--help"]);
         assert!(exec.contains("work before or after exec"), "{exec}");
-        assert!(exec.contains("codewhale --model MODEL exec"), "{exec}");
-        assert!(exec.contains("codewhale exec --model MODEL"), "{exec}");
+        assert!(exec.contains("chimera --model MODEL exec"), "{exec}");
+        assert!(exec.contains("chimera exec --model MODEL"), "{exec}");
         assert!(exec.contains("--sandbox <POLICY>"), "{exec}");
         assert!(exec.contains("Full Access"), "{exec}");
         assert!(
@@ -13529,20 +13453,20 @@ verbosity = "concise"
         );
         assert!(exec.contains("equivalent sandbox_mode in config"), "{exec}");
         assert!(exec.contains("Put flags before the prompt"), "{exec}");
-        assert!(exec.contains("codewhale receipts <id>"), "{exec}");
-        let rc = help_for(&["codewhale", "rc", "--help"]);
-        assert!(rc.contains("hand it to the Codewhale web app"), "{rc}");
+        assert!(exec.contains("chimera receipts <id>"), "{exec}");
+        let rc = help_for(&["chimera", "rc", "--help"]);
+        assert!(rc.contains("hand it to the Chimera web app"), "{rc}");
     }
 
-    /// `codewhale mcp --help` printed `Usage: codewhale mcp [OPTIONS]
+    /// `chimera mcp --help` printed `Usage: chimera mcp [OPTIONS]
     /// [ARGS]...` and nothing else, so `add`, `list`, `tools`, `connect` and
     /// `remove` could only be found by already knowing them.
     #[test]
     fn mcp_help_lists_its_subcommands() {
         for flag in ["--help", "-h"] {
-            let help = help_for(&["codewhale", "mcp", flag]);
+            let help = help_for(&["chimera", "mcp", flag]);
             assert!(
-                help.contains("Usage: codewhale mcp [OPTIONS] <COMMAND>"),
+                help.contains("Usage: chimera mcp [OPTIONS] <COMMAND>"),
                 "{help}"
             );
             for subcommand in [
@@ -13557,13 +13481,13 @@ verbosity = "concise"
                     "mcp help must list `{subcommand}` with its description:\n{help}"
                 );
             }
-            assert!(help.contains("codewhale mcp <COMMAND> --help"), "{help}");
+            assert!(help.contains("chimera mcp <COMMAND> --help"), "{help}");
         }
     }
 
     #[test]
     fn root_help_describes_every_global_option() {
-        let help = help_for(&["codewhale", "--help"]);
+        let help = help_for(&["chimera", "--help"]);
         for needle in [
             "Path to the config file",
             "Config profile to apply",
@@ -13581,12 +13505,12 @@ verbosity = "concise"
                 "root help missing `{needle}`:\n{help}"
             );
         }
-        let app_server = help_for(&["codewhale", "app-server", "--help"]);
+        let app_server = help_for(&["chimera", "app-server", "--help"]);
         assert!(
             app_server.contains("CODEWHALE_RUNTIME_TOKEN"),
             "{app_server}"
         );
-        let auth_set = help_for(&["codewhale", "auth", "set", "--help"]);
+        let auth_set = help_for(&["chimera", "auth", "set", "--help"]);
         assert!(
             auth_set.contains("Save an API key to the credential store"),
             "{auth_set}"
@@ -13600,23 +13524,23 @@ verbosity = "concise"
             argv_secret_warning(&cli, cli.command.as_ref())
         };
         assert!(
-            warn(&["codewhale", "--api-key", "sk-x", "doctor"])
+            warn(&["chimera", "--api-key", "sk-x", "doctor"])
                 .expect("global --api-key warns")
                 .contains("process list")
         );
         assert!(
-            warn(&["codewhale", "app-server", "--http", "--auth-token", "t"])
+            warn(&["chimera", "app-server", "--http", "--auth-token", "t"])
                 .expect("app-server --auth-token warns")
                 .contains("CODEWHALE_RUNTIME_TOKEN")
         );
         assert!(
-            warn(&["codewhale", "serve", "--http", "--auth-token=t"])
+            warn(&["chimera", "serve", "--http", "--auth-token=t"])
                 .expect("serve --auth-token warns")
                 .contains("CODEWHALE_RUNTIME_TOKEN")
         );
         assert!(
             warn(&[
-                "codewhale",
+                "chimera",
                 "auth",
                 "set",
                 "--provider",
@@ -13627,10 +13551,10 @@ verbosity = "concise"
             .expect("auth set --api-key warns")
             .contains("--api-key-stdin")
         );
-        assert_eq!(warn(&["codewhale", "doctor"]), None);
+        assert_eq!(warn(&["chimera", "doctor"]), None);
         assert_eq!(
             warn(&[
-                "codewhale",
+                "chimera",
                 "auth",
                 "set",
                 "--provider",
@@ -13639,12 +13563,12 @@ verbosity = "concise"
             ]),
             None
         );
-        assert_eq!(warn(&["codewhale", "app-server", "--http"]), None);
+        assert_eq!(warn(&["chimera", "app-server", "--http"]), None);
         // login/account reject the global flag with their own guidance.
-        assert_eq!(warn(&["codewhale", "--api-key", "sk-x", "login"]), None);
+        assert_eq!(warn(&["chimera", "--api-key", "sk-x", "login"]), None);
         assert_eq!(
             warn(&[
-                "codewhale",
+                "chimera",
                 "--api-key",
                 "sk-x",
                 "auth",
@@ -13712,13 +13636,13 @@ verbosity = "concise"
                 vec![
                     "<SHELL>",
                     "bash",
-                    "Every script completes both `codewhale` and the `codew` shorthand.",
-                    "source <(codewhale completion bash)",
-                    "~/.local/share/bash-completion/completions/codewhale",
+                    "Every script completes the `chimera` command.",
+                    "source <(chimera completion bash)",
+                    "~/.local/share/bash-completion/completions/chimera",
                     "fpath=(~/.zfunc $fpath)",
-                    "codewhale completion fish > ~/.config/fish/completions/codewhale.fish",
-                    "codewhale completion powershell | Out-String | Invoke-Expression",
-                    "codewhale completion elvish >> ~/.config/elvish/rc.elv",
+                    "chimera completion fish > ~/.config/fish/completions/chimera.fish",
+                    "chimera completion powershell | Out-String | Invoke-Expression",
+                    "chimera completion elvish >> ~/.config/elvish/rc.elv",
                 ],
             ),
             (

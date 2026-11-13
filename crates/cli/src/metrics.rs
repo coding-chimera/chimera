@@ -1,4 +1,4 @@
-//! `codewhale metrics` / `stats` — reads native and legacy stores and prints
+//! `chimera metrics` / `stats` — reads native and legacy stores and prints
 //! a human-readable usage rollup.
 //!
 //! Legacy receipt sources, resolved through the shared Codewhale state resolvers so
@@ -45,7 +45,7 @@ use sha2::{Digest, Sha256};
 // Public entry-point
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Arguments accepted by `codewhale metrics`.
+/// Arguments accepted by `chimera metrics`.
 #[derive(Debug, Default)]
 pub struct MetricsArgs {
     /// Emit machine-readable JSON instead of human text.
@@ -2904,7 +2904,7 @@ mod tests {
     //
     // These pin *which* files the rollup reads. Before the fix the reader
     // resolved `$HOME/.deepseek`, which nothing has written since the v0.8.44
-    // rename, so `codewhale metrics` printed an all-zero rollup as truth.
+    // rename, so `chimera metrics` printed an all-zero rollup as truth.
 
     /// Isolate the ambient home so the resolver sees a clean, empty install.
     ///

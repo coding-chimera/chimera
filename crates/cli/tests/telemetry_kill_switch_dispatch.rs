@@ -1,6 +1,6 @@
 //! The kill switch has to reach the in-process runtime that would emit.
 //!
-//! The single `codewhale` binary resolves dispatcher overrides, states the
+//! The single `chimera` binary resolves dispatcher overrides, states the
 //! telemetry floor in its environment, and then calls `codewhale_tui::run`.
 //! That runtime re-resolves telemetry before it can arm. These tests drive the
 //! real binary through the keyless `features list` command and use the local
@@ -198,7 +198,7 @@ fn missing_preference_defaults_on_without_inventing_acceptance() {
         assert!(
             evidence
                 .stderr
-                .contains("codewhale config set telemetry false")
+                .contains("chimera config set telemetry false")
         );
     }
 }
@@ -273,7 +273,7 @@ fn dispatch_and_read_telemetry_with_endpoint(
     if let Some(value) = telemetry_env {
         command.env("CODEWHALE_TELEMETRY", value);
     }
-    let output = command.output().expect("run codewhale dispatcher");
+    let output = command.output().expect("run chimera dispatcher");
     assert!(
         output.status.success(),
         "the in-process feature command must succeed\nstdout:\n{}\nstderr:\n{}",
@@ -308,5 +308,5 @@ fn dispatch_and_read_telemetry_with_endpoint(
 }
 
 fn codewhale_binary() -> &'static str {
-    env!("CARGO_BIN_EXE_codewhale")
+    env!("CARGO_BIN_EXE_chimera")
 }

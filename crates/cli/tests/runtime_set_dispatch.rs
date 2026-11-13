@@ -42,7 +42,7 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codewhale"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_chimera"));
         command
             .current_dir(self.root.path())
             .env_clear()
@@ -67,7 +67,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        self.command(args).output().expect("run public codewhale")
+        self.command(args).output().expect("run public chimera")
     }
 
     fn doctor(&self, args: &[&str]) -> Value {

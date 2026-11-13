@@ -40,7 +40,7 @@ impl Fixture {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codewhale"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_chimera"));
         command.current_dir(self.path("work")).env_clear();
         for name in ["PATH", "SystemRoot", "WINDIR"] {
             if let Some(value) = std::env::var_os(name) {
@@ -112,7 +112,7 @@ fn spawn_owner(fixture: &Fixture, label: &str) -> Owner {
         .stdout(Stdio::piped())
         .stderr(Stdio::from(stderr))
         .spawn()
-        .expect("spawn codewhale app-server");
+        .expect("spawn chimera app-server");
     let stdout = child.stdout.take().expect("owner stdout");
     let (ready, listening) = mpsc::channel();
     std::thread::spawn(move || {
@@ -214,7 +214,7 @@ fn killed_owner_is_replaced_by_the_next_app_server() {
         .args(["thread", "list"])
         .stdin(Stdio::null())
         .output()
-        .expect("run codewhale thread list");
+        .expect("run chimera thread list");
     let stdout = String::from_utf8_lossy(&attached.stdout);
     assert!(
         attached.status.success() && stdout.contains(&thread_id),

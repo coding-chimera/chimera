@@ -20,7 +20,7 @@ mimalloc-allocator = ["dep:mimalloc"]
 rusty-alloc = ["dep:rusty_alloc-api"]
 
 [[bin]]
-name = "codewhale"
+name = "chimera"
 path = "src/main.rs"
 
 [dependencies]

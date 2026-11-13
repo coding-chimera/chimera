@@ -42,8 +42,8 @@ static MIMALLOC_RETAG: extern "C" fn() = {
 static GLOBAL: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
 
 fn main() -> std::process::ExitCode {
-    // Reset SIGPIPE to SIG_DFL so piping codewhale output into a command that
-    // exits early (e.g. `codewhale doctor | head`) terminates the process
+    // Reset SIGPIPE to SIG_DFL so piping chimera output into a command that
+    // exits early (e.g. `chimera doctor | head`) terminates the process
     // cleanly with exit code 141 instead of panicking on the broken-pipe
     // write. Many execution environments (systemd, Docker, some shells)
     // inherit SIGPIPE set to SIG_IGN, which makes write(2) return EPIPE;
@@ -57,7 +57,5 @@ fn main() -> std::process::ExitCode {
 
     codewhale_runtime::resolve_state_from_environment();
 
-    // Published codew/codewhale-tui compatibility names are copies or links
-    // to this executable and use the same CLI parser and Engine entrypoint.
     codewhale_cli::run_cli()
 }

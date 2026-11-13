@@ -37,7 +37,7 @@ fn expect_credential_error(result: anyhow::Result<String>, context: &'static str
 #[test]
 fn command_parses_and_documents_the_pipe_only_boundary() {
     let cli = Cli::try_parse_from([
-        "codewhale",
+        "chimera",
         "auth",
         "print-api-key",
         "--provider",
@@ -53,7 +53,7 @@ fn command_parses_and_documents_the_pipe_only_boundary() {
         }))
     ));
 
-    let help = Cli::try_parse_from(["codewhale", "auth", "print-api-key", "--help"])
+    let help = Cli::try_parse_from(["chimera", "auth", "print-api-key", "--help"])
         .expect_err("help exits")
         .to_string();
     assert!(help.contains("runtime-effective API key"), "{help}");

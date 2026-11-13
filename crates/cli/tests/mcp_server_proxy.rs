@@ -55,7 +55,7 @@ impl Fixture {
         );
     }
 
-    /// Drive `codewhale mcp-server` over stdio with `requests`, returning the
+    /// Drive `chimera mcp-server` over stdio with `requests`, returning the
     /// parsed JSON-RPC responses plus stderr.
     fn run_mcp_server(&self, args: &[&str], requests: &[Value]) -> (Vec<Value>, String) {
         let mut child = self
@@ -65,7 +65,7 @@ impl Fixture {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn codewhale mcp-server");
+            .expect("spawn chimera mcp-server");
 
         let mut stdin = child.stdin.take().expect("mcp-server stdin");
         let mut stdout = BufReader::new(child.stdout.take().expect("mcp-server stdout"));
@@ -101,10 +101,10 @@ impl Fixture {
 }
 
 fn codewhale_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_chimera") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codewhale") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_chimera") {
         return PathBuf::from(path);
     }
     let mut path = std::env::current_exe().expect("current test executable path");
@@ -112,7 +112,7 @@ fn codewhale_binary() -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.join("codewhale")
+    path.join("chimera")
 }
 
 fn initialize() -> Value {

@@ -100,7 +100,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             platform: linux-x64
-            cli_binary: codewhale
+            cli_binary: chimera
             shim_binary: codew
             cli_artifact: codewhale-linux-x64
             shim_artifact: codew-linux-x64
@@ -108,7 +108,7 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             platform: linux-arm64
-            cli_binary: codewhale
+            cli_binary: chimera
             shim_binary: codew
             cli_artifact: codewhale-linux-arm64
             shim_artifact: codew-linux-arm64
@@ -116,7 +116,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-linux-android
             platform: android-arm64
-            cli_binary: codewhale
+            cli_binary: chimera
             shim_binary: codew
             cli_artifact: codewhale-android-arm64
             shim_artifact: codew-android-arm64
@@ -124,7 +124,7 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             platform: macos-x64
-            cli_binary: codewhale
+            cli_binary: chimera
             shim_binary: codew
             cli_artifact: codewhale-macos-x64
             shim_artifact: codew-macos-x64
@@ -132,7 +132,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             platform: macos-arm64
-            cli_binary: codewhale
+            cli_binary: chimera
             shim_binary: codew
             cli_artifact: codewhale-macos-arm64
             shim_artifact: codew-macos-arm64
@@ -140,7 +140,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows-x64
-            cli_binary: codewhale.exe
+            cli_binary: chimera.exe
             shim_binary: codew.exe
             cli_artifact: codewhale-windows-x64.exe
             shim_artifact: codew-windows-x64.exe
@@ -148,7 +148,7 @@ jobs:
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             platform: windows-arm64
-            cli_binary: codewhale.exe
+            cli_binary: chimera.exe
             shim_binary: codew.exe
             cli_artifact: codewhale-windows-arm64.exe
             shim_artifact: codew-windows-arm64.exe
@@ -159,7 +159,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-ohos
             platform: ohos-arm64
-            cli_binary: codewhale
+            cli_binary: chimera
             shim_binary: codew
             cli_artifact: codewhale-ohos-arm64
             shim_artifact: codew-ohos-arm64

@@ -1,13 +1,13 @@
-//! Fleet executor — runs a Fleet worker as a real `codewhale exec` subprocess.
+//! Fleet executor — runs a Fleet worker as a real `chimera exec` subprocess.
 //!
-//! A Fleet worker IS a headless `codewhale exec` run. There is no separate
+//! A Fleet worker IS a headless `chimera exec` run. There is no separate
 //! "Fleet worker" execution engine: the sub-agent runtime, full tool surface,
-//! and recursion depth all come from the one `codewhale exec` runtime, so
+//! and recursion depth all come from the one `chimera exec` runtime, so
 //! Fleets and sub-agents are one substrate (not two moving targets).
 //!
 //! This module is the bridge:
 //! - [`build_worker_exec_command`] turns a `FleetTaskSpec` + `FleetExecConfig`
-//!   into the `codewhale [route flags] exec --output-format stream-json …`
+//!   into the `chimera [route flags] exec --output-format stream-json …`
 //!   argv that a host adapter ([`super::host`]) launches locally or over SSH.
 //! - [`map_exec_stream_line`] maps one stream-json line emitted by that worker
 //!   into a [`FleetWorkerEventPayload`] for the durable ledger, so the ledger
@@ -64,15 +64,13 @@ pub fn configured_codewhale_binary() -> String {
         .or_else(|| {
             let exe = std::env::current_exe().ok()?;
             let stem = exe.file_stem()?.to_str()?;
-            let cli = matches!(stem, "codewhale" | "codew")
-                || stem.starts_with("codewhale-")
-                || stem.starts_with("codew-");
+            let cli = matches!(stem, "chimera") || stem.starts_with("chimera-");
             cli.then(|| exe.to_string_lossy().into_owned())
         })
-        .unwrap_or_else(|| "codewhale".to_string())
+        .unwrap_or_else(|| "chimera".to_string())
 }
 
-/// Build the `codewhale exec` argv that runs a fleet task headlessly.
+/// Build the `chimera exec` argv that runs a fleet task headlessly.
 ///
 /// `--auto` is always passed: a headless worker has no human to approve tool
 /// calls, so it runs with full (policy-gated) tool access. `--output-format
@@ -374,7 +372,7 @@ fn build_worker_exec_command_from_prompt(
     FleetWorkerCommand::new(codewhale_binary.to_string(), args)
 }
 
-/// Map one `codewhale exec` stream-json line into a fleet ledger event.
+/// Map one `chimera exec` stream-json line into a fleet ledger event.
 ///
 /// Returns `None` for lines that don't correspond to a worker lifecycle
 /// transition (e.g. `session_capture`, `metadata`). The exec event schema is

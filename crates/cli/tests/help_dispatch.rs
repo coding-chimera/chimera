@@ -30,7 +30,7 @@ fn passthrough_help_leaves_configuration_and_legacy_credentials_untouched() {
 
         for subcommand in ["exec", "init", "setup", "mcp", "review", "rc", "uninstall"] {
             for flag in ["--help", "-h"] {
-                let output = Command::new(env!("CARGO_BIN_EXE_codewhale"))
+                let output = Command::new(env!("CARGO_BIN_EXE_chimera"))
                     .env_clear()
                     .env("HOME", &home)
                     .env("USERPROFILE", &home)
@@ -44,7 +44,7 @@ fn passthrough_help_leaves_configuration_and_legacy_credentials_untouched() {
                 assert!(output.stderr.is_empty(), "{subcommand} {flag}");
                 let help = String::from_utf8(output.stdout).expect("UTF-8 help");
                 assert!(
-                    help.contains(&format!("Usage: codewhale {subcommand}")),
+                    help.contains(&format!("Usage: chimera {subcommand}")),
                     "{subcommand} must show its own help"
                 );
                 assert!(!help.contains(SENTINEL));
