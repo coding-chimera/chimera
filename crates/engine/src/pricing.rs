@@ -339,8 +339,7 @@ pub fn is_chatgpt_codex_backend(base_url: &str) -> bool {
     let Some(shape) = endpoint_shape(base_url) else {
         return false;
     };
-    shape.host == "chatgpt.com"
-        && (shape.path == "/backend-api" || shape.path.starts_with("/backend-api/"))
+    shape.host == "chatgpt.com" && shape.path == "/backend-api/codex"
 }
 
 /// The public API base documented for official ChatGPT plan inference.

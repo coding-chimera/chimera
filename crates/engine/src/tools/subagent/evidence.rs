@@ -73,7 +73,7 @@ impl FileEvidenceSource {
         std::fs::File::open(&path)
             .and_then(|mut file| file.read_to_string(&mut text))
             .map_err(|error| ToolError::invalid_input(format!(
-                "swarm from obligations store is unavailable at {}: {error}. Materialize the evidence store (W4) or pass explicit items.",
+                "swarm from obligations store is unavailable at {}: {error}. Materialize the evidence store (W4) or pass explicit items; an empty work input cannot become a fan-out.",
                 path.display()
             )))?;
         let parsed: Value = serde_json::from_str(&text).map_err(|error| {
@@ -96,7 +96,7 @@ impl FileEvidenceSource {
         std::fs::File::open(&path)
             .and_then(|mut file| file.read_to_string(&mut text))
             .map_err(|error| ToolError::invalid_input(format!(
-                "swarm from oracle records are unavailable at {}: {error}. Materialize the evidence store (W4) or pass explicit items.",
+                "swarm from oracle records are unavailable at {}: {error}. Materialize the evidence store (W4) or pass explicit items; an empty work input cannot become a fan-out.",
                 path.display()
             )))?;
         let mut records = Vec::new();

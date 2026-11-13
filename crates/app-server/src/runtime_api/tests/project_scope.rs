@@ -13,7 +13,8 @@ use serde_json::json;
 
 /// One test project root with a recognizable marker file.
 struct ProjectRoot {
-    root: tempfile::TempDir,
+    _root: tempfile::TempDir,
+    workspace: PathBuf,
 }
 
 impl ProjectRoot {
@@ -22,12 +23,14 @@ impl ProjectRoot {
         let workspace = root.path().join(name);
         fs::create_dir_all(&workspace).expect("project workspace");
         fs::write(workspace.join("MARKER"), marker).expect("marker file");
-        Self { root }
+        Self {
+            _root: root,
+            workspace,
+        }
     }
 
     fn workspace(&self) -> PathBuf {
-        self.root
-            .path()
+        self.workspace
             .canonicalize()
             .expect("canonical project path")
     }
@@ -108,7 +111,7 @@ async fn two_projects_do_not_cross_workspaces() -> Result<()> {
     };
 
     // Default project (no selection): reads alpha.
-    let default_status = get_json(addr, "/v1/workspace/files?path=MARKER").await?;
+    let default_status = get_json(addr, "/v1/workspace/files/read?path=MARKER").await?;
     assert_eq!(
         default_status["content"].as_str(),
         Some("alpha"),
@@ -116,8 +119,12 @@ async fn two_projects_do_not_cross_workspaces() -> Result<()> {
     );
 
     // Explicit selection of beta: reads beta.
-    let beta_status =
-        get_json_workspace(addr, "/v1/workspace/files?path=MARKER", &beta.workspace()).await?;
+    let beta_status = get_json_workspace(
+        addr,
+        "/v1/workspace/files/read?path=MARKER",
+        &beta.workspace(),
+    )
+    .await?;
     assert_eq!(
         beta_status["content"].as_str(),
         Some("beta"),
@@ -125,8 +132,12 @@ async fn two_projects_do_not_cross_workspaces() -> Result<()> {
     );
 
     // Explicit selection of alpha still reads alpha.
-    let alpha_status =
-        get_json_workspace(addr, "/v1/workspace/files?path=MARKER", &alpha.workspace()).await?;
+    let alpha_status = get_json_workspace(
+        addr,
+        "/v1/workspace/files/read?path=MARKER",
+        &alpha.workspace(),
+    )
+    .await?;
     assert_eq!(
         alpha_status["content"].as_str(),
         Some("alpha"),
@@ -153,7 +164,7 @@ async fn two_projects_do_not_cross_workspaces() -> Result<()> {
         .to_string();
     let thread_scoped = get_json_workspace(
         addr,
-        &format!("/v1/workspace/files?path=MARKER&thread_id={beta_thread_id}"),
+        &format!("/v1/workspace/files/read?path=MARKER&thread_id={beta_thread_id}"),
         &alpha.workspace(),
     )
     .await?;
@@ -178,7 +189,7 @@ async fn unauthorized_project_selection_is_refused() -> Result<()> {
     let missing = alpha.workspace().join("does-not-exist");
     let client = codewhale_release::tls::reqwest_client();
     let response = client
-        .get(format!("http://{addr}/v1/workspace/files?path=MARKER"))
+        .get(format!("http://{addr}/v1/workspace/files/read?path=MARKER"))
         .header("x-codewhale-workspace", missing.to_string_lossy().as_ref())
         .send()
         .await?;
@@ -233,7 +244,7 @@ async fn request_leases_protect_scopes_from_idle_recycling() -> Result<()> {
     // Open the thread events stream (SSE) and keep it open: the stream
     // holds the project lease.
     let stream_url = format!("http://{addr}/v1/threads/{beta_thread_id}/events");
-    let mut events = codewhale_release::tls::reqwest_client()
+    let events = codewhale_release::tls::reqwest_client()
         .get(stream_url)
         .send()
         .await?
@@ -248,7 +259,7 @@ async fn request_leases_protect_scopes_from_idle_recycling() -> Result<()> {
     // open, and the thread record keeps its workspace.
     let detail = get_json(addr, &format!("/v1/threads/{beta_thread_id}")).await?;
     assert_eq!(
-        detail["workspace"].as_str(),
+        detail["thread"]["workspace"].as_str(),
         Some(beta.workspace().to_string_lossy().as_ref()),
         "beta thread must keep its workspace: {detail}"
     );
@@ -258,7 +269,10 @@ async fn request_leases_protect_scopes_from_idle_recycling() -> Result<()> {
 
     // The manager still serves the thread (durable, not stream-scoped).
     let after = get_json(addr, &format!("/v1/threads/{beta_thread_id}")).await?;
-    assert_eq!(after["id"].as_str(), Some(beta_thread_id.as_str()));
+    assert_eq!(
+        after["thread"]["id"].as_str(),
+        Some(beta_thread_id.as_str())
+    );
     let _ = threads;
     handle.abort();
     Ok(())
@@ -277,8 +291,12 @@ async fn idle_scopes_recycle_with_jitter_pin() -> Result<()> {
     // Touch beta through a request, twice: the scope is admitted and stays
     // present.
     for round in 0..2 {
-        let status =
-            get_json_workspace(addr, "/v1/workspace/files?path=MARKER", &beta.workspace()).await?;
+        let status = get_json_workspace(
+            addr,
+            "/v1/workspace/files/read?path=MARKER",
+            &beta.workspace(),
+        )
+        .await?;
         assert_eq!(
             status["content"].as_str(),
             Some("beta"),
@@ -292,8 +310,12 @@ async fn idle_scopes_recycle_with_jitter_pin() -> Result<()> {
     // behavior through the public surface by confirming the next read
     // still succeeds (re-admission through the drive lease is legal for
     // the same process and the jitter pin only delays foreign takeover).
-    let status =
-        get_json_workspace(addr, "/v1/workspace/files?path=MARKER", &beta.workspace()).await?;
+    let status = get_json_workspace(
+        addr,
+        "/v1/workspace/files/read?path=MARKER",
+        &beta.workspace(),
+    )
+    .await?;
     assert_eq!(
         status["content"].as_str(),
         Some("beta"),
@@ -364,7 +386,7 @@ fn request_workspace_selection_prefers_header() {
 /// idle reclamation; age alone does not.
 #[test]
 fn scope_activity_protection_semantics() {
-    let activity = ScopeActivity::default();
+    let activity = std::sync::Arc::new(ScopeActivity::default());
     let ttl = Duration::from_millis(50);
 
     // Fresh scope (presence just initialized at admit; simulate).
@@ -416,14 +438,18 @@ async fn home_scope_is_never_recycled() -> Result<()> {
     };
 
     // Home (alpha) plus a second project (beta) both work.
-    let home = get_json(addr, "/v1/workspace/files?path=MARKER").await?;
+    let home = get_json(addr, "/v1/workspace/files/read?path=MARKER").await?;
     assert_eq!(home["content"].as_str(), Some("alpha"));
-    let second =
-        get_json_workspace(addr, "/v1/workspace/files?path=MARKER", &beta.workspace()).await?;
+    let second = get_json_workspace(
+        addr,
+        "/v1/workspace/files/read?path=MARKER",
+        &beta.workspace(),
+    )
+    .await?;
     assert_eq!(second["content"].as_str(), Some("beta"));
 
     // Whatever the recycler does, the home project keeps answering.
-    let home_again = get_json(addr, "/v1/workspace/files?path=MARKER").await?;
+    let home_again = get_json(addr, "/v1/workspace/files/read?path=MARKER").await?;
     assert_eq!(home_again["content"].as_str(), Some("alpha"));
 
     handle.abort();
