@@ -2108,7 +2108,7 @@
       "web": {
         "order": 50
       },
-      "selection_order": 46,
+      "selection_order": 45,
       "tui_wire_tag": "alibailian",
       "tui_order": 53,
       "catalog_id": "alibailian",
@@ -2137,7 +2137,7 @@
       "retired": false,
       "secret_store_slot": "custom",
       "family": "custom",
-      "selection_order": 45,
+      "selection_order": 46,
       "tui_wire_tag": "custom",
       "tui_order": 52,
       "catalog_id": "custom",

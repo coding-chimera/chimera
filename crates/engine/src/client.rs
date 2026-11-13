@@ -2774,24 +2774,50 @@ fn build_default_headers(
             HeaderValue::from_str(session)?,
         );
     }
-    for (name, value) in extra_headers {
-        let name = name.trim();
-        let value = value.trim();
-        if name.is_empty() || value.is_empty() {
-            continue;
+    if api_provider == ProviderKind::Alibailian {
+        let configured = extra_headers
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        for (name, value) in alibailian::merge_relay_headers(&configured) {
+            let name = name.trim();
+            let value = value.trim();
+            if name.is_empty() || value.is_empty() {
+                continue;
+            }
+            if auth_disabled && is_upstream_auth_header(name) {
+                continue;
+            }
+            let header_name = HeaderName::from_bytes(name.as_bytes())?;
+            if header_name == AUTHORIZATION
+                || header_name == CONTENT_TYPE
+                || auth_header_name.as_ref() == Some(&header_name)
+                || (auth_header_name.is_some() && is_auth_dialect_header(&header_name))
+            {
+                continue;
+            }
+            headers.insert(header_name, HeaderValue::from_str(value)?);
         }
-        if auth_disabled && is_upstream_auth_header(name) {
-            continue;
+    } else {
+        for (name, value) in extra_headers {
+            let name = name.trim();
+            let value = value.trim();
+            if name.is_empty() || value.is_empty() {
+                continue;
+            }
+            if auth_disabled && is_upstream_auth_header(name) {
+                continue;
+            }
+            let header_name = HeaderName::from_bytes(name.as_bytes())?;
+            if header_name == AUTHORIZATION
+                || header_name == CONTENT_TYPE
+                || auth_header_name.as_ref() == Some(&header_name)
+                || (auth_header_name.is_some() && is_auth_dialect_header(&header_name))
+            {
+                continue;
+            }
+            headers.insert(header_name, HeaderValue::from_str(value)?);
         }
-        let header_name = HeaderName::from_bytes(name.as_bytes())?;
-        if header_name == AUTHORIZATION
-            || header_name == CONTENT_TYPE
-            || auth_header_name.as_ref() == Some(&header_name)
-            || (auth_header_name.is_some() && is_auth_dialect_header(&header_name))
-        {
-            continue;
-        }
-        headers.insert(header_name, HeaderValue::from_str(value)?);
     }
     Ok(headers)
 }

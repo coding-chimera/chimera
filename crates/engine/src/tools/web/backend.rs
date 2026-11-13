@@ -194,7 +194,7 @@ fn should_prepend_provider_native(context: &ToolContext) -> bool {
 /// provider identity; this projection only orders the chain, it never mints
 /// credentials or hides a hop's error.
 #[must_use]
-pub fn alibailian_websearch_fallback_chain() -> &'static [crate::ProviderKind] {
+pub fn alibailian_websearch_fallback_chain() -> &'static [codewhale_config::ProviderKind] {
     crate::client::alibailian_fallback_chain()
 }
 

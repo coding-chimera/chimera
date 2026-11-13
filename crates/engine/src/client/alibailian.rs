@@ -21,14 +21,10 @@
 use serde_json::{Value, json};
 
 use codewhale_config::ProviderKind;
-use codewhale_models::MessageRequest;
+use codewhale_models::{ContentBlock, MessageRequest, MessageResponse};
 
 /// Name of the structured-output tool the relay backstop force-calls.
 pub const ALIBAILIAN_STRUCTURED_OUTPUT_TOOL: &str = "StructuredOutput";
-
-/// DashScope session-cache header the relay forwards when explicitly
-/// configured. Never synthesized: it only merges from user configuration.
-pub const ALIBAILIAN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
 
 /// Whether this request takes the relay's zero-tool native structured output
 /// path: a JSON schema is present, and the request carries no tools. A
@@ -37,7 +33,11 @@ pub const ALIBAILIAN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
 /// relay documents, and the first attempt must not be assumed to succeed.
 #[must_use]
 pub fn structured_output_schema(request: &MessageRequest) -> Option<&Value> {
-    if request.tools.as_ref().is_some_and(|tools| !tools.is_empty()) {
+    if request
+        .tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+    {
         return None;
     }
     request.metadata.as_ref().and_then(|metadata| {
@@ -75,6 +75,24 @@ pub fn structured_extraction_instruction(schema: &Value) -> String {
     )
 }
 
+/// Validate the actual assistant response against the caller's JSON schema.
+#[must_use]
+pub fn structured_output_is_valid(response: &MessageResponse, schema: &Value) -> bool {
+    let text = response.content.iter().find_map(|block| match block {
+        ContentBlock::Text { text, .. } => Some(text.as_str()),
+        _ => None,
+    });
+    let Some(text) = text else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    jsonschema::validator_for(schema)
+        .map(|validator| validator.is_valid(&value))
+        .unwrap_or(false)
+}
+
 /// Build the body for the no-tool structured-output extraction retry.
 ///
 /// The retry deliberately drops `tools`, `tool_choice`, and any reasoning
@@ -82,14 +100,17 @@ pub fn structured_extraction_instruction(schema: &Value) -> String {
 /// prompt — the relay's zero-tool `response_format` path is the only shape
 /// this retry may take.
 #[must_use]
-pub fn structured_extraction_body(
-    first_attempt: &Value,
-    schema: &Value,
-) -> Value {
+pub fn structured_extraction_body(first_attempt: &Value, schema: &Value) -> Value {
     let mut body = first_attempt.clone();
     if let Some(object) = body.as_object_mut() {
         object.remove("tools");
         object.remove("tool_choice");
+    }
+    let instruction = structured_extraction_instruction(schema);
+    if let Some(messages) = body["messages"].as_array_mut() {
+        messages.insert(0, json!({"role": "system", "content": instruction}));
+    } else {
+        body["messages"] = json!([{"role": "system", "content": instruction}]);
     }
     body["response_format"] = json!({
         "type": "json_schema",
@@ -166,7 +187,11 @@ pub fn is_hosted_web_search_call(item: &Value) -> bool {
 /// independently and its errors stay visible to the caller.
 #[must_use]
 pub fn websearch_fallback_chain() -> &'static [ProviderKind] {
-    &[ProviderKind::Alibailian, ProviderKind::Deepseek, ProviderKind::Moonshot]
+    &[
+        ProviderKind::Alibailian,
+        ProviderKind::Deepseek,
+        ProviderKind::Moonshot,
+    ]
 }
 
 /// Merge relay headers. Explicit user configuration wins on every name,
@@ -300,6 +325,45 @@ mod tests {
         assert!(mapped.is_some());
     }
 
+    fn structured_response(text: &str) -> MessageResponse {
+        MessageResponse {
+            id: "response-id".to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+            model: "qwen3.8-max".to_string(),
+            stop_reason: Some("stop".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Default::default(),
+        }
+    }
+
+    #[test]
+    fn structured_response_validation_accepts_matching_json() {
+        let schema = json!({"type": "object", "required": ["answer"], "properties": {"answer": {"type": "string"}}});
+        assert!(structured_output_is_valid(
+            &structured_response("{\"answer\":\"ok\"}"),
+            &schema
+        ));
+    }
+
+    #[test]
+    fn structured_response_validation_rejects_invalid_json_and_schema_mismatch() {
+        let schema = json!({"type": "object", "required": ["answer"], "properties": {"answer": {"type": "string"}}});
+        assert!(!structured_output_is_valid(
+            &structured_response("not json"),
+            &schema
+        ));
+        assert!(!structured_output_is_valid(
+            &structured_response("{\"other\":1}"),
+            &schema
+        ));
+    }
+
     #[test]
     fn extraction_retry_drops_tools_and_carries_schema() {
         let schema = json!({"type": "object", "properties": {"answer": {"type": "string"}}});
@@ -314,6 +378,12 @@ mod tests {
         assert!(retry.get("tools").is_none());
         assert!(retry.get("tool_choice").is_none());
         assert_eq!(retry["response_format"]["json_schema"]["schema"], schema);
+        assert_eq!(retry["messages"][0]["role"], "system");
+        assert!(
+            retry["messages"][0]["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("JSON Schema"))
+        );
     }
 
     #[test]
@@ -351,7 +421,9 @@ mod tests {
 
     #[test]
     fn hosted_search_call_is_recognized_for_replay() {
-        assert!(is_hosted_web_search_call(&json!({"type": "web_search_call"})));
+        assert!(is_hosted_web_search_call(
+            &json!({"type": "web_search_call"})
+        ));
         assert!(!is_hosted_web_search_call(&json!({"type": "message"})));
         assert!(!is_hosted_web_search_call(&json!({})));
     }
@@ -368,15 +440,22 @@ mod tests {
         );
     }
 
+    /// DashScope session-cache header the relay forwards when explicitly
+    /// configured. Never synthesized: it only merges from user configuration.
+    pub const ALIBAILIAN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
+
     #[test]
     fn relay_headers_merge_configured_and_drop_empty() {
         let mut configured = std::collections::BTreeMap::new();
-        configured.insert("x-dashscope-session-cache".to_string(), "sid-1".to_string());
+        configured.insert(
+            ALIBAILIAN_SESSION_CACHE_HEADER.to_string(),
+            "sid-1".to_string(),
+        );
         configured.insert("X-Custom".to_string(), "".to_string());
         configured.insert("  ".to_string(), "value".to_string());
         let merged = merge_relay_headers(&configured);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].0, "x-dashscope-session-cache");
+        assert_eq!(merged[0].0, ALIBAILIAN_SESSION_CACHE_HEADER);
         assert_eq!(merged[0].1, "sid-1");
     }
 

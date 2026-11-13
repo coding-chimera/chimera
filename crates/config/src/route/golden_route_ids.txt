@@ -1,6 +1,7 @@
 # Committed Route Contract route ids. Removing or respelling an id fails CI.
 # Source: ProviderDescriptor registry via ProvidersExport::from_registry.
 # New ids may be appended (sorted); never recycle a retired spelling.
+alibailian
 anthropic
 arcee
 atlascloud

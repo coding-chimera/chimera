@@ -36,10 +36,10 @@ use codewhale_models::{
 use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
+use super::alibailian;
 use super::prepared::WireDialect;
 use super::reasoning_effort::apply_reasoning_effort;
 use super::role_placement::{RolePlacement, role_placement};
-use super::alibailian;
 use super::wire::{
     ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK, SSE_BACKPRESSURE_SLEEP_MS,
     SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, bounded_error_text, from_api_tool_name,
@@ -1266,7 +1266,10 @@ pub fn build_chat_wire_body_with_window(
                 .and_then(Value::as_array)
                 .map(Vec::len)
                 .unwrap_or(0),
-            request.tool_choice.as_ref().unwrap_or(&serde_json::Value::Null),
+            request
+                .tool_choice
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
         ) {
             body["tool_choice"] = backstop;
         }
@@ -1369,7 +1372,42 @@ impl CodewhaleClient {
             .context("Failed to read Chat API response body")?;
         let value: Value =
             serde_json::from_str(&response_text).context("Failed to parse Chat API JSON")?;
-        let parsed = parse_chat_message_for_route(&value, self.api_provider, &self.base_url)?;
+        let mut parsed = parse_chat_message_for_route(&value, self.api_provider, &self.base_url)?;
+        if self.api_provider == ProviderKind::Alibailian
+            && let Some(schema) = body.pointer("/response_format/json_schema/schema")
+            && !alibailian::structured_output_is_valid(&parsed, schema)
+        {
+            let retry_body = alibailian::structured_extraction_body(body, schema);
+            let retry_response = self.send_json_with_retry(url, &retry_body).await?;
+            let retry_status = retry_response.status();
+            crate::client::record_provider_response(self.api_provider, retry_status.as_u16());
+            if !retry_status.is_success() {
+                let raw_error_text = bounded_error_text(retry_response, ERROR_BODY_MAX_BYTES).await;
+                let error_text = self.disclosed_http_error_body(
+                    &super::ErrorBodyDisclosure::Full,
+                    retry_status.as_u16(),
+                    &raw_error_text,
+                );
+                anyhow::bail!(
+                    "Failed to call {} Chat Completions API: HTTP {retry_status}: {error_text}",
+                    self.api_provider.provider().display_name()
+                );
+            }
+            let retry_text = retry_response
+                .text()
+                .await
+                .context("Failed to read Alibailian structured extraction response")?;
+            let retry_value: Value = serde_json::from_str(&retry_text)
+                .context("Failed to parse Alibailian structured extraction JSON")?;
+            let retry_parsed =
+                parse_chat_message_for_route(&retry_value, self.api_provider, &self.base_url)?;
+            if !alibailian::structured_output_is_valid(&retry_parsed, schema) {
+                anyhow::bail!(
+                    "Alibailian structured output failed schema validation after one no-tool extraction retry"
+                );
+            }
+            parsed = retry_parsed;
+        }
         if let Some(key) = response_cache_key {
             codewhale_runtime::llm_response_cache::response_cache().put(key, parsed.clone());
         }
@@ -6685,6 +6723,7 @@ mod image_block_wire_tests {
     use super::{ProviderKind, build_chat_messages, build_chat_wire_body};
     use codewhale_models::Role;
     use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest, Tool};
+    use serde_json::json;
 
     const DATA_URL: &str = "data:image/png;base64,QUJD";
 
@@ -7153,8 +7192,8 @@ mod image_block_wire_tests {
             None,
         )
         .expect("relay wire body");
-        assert_eq!(wire.body["temperature"], 0.7);
-        assert_eq!(wire.body["top_p"], 0.9);
+        assert!((wire.body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+        assert!((wire.body["top_p"].as_f64().unwrap() - 0.9).abs() < 1e-6);
     }
 
     #[test]
@@ -7166,27 +7205,30 @@ mod image_block_wire_tests {
         request.metadata = Some(json!({
             "response_schema": {"type": "object"}
         }));
-        request.tools = Some(vec![Tool {
-            tool_type: Some("function".to_string()),
-            name: "a".to_string(),
-            description: "a tool".to_string(),
-            input_schema: json!({"type": "object"}),
-            allowed_callers: None,
-            defer_loading: None,
-            input_examples: None,
-            strict: None,
-            cache_control: None,
-        }, Tool {
-            tool_type: Some("function".to_string()),
-            name: "b".to_string(),
-            description: "a tool".to_string(),
-            input_schema: json!({"type": "object"}),
-            allowed_callers: None,
-            defer_loading: None,
-            input_examples: None,
-            strict: None,
-            cache_control: None,
-        }]);
+        request.tools = Some(vec![
+            Tool {
+                tool_type: Some("function".to_string()),
+                name: "a".to_string(),
+                description: "a tool".to_string(),
+                input_schema: json!({"type": "object"}),
+                allowed_callers: None,
+                defer_loading: None,
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            },
+            Tool {
+                tool_type: Some("function".to_string()),
+                name: "b".to_string(),
+                description: "a tool".to_string(),
+                input_schema: json!({"type": "object"}),
+                allowed_callers: None,
+                defer_loading: None,
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            },
+        ]);
         request.tool_choice = Some(json!("required"));
         let wire = build_chat_wire_body(
             &request,
