@@ -1,6 +1,6 @@
 //! Diagnostic dispatch must be read-only whether the command uses the real
 //! in-process TUI entry (`doctor`, `setup --status`) or stays in the CLI
-//! (`auth status --diagnostic`). The single `codewhale` binary has no sibling
+//! (`auth status --diagnostic`). The single `chimera` binary has no sibling
 //! TUI executable to delegate to (#5259 single-binary argv0 dispatch). These
 //! invariants stay: the dispatcher must not migrate legacy secrets, must not
 //! rewrite legacy settings, and must not create any state under a sealed HOME.
@@ -45,7 +45,7 @@ fn dispatcher_diagnostics_are_in_process_and_read_only() {
         let before_paths = relative_paths(&sealed_home);
         let before_legacy = fs::read(&legacy).expect("read synthetic legacy store");
 
-        // The diagnostic runs entirely in-process: the single `codewhale` binary
+        // The diagnostic runs entirely in-process: the single `chimera` binary
         // dispatches through `run_tui_in_process` -> `codewhale_tui::run`. No
         // `DEEPSEEK_TUI_BIN` sibling is spawned, so there is no receipt to read;
         // assert the in-process behavior and the read-only invariants instead.
@@ -93,7 +93,7 @@ fn dispatcher_diagnostics_are_in_process_and_read_only() {
             );
             assert!(
                 stdout.contains(&format!(
-                    "codewhale home: {}",
+                    "chimera home: {}",
                     codewhale_config::quote_os_path(&codewhale_home)
                 )),
                 "{stdout}"
@@ -175,10 +175,10 @@ fn collect_relative_paths(root: &Path, current: &Path, paths: &mut Vec<PathBuf>)
 }
 
 fn codewhale_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_chimera") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codewhale") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_chimera") {
         return PathBuf::from(path);
     }
 
@@ -187,7 +187,7 @@ fn codewhale_binary() -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.push(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+    path.push(format!("chimera{}", std::env::consts::EXE_SUFFIX));
     path
 }
 

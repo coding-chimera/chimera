@@ -1,4 +1,4 @@
-//! Portable config bundles: `codewhale config import` / `config export --portable`.
+//! Portable config bundles: `chimera config import` / `config export --portable`.
 //!
 //! A bundle is a TOML or JSON document carrying a portable subset of a
 //! CodeWhale configuration (preferences, harness profiles, provider
@@ -1507,7 +1507,7 @@ pub fn require_import_consent(yes: bool, plan: &ImportPlan) -> Result<()> {
 // CLI surface
 // ---------------------------------------------------------------------------
 
-/// Arguments for `codewhale config import`.
+/// Arguments for `chimera config import`.
 #[derive(Debug, clap::Args)]
 pub struct ImportArgs {
     /// Bundle source: a file path, an HTTPS URL, or `-` for stdin.
@@ -1523,7 +1523,7 @@ pub struct ImportArgs {
     project: bool,
 }
 
-/// Arguments for `codewhale config export --portable`.
+/// Arguments for `chimera config export --portable`.
 #[derive(Debug, clap::Args)]
 pub struct ExportArgs {
     /// Emit a portable, secret-free bundle (required flag; plain `export`
@@ -1646,7 +1646,7 @@ pub fn run_export(args: &ExportArgs, store: &codewhale_config::ConfigStore) -> R
     let metadata = BundleMetadata {
         name: None,
         created_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-        generator: Some(format!("codewhale {}", env!("CARGO_PKG_VERSION"))),
+        generator: Some(format!("chimera {}", env!("CARGO_PKG_VERSION"))),
     };
     let bundle = export_bundle(&store.config, scope, metadata)?;
     let body = serialize_bundle(&bundle)?;
@@ -3998,7 +3998,7 @@ enabled = true
         }
         for url in [
             "https://registry.example/skills.json",
-            "https://registry.example/search?q=codewhale&page=2",
+            "https://registry.example/search?q=chimera&page=2",
             "https://registry.example/search?q=a+b%20c",
             "https://hooks.slack.com/",
         ] {

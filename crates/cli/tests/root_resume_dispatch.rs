@@ -1,4 +1,4 @@
-//! `codewhale --resume <id>`, `--resume=<id>`, `-r <id>` and `--session-id <id>`
+//! `chimera --resume <id>`, `--resume=<id>`, `-r <id>` and `--session-id <id>`
 //! are root dispatcher flags (the operations runbook advertises the first)
 //! that forward to the in-process TUI's `--resume`. They used to be swallowed
 //! by the trailing prompt positional and forwarded as `--prompt "--resume
@@ -17,10 +17,10 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 fn codewhale_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_chimera") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codewhale") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_chimera") {
         return PathBuf::from(path);
     }
     let mut path = std::env::current_exe().expect("current test executable path");
@@ -28,7 +28,7 @@ fn codewhale_binary() -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.push(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+    path.push(format!("chimera{}", std::env::consts::EXE_SUFFIX));
     path
 }
 
@@ -74,7 +74,7 @@ fn root_session_flags_reach_the_tui_launch_contract_without_touching_state() {
             .arg(&workspace)
             .args(argv)
             .output()
-            .expect("run codewhale");
+            .expect("run chimera");
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
 

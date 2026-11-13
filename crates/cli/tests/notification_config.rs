@@ -7,7 +7,7 @@ use std::{
 };
 
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_codewhale"))
+    Command::new(env!("CARGO_BIN_EXE_chimera"))
         .env_clear()
         .env("HOME", root)
         .env("USERPROFILE", root)

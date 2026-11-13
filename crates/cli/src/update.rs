@@ -1,4 +1,4 @@
-//! Self-update for the `codewhale` binary.
+//! Self-update for the `chimera` binary.
 //!
 //! The `update` subcommand resolves the release source first: without an
 //! operator-configured mirror it refuses with an explicit error rather than
@@ -207,7 +207,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     let mut host_update = compiled_host::prepare(
         &download,
         latest_tag,
-        plan.asset_stem.trim_start_matches("codewhale-"),
+        plan.asset_stem.trim_start_matches('chimera-'),
         &current_exe,
         proxy.as_ref(),
     )?;
@@ -248,7 +248,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
          \n\
          Restart the application to use the new version.\n\
          What's new: {notes}\n\
-         Undo: codewhale update --rollback",
+         Undo: chimera update --rollback",
         source = download.source.describe(),
         notes = autoupdate::changelog_url(latest_tag),
         targets = plan
@@ -352,8 +352,8 @@ fn replace_command_paths(
     let had_receipt = uninstall::CommandReceipt::capture(&identity.path)?.is_some();
     match &home {
         Some(home) => save_previous(home, identity)
-            .context("could not keep the current version for `codewhale update --rollback`; nothing was replaced")?,
-        None => println!("Codewhale home is unavailable; `codewhale update --rollback` will not have this version."),
+            .context("could not keep the current version for `chimera update --rollback`; nothing was replaced")?,
+        None => println!("Codewhale home is unavailable; `chimera update --rollback` will not have this version."),
     }
     if !divergent.is_empty() {
         let home = home
@@ -437,7 +437,7 @@ fn adopt_receipt_for(executable: &Path, bytes: &[u8]) {
     }
     match installs::adopt_receipt(&directory, &entries) {
         Ok(true) => println!(
-            "Recorded an install receipt in {}; `codewhale uninstall` can now remove this copy.",
+            "Recorded an install receipt in {}; `chimera uninstall` can now remove this copy.",
             directory.display()
         ),
         Ok(false) => {}
@@ -453,7 +453,7 @@ pub fn run_stage(beta: bool, proxy_arg: Option<String>) -> Result<()> {
     }
     if compiled_host::required_for(&exe)? {
         bail!(
-            "Background updates skip installs with the optional compiled host; run `codewhale update`."
+            "Background updates skip installs with the optional compiled host; run `chimera update`."
         );
     }
     ensure_supported_release_target(std::env::consts::OS, std::env::consts::ARCH)?;
@@ -574,7 +574,7 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
     let version = staged.version.clone();
     let fail = |reason: String| {
         eprintln!(
-            "Couldn't apply v{version} ({reason}). Still on v{current}. Details: codewhale doctor"
+            "Couldn't apply v{version} ({reason}). Still on v{current}. Details: chimera doctor"
         );
     };
     let dir = autoupdate::staged_dir(&home);
@@ -590,7 +590,7 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
             other => bail!("the release signature does not verify ({other:?})"),
         };
         let asset = release_asset_name_for_prefix(
-            "codewhale",
+            "chimera",
             std::env::consts::OS,
             std::env::consts::ARCH,
         );
@@ -626,7 +626,7 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
         if !accepted {
             staged.declined = true;
             let _ = autoupdate::store_staged(&home, &staged);
-            eprintln!("Kept v{current}. Run `codewhale update` whenever you want v{version}.");
+            eprintln!("Kept v{current}. Run `chimera update` whenever you want v{version}.");
             return;
         }
     }
@@ -645,7 +645,7 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
     }
     autoupdate::discard_staged(&home);
     eprintln!(
-        "Updated to v{version} · What's new: {} · Undo: codewhale update --rollback",
+        "Updated to v{version} · What's new: {} · Undo: chimera update --rollback",
         autoupdate::changelog_url(&version)
     );
     #[cfg(unix)]
@@ -727,7 +727,7 @@ pub fn run_rollback() -> Result<()> {
     autoupdate::store_state(&home, &state)?;
     autoupdate::discard_staged(&home);
     println!(
-        "Rolled back to v{}. v{current} will not be installed automatically again; the next newer release will. Undo: codewhale update --rollback",
+        "Rolled back to v{}. v{current} will not be installed automatically again; the next newer release will. Undo: chimera update --rollback",
         previous.version
     );
     Ok(())
@@ -1359,7 +1359,7 @@ fn github_source_candidate(release: &Release, asset_stem: &str) -> Option<Releas
 /// binary have to be taken from the same source.
 fn cnb_source_candidate(tag_name: &str, os: &str, rust_arch: &str) -> ReleaseSourceCandidate {
     let base_url = cnb_release_base_url(tag_name);
-    let binary_name = release_asset_name_for_prefix("codewhale", os, rust_arch);
+    let binary_name = release_asset_name_for_prefix("chimera", os, rust_arch);
     ReleaseSourceCandidate {
         manifest_url: mirror_asset_url(&base_url, CHECKSUM_MANIFEST_ASSET),
         binary_url: mirror_asset_url(&base_url, &binary_name),
@@ -1655,8 +1655,8 @@ fn legacy_binary_message(current_exe: &Path) -> String {
         "\
 this binary ({exe}) is using the legacy deepseek/deepseek-tui command name.
 
-The package has been renamed to `codewhale`. A supported direct update can
-install the canonical `codewhale` command beside this legacy command when a
+The package has been renamed to `chimera`. A supported direct update can
+install the canonical `chimera` command beside this legacy command when a
 newer verified release is available and the destination paths are safe to use.
 DeepSeek provider support is unchanged.
 
@@ -1665,7 +1665,7 @@ DeepSeek provider support is unchanged.
 Existing npm, Cargo, Homebrew, or system-managed commands are left to their
 package manager. See docs/INSTALL.md for secondary package routes.
 
-Once `codewhale` is on your PATH, run `codewhale update` for future updates.",
+Once `chimera` is on your PATH, run `chimera update` for future updates.",
         exe = current_exe.display(),
     )
 }
@@ -1674,7 +1674,7 @@ fn command_name_for_exe(current_exe: &Path) -> String {
     let exe_name = current_exe
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("codewhale")
+        .unwrap_or("chimera")
         .to_ascii_lowercase();
     exe_name
         .strip_suffix(".exe")
@@ -1716,11 +1716,6 @@ fn push_update_path(paths: &mut Vec<PathBuf>, path: PathBuf, current_exe: &Path)
     }
 }
 
-fn legacy_tui_command_exists_beside(current_exe: &Path) -> bool {
-    command_name_for_exe(current_exe) == "deepseek-tui"
-        || command_path_beside(current_exe, "deepseek-tui").exists()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpdatePlan {
     target_paths: Vec<PathBuf>,
@@ -1732,32 +1727,19 @@ fn update_plan_for_exe(current_exe: &Path) -> UpdatePlan {
 
     // Keep the process image first so reverse-order replacement updates the
     // command currently running the updater last. Pre-rebrand command names
-    // retain their historical migration behavior: install canonical commands
-    // beside them instead of overwriting the legacy path.
+    // retain their historical migration behavior: install the canonical
+    // `chimera` command beside them instead of overwriting the legacy path.
     if !is_legacy_binary(current_exe) {
         push_unique_path(&mut target_paths, current_exe.to_path_buf());
     }
 
-    let primary = installed_command_path(current_exe, "codewhale");
+    let primary = installed_command_path(current_exe, "chimera");
     push_update_path(&mut target_paths, primary, current_exe);
-
-    for alias in ["codew", "codewhale-tui"] {
-        let alias_path = installed_command_path(current_exe, alias);
-        let migrate_legacy_tui = alias == "codewhale-tui"
-            && is_legacy_binary(current_exe)
-            && legacy_tui_command_exists_beside(current_exe);
-        if std::fs::symlink_metadata(&alias_path).is_ok()
-            || command_name_for_exe(current_exe) == alias
-            || migrate_legacy_tui
-        {
-            push_update_path(&mut target_paths, alias_path, current_exe);
-        }
-    }
 
     UpdatePlan {
         target_paths,
         asset_stem: release_asset_stem_for_prefix(
-            "codewhale",
+            "chimera",
             std::env::consts::OS,
             std::env::consts::ARCH,
         ),
@@ -1781,7 +1763,7 @@ fn release_asset_name_for_prefix(prefix: &str, os: &str, rust_arch: &str) -> Str
 #[cfg(test)]
 fn release_asset_stem_for(current_exe: &Path, os: &str, rust_arch: &str) -> String {
     let _ = current_exe;
-    release_asset_stem_for_prefix("codewhale", os, rust_arch)
+    release_asset_stem_for_prefix("chimera", os, rust_arch)
 }
 
 fn asset_is_exact_platform_binary(asset_name: &str, binary_name: &str) -> bool {
@@ -1792,7 +1774,7 @@ fn asset_is_exact_platform_binary(asset_name: &str, binary_name: &str) -> bool {
 ///
 /// The updater writes the downloaded bytes straight over the running binary;
 /// it never unpacks. An archive, signature, or sidecar that merely shares the
-/// stem (`codewhale-macos-arm64.tar.gz`) would pass the checksum — the manifest
+/// stem (`chimera-macos-arm64.tar.gz`) would pass the checksum — the manifest
 /// lists it too — and then replace the executable with a non-executable. A
 /// release without the raw binary has no asset for this platform.
 fn select_platform_asset<'a>(release: &'a Release, binary_name: &str) -> Option<&'a Asset> {
@@ -2122,7 +2104,7 @@ fn release_from_asset_base_url(
         browser_download_url: mirror_asset_url(base_url, CHECKSUM_MANIFEST_ASSET),
     }];
 
-    let name = release_asset_name_for_prefix("codewhale", os, rust_arch);
+    let name = release_asset_name_for_prefix("chimera", os, rust_arch);
     assets.push(Asset {
         browser_download_url: mirror_asset_url(base_url, &name),
         name,
@@ -2516,9 +2498,9 @@ fn glibc_compatibility_message(
     };
     format!(
         "\
-Prebuilt Codewhale asset `{asset_name}` requires GLIBC_{required}, but {host_line}
+Prebuilt Chimera asset `{asset_name}` requires GLIBC_{required}, but {host_line}
 
-Official Codewhale Linux release assets (x64 and arm64) are static musl builds
+Official Chimera Linux release assets (x64 and arm64) are static musl builds
 with no glibc dependency, so this binary is not an official release asset. Check
 the download source, or install from source on this host instead:
 
@@ -2855,7 +2837,7 @@ mod tests {
     #[test]
     fn android_loaded_image_resolves_agreed_mapping() {
         let dir = tempfile::TempDir::new().unwrap();
-        let executable = dir.path().join("codewhale");
+        let executable = dir.path().join("chimera");
         write_test_executable(&executable);
         let maps = test_android_mapping_line(&executable, "r-xp");
 
@@ -2877,9 +2859,9 @@ mod tests {
         let install_dir = dir.path().join("install");
         std::fs::create_dir(&canonical_dir).unwrap();
         std::fs::create_dir(&install_dir).unwrap();
-        let canonical_dispatcher = canonical_dir.join("codewhale");
-        let canonical_tui = canonical_dir.join("codewhale-tui");
-        let invoked = install_dir.join("codewhale");
+        let canonical_dispatcher = canonical_dir.join("chimera");
+        let canonical_tui = canonical_dir.join("chimera-alias");
+        let invoked = install_dir.join("chimera");
         write_test_executable(&canonical_dispatcher);
         write_test_executable(&canonical_tui);
         symlink(&canonical_dispatcher, &invoked).unwrap();
@@ -2891,19 +2873,17 @@ mod tests {
 
         assert_eq!(
             target_paths,
-            vec![
-                canonical_dispatcher.canonicalize().unwrap(),
-                canonical_tui.canonicalize().unwrap()
-            ]
+            vec![canonical_dispatcher.canonicalize().unwrap()]
         );
         assert!(!target_paths.contains(&invoked));
+        assert!(!target_paths.contains(&canonical_tui.canonicalize().unwrap()));
     }
 
     #[cfg(unix)]
     #[test]
     fn android_loaded_image_requires_marker_mapping() {
         let dir = tempfile::TempDir::new().unwrap();
-        let executable = dir.path().join("codewhale");
+        let executable = dir.path().join("chimera");
         write_test_executable(&executable);
         let maps = test_android_mapping_line(&executable, "r-xp");
 
@@ -2920,7 +2900,7 @@ mod tests {
     #[test]
     fn android_loaded_image_requires_executable_mapping() {
         let dir = tempfile::TempDir::new().unwrap();
-        let executable = dir.path().join("codewhale");
+        let executable = dir.path().join("chimera");
         write_test_executable(&executable);
         let maps = test_android_mapping_line(&executable, "rw-p");
 
@@ -2940,7 +2920,7 @@ mod tests {
     #[test]
     fn android_loaded_image_rejects_anonymous_mapping() {
         let dir = tempfile::TempDir::new().unwrap();
-        let executable = dir.path().join("codewhale");
+        let executable = dir.path().join("chimera");
         write_test_executable(&executable);
         let maps = "1000-2000 r-xp 00000000 00:00 0\n";
 
@@ -2958,13 +2938,13 @@ mod tests {
     #[test]
     fn android_loaded_image_rejects_relative_or_deleted_paths() {
         let dir = tempfile::TempDir::new().unwrap();
-        let executable = dir.path().join("codewhale");
+        let executable = dir.path().join("chimera");
         write_test_executable(&executable);
         let metadata = std::fs::metadata(&executable).unwrap();
         use std::os::unix::fs::MetadataExt;
         let (device_major, device_minor) = android_device_parts(metadata.dev());
         let relative_maps = format!(
-            "1000-2000 r-xp 00000000 {:x}:{:x} {} codewhale\n",
+            "1000-2000 r-xp 00000000 {:x}:{:x} {} chimera\n",
             device_major,
             device_minor,
             metadata.ino()
@@ -2995,7 +2975,7 @@ mod tests {
 
         let dir = tempfile::TempDir::new().unwrap();
         let runtime_linker = dir.path().join("linker64");
-        let invoked = dir.path().join("codewhale");
+        let invoked = dir.path().join("chimera");
         write_test_executable(&runtime_linker);
         symlink(&runtime_linker, &invoked).unwrap();
         let maps = test_android_mapping_line(&invoked, "r-xp");
@@ -3042,15 +3022,15 @@ mod tests {
                 "{name} must never become an updater target"
             );
         }
-        assert!(!is_android_linker_name(Path::new("codewhale")));
+        assert!(!is_android_linker_name(Path::new("chimera")));
     }
 
     #[cfg(unix)]
     #[test]
     fn android_loaded_image_rejects_authority_disagreement() {
         let dir = tempfile::TempDir::new().unwrap();
-        let mapped = dir.path().join("mapped-codewhale");
-        let dladdr = dir.path().join("dladdr-codewhale");
+        let mapped = dir.path().join("mapped-chimera");
+        let dladdr = dir.path().join("dladdr-chimera");
         write_test_executable(&mapped);
         write_test_executable(&dladdr);
         let maps = test_android_mapping_line(&mapped, "r-xp");
@@ -3068,7 +3048,7 @@ mod tests {
     #[test]
     fn android_loaded_image_rejects_non_executable_file() {
         let dir = tempfile::TempDir::new().unwrap();
-        let executable = dir.path().join("codewhale");
+        let executable = dir.path().join("chimera");
         std::fs::write(&executable, b"not executable").unwrap();
         let maps = test_android_mapping_line(&executable, "r-xp");
 
@@ -3086,7 +3066,7 @@ mod tests {
     #[test]
     fn android_loaded_image_rejects_device_inode_mismatch() {
         let dir = tempfile::TempDir::new().unwrap();
-        let executable = dir.path().join("codewhale");
+        let executable = dir.path().join("chimera");
         write_test_executable(&executable);
         let metadata = std::fs::metadata(&executable).unwrap();
         use std::os::unix::fs::MetadataExt;
@@ -3113,7 +3093,7 @@ mod tests {
     #[test]
     fn android_loaded_image_recheck_detects_pre_replace_swap() {
         let dir = tempfile::TempDir::new().unwrap();
-        let candidate = dir.path().join("codewhale");
+        let candidate = dir.path().join("chimera");
         let replacement = dir.path().join("replacement");
         write_test_executable(&candidate);
         let maps = test_android_mapping_line(&candidate, "r-xp");
@@ -3134,7 +3114,7 @@ mod tests {
     #[test]
     fn android_identity_preflight_prevents_all_paired_replacements() {
         let dir = tempfile::TempDir::new().unwrap();
-        let primary = dir.path().join("codewhale");
+        let primary = dir.path().join("chimera");
         let sibling = dir.path().join("codewhale-tui");
         let swapped_primary = dir.path().join("swapped-primary");
 
@@ -3171,7 +3151,7 @@ mod tests {
         use std::cell::Cell;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let primary = dir.path().join("codewhale");
+        let primary = dir.path().join("chimera");
         let sibling = dir.path().join("codewhale-tui");
         let swapped_primary = dir.path().join("swapped-primary");
         write_test_executable(&primary);
@@ -3214,7 +3194,7 @@ mod tests {
         use std::cell::Cell;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let primary = dir.path().join("codewhale");
+        let primary = dir.path().join("chimera");
         let swapped_primary = dir.path().join("swapped-primary");
         write_test_executable(&primary);
         std::fs::write(&primary, b"original running primary").unwrap();
@@ -3259,21 +3239,17 @@ mod tests {
 
     /// Every command name resolves to the sole implementation asset.
     #[test]
-    fn every_invocation_name_uses_codewhale_release_asset() {
+    fn every_invocation_name_uses_chimera_release_asset() {
         for command in [
-            "codewhale",
-            "codewhale.exe",
-            "codew",
-            "codew.exe",
-            "codewhale-tui",
-            "CodeWhale-TUI.exe",
+            "chimera",
+            "chimera.exe",
             "deepseek",
             "deepseek-tui",
             "other-binary",
         ] {
             assert_eq!(
                 release_asset_stem_for(Path::new(command), "macos", "aarch64"),
-                "codewhale-macos-arm64"
+                "chimera-macos-arm64"
             );
         }
     }
@@ -3286,9 +3262,7 @@ mod tests {
         assert!(is_legacy_binary(Path::new("/usr/local/bin/deepseek-tui")));
         assert!(is_legacy_binary(Path::new("DeepSeek.exe")));
         assert!(is_legacy_binary(Path::new("DeepSeek-TUI.exe")));
-        assert!(!is_legacy_binary(Path::new("codewhale")));
-        assert!(!is_legacy_binary(Path::new("codewhale-tui")));
-        assert!(!is_legacy_binary(Path::new("codew")));
+        assert!(!is_legacy_binary(Path::new("chimera")));
     }
 
     #[test]
@@ -3380,8 +3354,8 @@ mod tests {
     #[test]
     fn unrelated_alias_fails_before_any_command_is_replaced() {
         let dir = tempfile::TempDir::new().unwrap();
-        let primary = dir.path().join("codewhale");
-        let alias = dir.path().join("codew");
+        let primary = dir.path().join("chimera");
+        let alias = dir.path().join("unrelated");
         std::fs::write(&primary, b"running bytes").unwrap();
         std::fs::write(&alias, b"unrelated executable").unwrap();
         let identity = test_update_identity(&primary);
@@ -3400,8 +3374,8 @@ mod tests {
     #[test]
     fn desktop_primary_swap_is_detected_before_siblings_change() {
         let dir = tempfile::TempDir::new().unwrap();
-        let primary = dir.path().join("codewhale");
-        let alias = dir.path().join("codew");
+        let primary = dir.path().join("chimera");
+        let alias = dir.path().join("sibling");
         for path in [&primary, &alias] {
             std::fs::write(path, b"running bytes").unwrap();
         }
@@ -3423,10 +3397,10 @@ mod tests {
     fn same_target_symlink_survives_and_foreign_or_broken_links_are_refused() {
         use std::os::unix::fs::symlink;
         let dir = tempfile::TempDir::new().unwrap();
-        let primary = dir.path().canonicalize().unwrap().join("codewhale");
-        let alias = primary.with_file_name("codew");
+        let primary = dir.path().canonicalize().unwrap().join("chimera");
+        let alias = primary.with_file_name("chimera-alias");
         write_installed_binary(&primary, b"running bytes");
-        symlink("codewhale", &alias).unwrap();
+        symlink("chimera", &alias).unwrap();
         let identity = test_update_identity(&primary);
         let plan = update_plan_for_exe(&primary);
         assert_eq!(plan.target_paths.as_slice(), std::slice::from_ref(&primary));
@@ -3462,9 +3436,9 @@ mod tests {
         let linked_dir = root.join("linked-bin");
         symlink(&real_dir, &linked_dir).unwrap();
         // `current_exe()` on macOS reports the path as reached, not resolved.
-        let primary = linked_dir.join("codewhale");
+        let primary = linked_dir.join("chimera");
         write_installed_binary(&primary, b"running bytes");
-        symlink("codewhale", linked_dir.join("codew")).unwrap();
+        symlink("chimera", linked_dir.join("chimera-alias")).unwrap();
         let plan = update_plan_for_exe(&primary);
         assert_eq!(plan.target_paths.as_slice(), std::slice::from_ref(&primary));
     }
@@ -3486,69 +3460,51 @@ mod tests {
     }
 
     #[test]
-    fn legacy_dispatcher_update_targets_canonical_compatibility_commands() {
+    fn legacy_dispatcher_update_targets_the_canonical_command() {
         let dir = tempfile::TempDir::new().unwrap();
         let dispatcher = dir
             .path()
             .join(format!("deepseek{}", std::env::consts::EXE_SUFFIX));
-        let tui = dir
-            .path()
-            .join(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&dispatcher, b"legacy dispatcher").unwrap();
-        std::fs::write(&tui, b"legacy tui").unwrap();
 
         let plan = update_plan_for_exe(&dispatcher);
 
         assert_eq!(
             plan.target_paths,
-            vec![
-                dir.path()
-                    .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX)),
-                dir.path()
-                    .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX))
-            ]
+            vec![dir
+                .path()
+                .join(format!("chimera{}", std::env::consts::EXE_SUFFIX))]
         );
-        assert!(plan.asset_stem.starts_with("codewhale-"));
-        assert!(!plan.asset_stem.starts_with("codewhale-tui-"));
+        assert!(plan.asset_stem.starts_with("chimera-"));
     }
 
     #[test]
-    fn legacy_tui_update_targets_canonical_compatibility_commands() {
+    fn legacy_tui_update_targets_the_canonical_command() {
         let dir = tempfile::TempDir::new().unwrap();
-        let dispatcher = dir
-            .path()
-            .join(format!("deepseek{}", std::env::consts::EXE_SUFFIX));
         let tui = dir
             .path()
             .join(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&dispatcher, b"legacy dispatcher").unwrap();
         std::fs::write(&tui, b"legacy tui").unwrap();
 
         let plan = update_plan_for_exe(&tui);
 
         assert_eq!(
             plan.target_paths,
-            vec![
-                dir.path()
-                    .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX)),
-                dir.path()
-                    .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX))
-            ]
+            vec![dir
+                .path()
+                .join(format!("chimera{}", std::env::consts::EXE_SUFFIX))]
         );
-        assert!(plan.asset_stem.starts_with("codewhale-"));
-        assert!(!plan.asset_stem.starts_with("codewhale-tui-"));
+        assert!(plan.asset_stem.starts_with("chimera-"));
     }
 
     #[test]
     fn test_release_asset_stem_for_supported_platforms() {
         let cases = [
-            ("codewhale", "macos", "aarch64", "codewhale-macos-arm64"),
-            ("codewhale", "macos", "x86_64", "codewhale-macos-x64"),
-            ("codewhale", "linux", "x86_64", "codewhale-linux-x64"),
-            ("codewhale", "windows", "x86_64", "codewhale-windows-x64"),
-            ("codewhale", "windows", "aarch64", "codewhale-windows-arm64"),
-            ("codew", "macos", "aarch64", "codewhale-macos-arm64"),
-            ("codewhale-tui", "linux", "x86_64", "codewhale-linux-x64"),
+            ("chimera", "macos", "aarch64", "chimera-macos-arm64"),
+            ("chimera", "macos", "x86_64", "chimera-macos-x64"),
+            ("chimera", "linux", "x86_64", "chimera-linux-x64"),
+            ("chimera", "windows", "x86_64", "chimera-windows-x64"),
+            ("chimera", "windows", "aarch64", "chimera-windows-arm64"),
         ];
 
         for (exe, os, arch, expected) in cases {
@@ -3557,130 +3513,112 @@ mod tests {
     }
 
     #[test]
-    fn update_plan_includes_existing_compatibility_tui_for_primary() {
+    fn update_plan_ignores_retired_sibling_command_names() {
         let dir = tempfile::TempDir::new().unwrap();
-        let dispatcher = dir
+        let primary = dir
+            .path()
+            .join(format!("chimera{}", std::env::consts::EXE_SUFFIX));
+        // Retired v0.9.x names may still sit beside an install that was
+        // upgraded in place; the Chimera-rs updater must not touch them.
+        let codewhale = dir
             .path()
             .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+        let codew = dir
+            .path()
+            .join(format!("codew{}", std::env::consts::EXE_SUFFIX));
         let tui = dir
             .path()
             .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&dispatcher, b"dispatcher").unwrap();
-        std::fs::write(&tui, b"tui").unwrap();
-
-        let plan = update_plan_for_exe(&dispatcher);
-        let paths = plan
-            .target_paths
-            .iter()
-            .map(PathBuf::as_path)
-            .collect::<Vec<_>>();
-
-        assert_eq!(paths, vec![dispatcher.as_path(), tui.as_path()]);
-        assert!(plan.asset_stem.starts_with("codewhale-"));
-        assert!(!plan.asset_stem.starts_with("codewhale-tui-"));
-    }
-
-    #[test]
-    fn update_plan_skips_missing_compatibility_commands() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let dispatcher = dir
-            .path()
-            .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&dispatcher, b"dispatcher").unwrap();
-
-        let plan = update_plan_for_exe(&dispatcher);
-
-        assert_eq!(plan.target_paths, vec![dispatcher]);
-        assert!(plan.asset_stem.starts_with("codewhale-"));
-    }
-
-    #[test]
-    fn v094_three_command_install_updates_every_path_from_primary_bytes() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let primary = dir
-            .path()
-            .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
-        let codew = dir
-            .path()
-            .join(format!("codew{}", std::env::consts::EXE_SUFFIX));
-        let legacy_tui = dir
-            .path()
-            .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
-        for path in [&primary, &codew, &legacy_tui] {
-            write_installed_binary(path, b"v0.9.4 old bytes");
+        for path in [&primary, &codewhale, &codew, &tui] {
+            std::fs::write(path, b"bytes").unwrap();
         }
 
         let plan = update_plan_for_exe(&primary);
-        assert_eq!(
-            plan.target_paths,
-            vec![primary.clone(), codew.clone(), legacy_tui.clone()]
-        );
-        assert!(plan.asset_stem.starts_with("codewhale-"));
-        assert!(!plan.asset_stem.contains("codewhale-tui"));
 
-        replace_verified_downloads(&plan.target_paths, b"v0.9.5 primary bytes", |_| Ok(()))
-            .unwrap();
-
-        for path in [&primary, &codew, &legacy_tui] {
-            assert_eq!(std::fs::read(path).unwrap(), b"v0.9.5 primary bytes");
-        }
-        assert_ne!(std::fs::read(codew).unwrap(), b"v0.9.4 old bytes");
+        assert_eq!(plan.target_paths, vec![primary]);
+        assert!(plan.asset_stem.starts_with("chimera-"));
     }
 
     #[test]
-    fn direct_alias_invocation_keeps_running_path_first_and_updates_primary() {
+    fn update_plan_targets_only_the_running_binary() {
         let dir = tempfile::TempDir::new().unwrap();
         let primary = dir
             .path()
-            .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
-        let codew = dir
-            .path()
-            .join(format!("codew{}", std::env::consts::EXE_SUFFIX));
-        let legacy_tui = dir
-            .path()
-            .join(format!("codewhale-tui{}", std::env::consts::EXE_SUFFIX));
-        for invoked in [&codew, &legacy_tui] {
-            for path in [&primary, &codew, &legacy_tui] {
-                write_installed_binary(path, b"old");
-            }
-            let plan = update_plan_for_exe(invoked);
-            assert_eq!(plan.target_paths.first(), Some(invoked));
-            assert!(plan.target_paths.contains(&primary));
-            assert!(plan.target_paths.contains(&codew));
-            assert!(plan.target_paths.contains(&legacy_tui));
-            assert!(plan.asset_stem.starts_with("codewhale-"));
-            assert!(!plan.asset_stem.starts_with("codewhale-tui-"));
+            .join(format!("chimera{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&primary, b"primary").unwrap();
 
-            replace_verified_downloads(&plan.target_paths, b"new primary bytes", |_| Ok(()))
-                .unwrap();
-            for path in [&primary, &codew, &legacy_tui] {
-                assert_eq!(std::fs::read(path).unwrap(), b"new primary bytes");
-            }
+        let plan = update_plan_for_exe(&primary);
+
+        assert_eq!(plan.target_paths, vec![primary]);
+        assert!(plan.asset_stem.starts_with("chimera-"));
+    }
+
+    #[test]
+    fn update_replaces_only_the_chimera_path_from_primary_bytes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let primary = dir
+            .path()
+            .join(format!("chimera{}", std::env::consts::EXE_SUFFIX));
+        let codewhale = dir
+            .path()
+            .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+        write_installed_binary(&primary, b"old bytes");
+        std::fs::write(&codewhale, b"retired sibling bytes").unwrap();
+
+        let plan = update_plan_for_exe(&primary);
+        assert_eq!(plan.target_paths, vec![primary.clone()]);
+        assert!(plan.asset_stem.starts_with("chimera-"));
+
+        replace_verified_downloads(&plan.target_paths, b"new primary bytes", |_| Ok(()))
+            .unwrap();
+
+        assert_eq!(std::fs::read(&primary).unwrap(), b"new primary bytes");
+        assert_eq!(
+            std::fs::read(&codewhale).unwrap(),
+            b"retired sibling bytes"
+        );
+    }
+
+    #[test]
+    fn retired_name_invocation_still_installs_the_chimera_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let primary = dir
+            .path()
+            .join(format!("chimera{}", std::env::consts::EXE_SUFFIX));
+        // A user still invoking the retired `codewhale` name runs that binary;
+        // the update refreshes it and installs the canonical `chimera` beside
+        // it, so no alias is left stale.
+        let retired = dir
+            .path()
+            .join(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+        write_installed_binary(&primary, b"old");
+        write_installed_binary(&retired, b"retired old");
+
+        let plan = update_plan_for_exe(&retired);
+        assert_eq!(plan.target_paths, vec![retired.clone(), primary.clone()]);
+        assert!(plan.asset_stem.starts_with("chimera-"));
+
+        replace_verified_downloads(&plan.target_paths, b"new primary bytes", |_| Ok(()))
+            .unwrap();
+        for path in [&primary, &retired] {
+            assert_eq!(std::fs::read(path).unwrap(), b"new primary bytes");
         }
     }
 
     #[test]
     fn test_asset_matching_accepts_only_the_raw_binary() {
         for (asset, binary, expected) in [
-            ("codewhale-macos-arm64", "codewhale-macos-arm64", true),
+            ("chimera-macos-arm64", "chimera-macos-arm64", true),
+            ("chimera-windows-x64.exe", "chimera-windows-x64", true),
+            ("chimera-macos-arm64.tar.gz", "chimera-macos-arm64", false),
+            ("chimera-macos-arm64.zip", "chimera-macos-arm64", false),
+            ("chimera-macos-arm64.sig", "chimera-macos-arm64", false),
             (
-                "codewhale-tui-windows-x64.exe",
-                "codewhale-tui-windows-x64",
-                true,
-            ),
-            (
-                "codewhale-macos-arm64.tar.gz",
-                "codewhale-macos-arm64",
+                "chimera-windows-x64.exe.sha256",
+                "chimera-windows-x64",
                 false,
             ),
-            ("codewhale-macos-arm64.zip", "codewhale-macos-arm64", false),
-            ("codewhale-macos-arm64.sig", "codewhale-macos-arm64", false),
-            (
-                "codewhale-tui-windows-x64.exe.sha256",
-                "codewhale-tui-windows-x64",
-                false,
-            ),
-            ("codewhale-macos-aarch64", "codewhale-macos-arm64", false),
+            ("chimera-macos-aarch64", "chimera-macos-arm64", false),
         ] {
             assert_eq!(
                 asset_is_exact_platform_binary(asset, binary),
@@ -3697,22 +3635,22 @@ mod tests {
             prerelease: false,
             assets: vec![
                 Asset {
-                    name: "codewhale-macos-arm64.tar.gz".to_string(),
-                    browser_download_url: "https://example.invalid/codewhale-macos-arm64.tar.gz"
+                    name: "chimera-macos-arm64.tar.gz".to_string(),
+                    browser_download_url: "https://example.invalid/chimera-macos-arm64.tar.gz"
                         .to_string(),
                 },
                 Asset {
-                    name: "codewhale-macos-arm64".to_string(),
-                    browser_download_url: "https://example.invalid/codewhale-macos-arm64"
+                    name: "chimera-macos-arm64".to_string(),
+                    browser_download_url: "https://example.invalid/chimera-macos-arm64"
                         .to_string(),
                 },
             ],
         };
 
         let asset =
-            select_platform_asset(&release, "codewhale-macos-arm64").expect("platform asset");
+            select_platform_asset(&release, "chimera-macos-arm64").expect("platform asset");
 
-        assert_eq!(asset.name, "codewhale-macos-arm64");
+        assert_eq!(asset.name, "chimera-macos-arm64");
     }
 
     /// Audit R02-04: the updater installs the downloaded bytes verbatim, so a
@@ -3726,15 +3664,15 @@ mod tests {
             assets: ["tar.gz", "zip", "sig", "sbom.json"]
                 .into_iter()
                 .map(|ext| Asset {
-                    name: format!("codewhale-macos-arm64.{ext}"),
+                    name: format!("chimera-macos-arm64.{ext}"),
                     browser_download_url: format!(
-                        "https://example.invalid/codewhale-macos-arm64.{ext}"
+                        "https://example.invalid/chimera-macos-arm64.{ext}"
                     ),
                 })
                 .collect(),
         };
 
-        assert!(select_platform_asset(&release, "codewhale-macos-arm64").is_none());
+        assert!(select_platform_asset(&release, "chimera-macos-arm64").is_none());
     }
 
     #[test]
@@ -3780,14 +3718,14 @@ mod tests {
     }
 
     #[test]
-    fn glibc_compatibility_message_is_codewhale_branded_and_actionable() {
+    fn glibc_compatibility_message_is_chimera_branded_and_actionable() {
         let message = glibc_compatibility_message(
-            "codewhale-linux-x64",
+            "chimera-linux-x64",
             GlibcVersion::new(2, 39, 0),
             Some(GlibcVersion::new(2, 35, 0)),
         );
 
-        assert!(message.contains("Prebuilt Codewhale asset `codewhale-linux-x64`"));
+        assert!(message.contains("Prebuilt Chimera asset `chimera-linux-x64`"));
         assert!(message.contains("requires GLIBC_2.39"));
         assert!(message.contains("this system has glibc 2.35"));
         assert!(message.contains("cargo install codewhale-cli --locked"));
@@ -3798,18 +3736,18 @@ mod tests {
     #[test]
     fn parse_checksum_manifest_accepts_sha256sum_format() {
         let manifest = "\
-2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  codewhale-macos-arm64
-E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-windows-x64.exe
+2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  chimera-macos-arm64
+E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *chimera-windows-x64.exe
 ";
         let checksums = parse_checksum_manifest(manifest).expect("valid manifest");
 
         assert_eq!(
-            checksums.get("codewhale-macos-arm64").map(String::as_str),
+            checksums.get("chimera-macos-arm64").map(String::as_str),
             Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
         );
         assert_eq!(
             checksums
-                .get("codewhale-windows-x64.exe")
+                .get("chimera-windows-x64.exe")
                 .map(String::as_str),
             Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
         );
@@ -3817,7 +3755,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
     #[test]
     fn parse_checksum_manifest_rejects_malformed_lines() {
-        let err = parse_checksum_manifest("not-a-hash  codewhale-macos-arm64")
+        let err = parse_checksum_manifest("not-a-hash  chimera-macos-arm64")
             .expect_err("invalid manifest line should fail");
         assert!(
             err.to_string().contains("invalid SHA256 manifest line"),
@@ -3829,11 +3767,11 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     fn expected_sha256_from_manifest_requires_matching_asset() {
         let manifest =
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  other-asset\n";
-        let err = expected_sha256_from_manifest(manifest, "codewhale-macos-arm64")
+        let err = expected_sha256_from_manifest(manifest, "chimera-macos-arm64")
             .expect_err("missing asset should fail");
         assert!(
             err.to_string()
-                .contains("checksum manifest is missing codewhale-macos-arm64"),
+                .contains("checksum manifest is missing chimera-macos-arm64"),
             "unexpected error: {err:#}"
         );
     }
@@ -3841,7 +3779,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn test_replace_binary_creates_and_replaces() {
         let dir = tempfile::TempDir::new().unwrap();
-        let target = dir.path().join("codewhale-test");
+        let target = dir.path().join("chimera-test");
         // Write initial content
         write_installed_binary(&target, b"old binary");
 
@@ -3853,7 +3791,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn test_replace_binary_creates_new_file() {
         let dir = tempfile::TempDir::new().unwrap();
-        let target = dir.path().join("codewhale-new-test");
+        let target = dir.path().join("chimera-new-test");
 
         replace_binary(&target, b"fresh binary").unwrap();
         let content = std::fs::read_to_string(&target).unwrap();
@@ -3878,7 +3816,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn permission_failure_on_existing_target_aborts_before_replacement() {
         let dir = tempfile::TempDir::new().unwrap();
-        let target = dir.path().join("codewhale-test");
+        let target = dir.path().join("chimera-test");
         write_installed_binary(&target, b"old binary");
 
         let error = replace_binary_with_validation_and_permission_setter(
@@ -3910,7 +3848,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn permission_failure_on_new_target_aborts_install() {
         let dir = tempfile::TempDir::new().unwrap();
-        let target = dir.path().join("codewhale-new-test");
+        let target = dir.path().join("chimera-new-test");
 
         let error = replace_binary_with_validation_and_permission_setter(
             &target,
@@ -3940,7 +3878,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn non_executable_staged_update_aborts_before_replacement() {
         let dir = tempfile::TempDir::new().unwrap();
-        let target = dir.path().join("codewhale-test");
+        let target = dir.path().join("chimera-test");
         write_test_executable(&target);
         std::fs::write(&target, b"old binary").unwrap();
 
@@ -3973,12 +3911,12 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         let json = r#"{
           "tag_name": "v0.8.8",
           "assets": [
-            { "name": "codewhale-linux-x64",          "browser_download_url": "https://example.invalid/codewhale-linux-x64" },
-            { "name": "codewhale-macos-x64",          "browser_download_url": "https://example.invalid/codewhale-macos-x64" },
-            { "name": "codewhale-macos-arm64",        "browser_download_url": "https://example.invalid/codewhale-macos-arm64" },
-            { "name": "codewhale-windows-x64.exe",    "browser_download_url": "https://example.invalid/codewhale-windows-x64.exe" },
-            { "name": "codewhale-windows-x64.exe.sha256", "browser_download_url": "https://example.invalid/codewhale-windows-x64.exe.sha256" },
-            { "name": "codewhale-windows-arm64.exe",  "browser_download_url": "https://example.invalid/codewhale-windows-arm64.exe" }
+            { "name": "chimera-linux-x64",            "browser_download_url": "https://example.invalid/chimera-linux-x64" },
+            { "name": "chimera-macos-x64",            "browser_download_url": "https://example.invalid/chimera-macos-x64" },
+            { "name": "chimera-macos-arm64",          "browser_download_url": "https://example.invalid/chimera-macos-arm64" },
+            { "name": "chimera-windows-x64.exe",      "browser_download_url": "https://example.invalid/chimera-windows-x64.exe" },
+            { "name": "chimera-windows-x64.exe.sha256", "browser_download_url": "https://example.invalid/chimera-windows-x64.exe.sha256" },
+            { "name": "chimera-windows-arm64.exe",    "browser_download_url": "https://example.invalid/chimera-windows-arm64.exe" }
           ]
         }"#;
         serde_json::from_str(json).expect("mock release JSON")
@@ -3988,15 +3926,15 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     fn mocked_release_selects_dispatcher_asset_for_supported_platforms() {
         let release = mocked_release();
         let cases = [
-            ("macos", "aarch64", "codewhale-macos-arm64"),
-            ("macos", "x86_64", "codewhale-macos-x64"),
-            ("linux", "x86_64", "codewhale-linux-x64"),
-            ("windows", "x86_64", "codewhale-windows-x64.exe"),
-            ("windows", "aarch64", "codewhale-windows-arm64.exe"),
+            ("macos", "aarch64", "chimera-macos-arm64"),
+            ("macos", "x86_64", "chimera-macos-x64"),
+            ("linux", "x86_64", "chimera-linux-x64"),
+            ("windows", "x86_64", "chimera-windows-x64.exe"),
+            ("windows", "aarch64", "chimera-windows-arm64.exe"),
         ];
 
         for (os, arch, expected) in cases {
-            let stem = release_asset_stem_for(Path::new("/usr/local/bin/codewhale"), os, arch);
+            let stem = release_asset_stem_for(Path::new("/usr/local/bin/chimera"), os, arch);
             let asset = select_platform_asset(&release, &stem)
                 .unwrap_or_else(|| panic!("no asset for {os}/{arch} (stem {stem})"));
             assert_eq!(asset.name, expected, "{os}/{arch}");
@@ -4012,12 +3950,13 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             "aarch64",
         );
         let asset = select_platform_asset(&release, &stem).expect("primary platform asset");
-        assert_eq!(asset.name, "codewhale-macos-arm64");
+        assert_eq!(asset.name, "chimera-macos-arm64");
 
-        let windows_stem = release_asset_stem_for(Path::new("C:\\codew.exe"), "windows", "aarch64");
+        let windows_stem =
+            release_asset_stem_for(Path::new("C:\\chimera.exe"), "windows", "aarch64");
         let windows_asset =
             select_platform_asset(&release, &windows_stem).expect("Windows ARM64 primary asset");
-        assert_eq!(windows_asset.name, "codewhale-windows-arm64.exe");
+        assert_eq!(windows_asset.name, "chimera-windows-arm64.exe");
     }
 
     #[test]
@@ -4026,16 +3965,16 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         // Android asset stems. Verify every supported command name resolves to
         // the primary Android asset, never Linux or a removed TUI asset (#4241).
         assert_eq!(
-            release_asset_stem_for_prefix("codewhale", "android", "aarch64"),
-            "codewhale-android-arm64"
+            release_asset_stem_for_prefix("chimera", "android", "aarch64"),
+            "chimera-android-arm64"
         );
         assert_eq!(
             release_asset_stem_for(Path::new("codewhale-tui"), "android", "aarch64"),
-            "codewhale-android-arm64"
+            "chimera-android-arm64"
         );
         assert_eq!(
             release_asset_stem_for(Path::new("codew"), "android", "aarch64"),
-            "codewhale-android-arm64"
+            "chimera-android-arm64"
         );
     }
 
@@ -4048,7 +3987,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn android_release_assets_never_select_linux_arm64() {
         // Sanity: the stem formatter must never produce a linux-* stem for android.
-        let stem = release_asset_stem_for_prefix("codewhale", "android", "aarch64");
+        let stem = release_asset_stem_for_prefix("chimera", "android", "aarch64");
         assert!(
             !stem.contains("linux"),
             "android stem must not contain linux: {stem}"
@@ -4072,10 +4011,10 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         );
 
         let dispatcher =
-            select_platform_asset(&release, "codewhale-linux-x64").expect("dispatcher asset");
+            select_platform_asset(&release, "chimera-linux-x64").expect("dispatcher asset");
         assert_eq!(
             dispatcher.browser_download_url,
-            "https://mirror.example/releases/v0.8.36/codewhale-linux-x64"
+            "https://mirror.example/releases/v0.8.36/chimera-linux-x64"
         );
         assert_eq!(release.assets.len(), 2);
         assert!(
@@ -4095,8 +4034,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
         assert_eq!(release.tag_name, "v0.8.36");
         assert!(
-            select_platform_asset(&release, "codewhale-windows-x64")
-                .is_some_and(|asset| asset.name == "codewhale-windows-x64.exe")
+            select_platform_asset(&release, "chimera-windows-x64")
+                .is_some_and(|asset| asset.name == "chimera-windows-x64.exe")
         );
         assert!(select_platform_asset(&release, "codewhale-tui-windows-x64").is_none());
 
@@ -4107,8 +4046,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             "aarch64",
         );
         assert!(
-            select_platform_asset(&arm_release, "codewhale-windows-arm64")
-                .is_some_and(|asset| asset.name == "codewhale-windows-arm64.exe")
+            select_platform_asset(&arm_release, "chimera-windows-arm64")
+                .is_some_and(|asset| asset.name == "chimera-windows-arm64.exe")
         );
     }
 
@@ -4134,10 +4073,10 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             "https://github.com/codewhale-hq/CodeWhale/releases/download/v0.8.61/codewhale-artifacts-sha256.txt"
         );
         let dispatcher =
-            select_platform_asset(&release, "codewhale-macos-arm64").expect("dispatcher asset");
+            select_platform_asset(&release, "chimera-macos-arm64").expect("dispatcher asset");
         assert_eq!(
             dispatcher.browser_download_url,
-            "https://github.com/codewhale-hq/CodeWhale/releases/download/v0.8.61/codewhale-macos-arm64"
+            "https://github.com/codewhale-hq/CodeWhale/releases/download/v0.8.61/chimera-macos-arm64"
         );
         assert_eq!(release.assets.len(), 2);
         assert!(select_platform_asset(&release, "codewhale-tui-macos-arm64").is_none());
@@ -4324,14 +4263,14 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
     fn manifest_covering_linux_x64() -> String {
         format!(
-            "{}  codewhale-linux-x64\n{}  codew-linux-x64\n",
+            "{}  chimera-linux-x64\n{}  chimera-alias-linux-x64\n",
             "a".repeat(64),
             "b".repeat(64)
         )
     }
 
     fn manifest_missing_linux_x64() -> String {
-        format!("{}  codewhale-macos-arm64\n", "c".repeat(64))
+        format!("{}  chimera-macos-arm64\n", "c".repeat(64))
     }
 
     fn github_fetched_release(tag_name: &str) -> FetchedRelease {
@@ -4341,9 +4280,9 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
                 prerelease: is_beta_tag(tag_name),
                 assets: vec![
                     Asset {
-                        name: "codewhale-linux-x64".to_string(),
+                        name: "chimera-linux-x64".to_string(),
                         browser_download_url: format!(
-                            "https://github.com/codewhale-hq/CodeWhale/releases/download/{tag_name}/codewhale-linux-x64"
+                            "https://github.com/codewhale-hq/CodeWhale/releases/download/{tag_name}/chimera-linux-x64"
                         ),
                     },
                     Asset {
@@ -4363,7 +4302,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         os: &str,
         arch: &str,
     ) -> Option<Vec<ReleaseSourceCandidate>> {
-        proactive_source_candidates(fetched, "codewhale-linux-x64", os, arch)
+        proactive_source_candidates(fetched, "chimera-linux-x64", os, arch)
     }
 
     fn linux_x64_candidates(tag_name: &str) -> Vec<ReleaseSourceCandidate> {
@@ -4384,7 +4323,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         assert_eq!(*requested.lock().unwrap(), ["GitHub Releases"]);
         assert_eq!(
             plan.binary_url,
-            "https://github.com/codewhale-hq/CodeWhale/releases/download/v9.9.9/codewhale-linux-x64"
+            "https://github.com/codewhale-hq/CodeWhale/releases/download/v9.9.9/chimera-linux-x64"
         );
     }
 
@@ -4428,7 +4367,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
                 UpdateReleaseSource::Cnb {
                     base_url: cnb_release_base_url("v9.9.9"),
                 },
-                "https://cnb.cool/codewhale.net/codewhale/-/releases/download/v9.9.9/codewhale-linux-x64"
+                "https://cnb.cool/codewhale.net/codewhale/-/releases/download/v9.9.9/chimera-linux-x64"
                     .to_string()
             )]
         );
@@ -4489,9 +4428,9 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         );
         assert_eq!(
             candidate.binary_url,
-            "https://cnb.cool/codewhale.net/codewhale/-/releases/download/v0.9.0-beta.2/codewhale-linux-x64"
+            "https://cnb.cool/codewhale.net/codewhale/-/releases/download/v0.9.0-beta.2/chimera-linux-x64"
         );
-        assert_eq!(candidate.binary_name, "codewhale-linux-x64");
+        assert_eq!(candidate.binary_name, "chimera-linux-x64");
     }
 
     #[test]
@@ -4500,13 +4439,13 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             tag_name: "0.9.9".to_string(),
             prerelease: false,
             assets: vec![Asset {
-                name: "codewhale-linux-x64".to_string(),
-                browser_download_url: "https://cdn.example/codewhale-linux-x64".to_string(),
+                name: "chimera-linux-x64".to_string(),
+                browser_download_url: "https://cdn.example/chimera-linux-x64".to_string(),
             }],
         };
 
         let candidate =
-            github_source_candidate(&release, "codewhale-linux-x64").expect("github candidate");
+            github_source_candidate(&release, "chimera-linux-x64").expect("github candidate");
 
         assert_eq!(
             candidate.manifest_url,
@@ -4514,7 +4453,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         );
         assert_eq!(
             candidate.binary_url,
-            "https://cdn.example/codewhale-linux-x64"
+            "https://cdn.example/chimera-linux-x64"
         );
     }
 
@@ -4529,8 +4468,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             ("windows", "aarch64"),
             ("android", "aarch64"),
         ] {
-            let asset_stem = release_asset_stem_for_prefix("codewhale", os, arch);
-            let asset_name = release_asset_name_for_prefix("codewhale", os, arch);
+            let asset_stem = release_asset_stem_for_prefix("chimera", os, arch);
+            let asset_name = release_asset_name_for_prefix("chimera", os, arch);
             let fetched = FetchedRelease {
                 release: Release {
                     tag_name: "v9.9.9".to_string(),
@@ -4568,7 +4507,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
                         browser_download_url: manifest_url,
                     },
                     Asset {
-                        name: "codewhale-macos-arm64".to_string(),
+                        name: "chimera-macos-arm64".to_string(),
                         browser_download_url: "https://cdn.example/should-not-download".to_string(),
                     },
                 ],
@@ -4576,7 +4515,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             source: UpdateReleaseSource::GitHub,
         };
 
-        let err = single_source_download_plan(&fetched, "codewhale-macos-arm64", None)
+        let err = single_source_download_plan(&fetched, "chimera-macos-arm64", None)
             .expect_err("a malformed manifest must fail closed");
         let message = format!("{err:#}");
         assert!(message.contains("failed to parse"), "{message}");
@@ -4591,7 +4530,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
     #[test]
     fn a_single_source_manifest_must_cover_the_exact_platform_binary() {
-        let manifest = format!("{}  codewhale-linux-x64\n", "a".repeat(64));
+        let manifest = format!("{}  chimera-linux-x64\n", "a".repeat(64));
         let (manifest_url, request_rx, handle) =
             serve_http_owned_responses(vec![("200 OK", "text/plain", manifest.into_bytes())]);
         let fetched = FetchedRelease {
@@ -4604,7 +4543,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
                         browser_download_url: manifest_url,
                     },
                     Asset {
-                        name: "codewhale-windows-x64.exe".to_string(),
+                        name: "chimera-windows-x64.exe".to_string(),
                         browser_download_url: "https://cdn.example/should-not-download.exe"
                             .to_string(),
                     },
@@ -4613,11 +4552,11 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             source: UpdateReleaseSource::GitHub,
         };
 
-        let err = single_source_download_plan(&fetched, "codewhale-windows-x64", None)
+        let err = single_source_download_plan(&fetched, "chimera-windows-x64", None)
             .expect_err("a manifest for another platform must fail closed");
         let message = format!("{err:#}");
         assert!(
-            message.contains("does not list codewhale-windows-x64.exe"),
+            message.contains("does not list chimera-windows-x64.exe"),
             "{message}"
         );
         let request = request_rx.recv().expect("manifest request");
@@ -4628,7 +4567,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
     #[test]
     fn an_explicit_mirror_remains_pinned_and_verified_from_that_mirror() {
         let bytes = b"verified mirror bytes";
-        let manifest = format!("{}  codewhale-macos-arm64\n", sha256_hex(bytes));
+        let manifest = format!("{}  chimera-macos-arm64\n", sha256_hex(bytes));
         let (url, request_rx, handle) =
             serve_http_owned_responses(vec![("200 OK", "text/plain", manifest.into_bytes())]);
         let base_url = url.trim_end_matches("/release").to_string();
@@ -4639,7 +4578,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             },
         };
 
-        let plan = single_source_download_plan(&fetched, "codewhale-macos-arm64", None)
+        let plan = single_source_download_plan(&fetched, "chimera-macos-arm64", None)
             .expect("the explicit mirror's valid manifest should produce a plan");
         assert_eq!(
             plan.source,
@@ -4649,7 +4588,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         );
         assert_eq!(
             plan.binary_url,
-            mirror_asset_url(&base_url, "codewhale-macos-arm64")
+            mirror_asset_url(&base_url, "chimera-macos-arm64")
         );
         verify_downloaded_asset(&plan, bytes)
             .expect("the pinned mirror's checksum must verify its bytes");
@@ -4668,8 +4607,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
                 tag_name: "v9.9.9".to_string(),
                 prerelease: false,
                 assets: vec![Asset {
-                    name: "codewhale-macos-arm64".to_string(),
-                    browser_download_url: "https://cdn.example/codewhale-macos-arm64".to_string(),
+                    name: "chimera-macos-arm64".to_string(),
+                    browser_download_url: "https://cdn.example/chimera-macos-arm64".to_string(),
                 }],
             },
             source: UpdateReleaseSource::GitHub,
@@ -4723,7 +4662,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
                 "an explicit base URL must never fall back to CNB"
             );
             assert_eq!(
-                describe_release_source_for_check(&fetched, "codewhale-linux-x64", None),
+                describe_release_source_for_check(&fetched, "chimera-linux-x64", None),
                 "release mirror (https://mirror.example/assets)"
             );
         }
@@ -4772,8 +4711,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
     #[test]
     fn a_locked_source_serves_both_the_manifest_and_the_binary() {
-        const BINARY: &[u8] = b"\x7fELF codewhale linux x64 payload";
-        let manifest = format!("{}  codewhale-linux-x64\n", sha256_hex(BINARY));
+        const BINARY: &[u8] = b"\x7fELF chimera linux x64 payload";
+        let manifest = format!("{}  chimera-linux-x64\n", sha256_hex(BINARY));
         let (url, request_rx, handle) = serve_http_owned_responses(vec![
             ("200 OK", "text/plain", manifest.into_bytes()),
             ("200 OK", "application/octet-stream", BINARY.to_vec()),
@@ -4784,8 +4723,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
                 base_url: origin.clone(),
             },
             manifest_url: mirror_asset_url(&origin, CHECKSUM_MANIFEST_ASSET),
-            binary_name: "codewhale-linux-x64".to_string(),
-            binary_url: mirror_asset_url(&origin, "codewhale-linux-x64"),
+            binary_name: "chimera-linux-x64".to_string(),
+            binary_url: mirror_asset_url(&origin, "chimera-linux-x64"),
         };
 
         let plan = select_release_source(vec![candidate], manifest_probe_fetcher(None))
@@ -4802,7 +4741,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             "got {manifest_request:?}"
         );
         assert!(
-            binary_request.starts_with("GET /codewhale-linux-x64 "),
+            binary_request.starts_with("GET /chimera-linux-x64 "),
             "got {binary_request:?}"
         );
         handle.join().expect("test server thread");
@@ -4814,9 +4753,9 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             source: UpdateReleaseSource::Cnb {
                 base_url: cnb_release_base_url("v9.9.9"),
             },
-            binary_name: "codewhale-linux-x64".to_string(),
-            binary_url: "https://cnb.example/codewhale-linux-x64".to_string(),
-            checksums: HashMap::from([("codewhale-linux-x64".to_string(), "a".repeat(64))]),
+            binary_name: "chimera-linux-x64".to_string(),
+            binary_url: "https://cnb.example/chimera-linux-x64".to_string(),
+            checksums: HashMap::from([("chimera-linux-x64".to_string(), "a".repeat(64))]),
             manifest_url: String::new(),
             manifest_bytes: Vec::new(),
             fallback_binaries: Vec::new(),
@@ -4833,7 +4772,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             .expect_err("an uncovered asset must never install");
         let message = format!("{err:#}");
         assert!(
-            message.contains("is missing codewhale-linux-x64"),
+            message.contains("is missing chimera-linux-x64"),
             "{message}"
         );
     }
@@ -4880,7 +4819,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         let body = br#"{
           "tag_name": "v9.9.9",
           "assets": [
-            { "name": "codewhale-linux-x64", "browser_download_url": "http://example.invalid/codewhale-linux-x64" },
+            { "name": "chimera-linux-x64", "browser_download_url": "http://example.invalid/chimera-linux-x64" },
             { "name": "codewhale-artifacts-sha256.txt", "browser_download_url": "http://example.invalid/codewhale-artifacts-sha256.txt" }
           ]
         }"#;
@@ -4909,7 +4848,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
         let body = br#"{
           "tag_name": "v9.9.9",
           "assets": [
-            { "name": "codewhale-linux-x64", "browser_download_url": "http://example.invalid/codewhale-linux-x64" }
+            { "name": "chimera-linux-x64", "browser_download_url": "http://example.invalid/chimera-linux-x64" }
           ]
         }"#;
         let (url, request_rx, handle) = serve_http_responses(vec![
@@ -4949,7 +4888,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
           { "tag_name": "v0.9.0", "prerelease": false, "assets": [] },
           { "tag_name": "v0.9.0-rc.1", "prerelease": true, "assets": [] },
           { "tag_name": "v0.9.0-beta.2", "prerelease": true, "assets": [
-            { "name": "codewhale-linux-x64", "browser_download_url": "http://example.invalid/codewhale-linux-x64" }
+            { "name": "chimera-linux-x64", "browser_download_url": "http://example.invalid/chimera-linux-x64" }
           ] },
           { "tag_name": "v0.9.0-beta.1", "prerelease": true, "assets": [] }
         ]"#;

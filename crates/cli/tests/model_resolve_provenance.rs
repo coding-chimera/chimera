@@ -298,7 +298,7 @@ fn resolve_with_global_flags(
         .collect()
 }
 
-/// v0.9.1 kimi-k3 dogfood report: `codewhale --provider moonshot --model kimi-k3 model resolve`
+/// v0.9.1 kimi-k3 dogfood report: `chimera --provider moonshot --model kimi-k3 model resolve`
 /// reported `kimi-k2.7-code`. The top-level flags are the route this process
 /// is on, not a hypothetical, so the diagnostic has to answer with the runtime
 /// resolution instead of re-deriving a registry default and ignoring `--model`.
@@ -518,10 +518,10 @@ fn explicit_glm_5_2_selection_survives_the_default_move() {
 }
 
 fn codewhale_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_chimera") {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codewhale") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_chimera") {
         return PathBuf::from(path);
     }
 
@@ -530,6 +530,6 @@ fn codewhale_binary() -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.push(format!("codewhale{}", std::env::consts::EXE_SUFFIX));
+    path.push(format!("chimera{}", std::env::consts::EXE_SUFFIX));
     path
 }
