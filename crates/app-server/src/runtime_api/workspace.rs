@@ -11,7 +11,15 @@ use sha2::{Digest, Sha256};
 use codewhale_dependencies::Git;
 use codewhale_util::git_metadata::{GitHead, GitReadError, is_git_metadata_name, read_head};
 
-use super::{ApiError, RuntimeApiState, map_thread_err};
+use axum::extract::Extension;
+use std::sync::Arc;
+
+use super::{ApiError, RuntimeApiState, RequestProjectLease, map_thread_err};
+
+/// The workspace a request runs in: its explicitly resolved project.
+async fn request_workspace(project: &Arc<RequestProjectLease>) -> PathBuf {
+    project.workspace().to_path_buf()
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,8 +31,20 @@ pub(super) async fn scoped_workspace(
     state: &RuntimeApiState,
     thread_id: Option<&str>,
 ) -> Result<PathBuf, ApiError> {
+    scoped_workspace_for(state, thread_id, state.workspace.clone()).await
+}
+
+/// [`scoped_workspace`] with the request's resolved project as the default.
+/// Thread ownership wins: a thread-scoped route reads the thread's own
+/// workspace; without a thread, the request's project (explicit selection,
+/// session/thread context, or the server default) is the root.
+pub(super) async fn scoped_workspace_for(
+    state: &RuntimeApiState,
+    thread_id: Option<&str>,
+    default_workspace: PathBuf,
+) -> Result<PathBuf, ApiError> {
     let Some(thread_id) = thread_id else {
-        return Ok(state.workspace.clone());
+        return Ok(default_workspace);
     };
     thread_workspace(state, thread_id)
         .await
@@ -78,7 +98,7 @@ pub(super) struct WorkspaceFileSearchResponse {
 
 /// Read-only suggestions: never use the process cwd or a caller-selected root.
 pub(super) async fn workspace_file_search(
-    State(state): State<RuntimeApiState>,
+    Extension(project): Extension<Arc<RequestProjectLease>>,
     Query(query): Query<WorkspaceFileSearchQuery>,
 ) -> Result<Json<WorkspaceFileSearchResponse>, ApiError> {
     if query.query.len() > 256 {
@@ -93,8 +113,9 @@ pub(super) async fn workspace_file_search(
     if query.query.trim().is_empty() {
         return Ok(Json(WorkspaceFileSearchResponse { paths: Vec::new() }));
     }
+    let workspace = request_workspace(&project).await;
     let paths = tokio::task::spawn_blocking(move || {
-        collect_workspace_file_suggestions(&state.workspace, &query.query, limit)
+        collect_workspace_file_suggestions(&workspace, &query.query, limit)
     })
     .await
     .map_err(|_| ApiError::internal("workspace file search failed"))??;
@@ -166,9 +187,9 @@ pub(super) struct WorkspaceGitMetadata {
 /// runs a repository-configured helper: fsmonitor, hooks and clean/process
 /// filters are off, as on every read-only review path (see `run_status`).
 pub(super) async fn workspace_status(
-    State(state): State<RuntimeApiState>,
+    Extension(project): Extension<Arc<RequestProjectLease>>,
 ) -> Result<Json<WorkspaceStatusResponse>, ApiError> {
-    let workspace = state.workspace.clone();
+    let workspace = request_workspace(&project).await;
     tokio::task::spawn_blocking(move || collect_workspace_status(&workspace))
         .await
         .map(Json)
@@ -205,14 +226,15 @@ pub(super) struct WorkspaceTrustResponse {
 /// TUI's `/trust on --save` — so both front ends and the gate agree on one
 /// document, and neither can drift into a second source of truth.
 ///
-/// The workspace is the server's own (`state.workspace`), never a
-/// caller-supplied path: a client may trust the project it is attached to and
+/// The workspace is the request's resolved project, which an authenticated
+/// request selects explicitly or inherits from its thread/session or the
+/// server's default: a client may trust the project it is attached to and
 /// nothing else.
 pub(super) async fn update_workspace_trust(
-    State(state): State<RuntimeApiState>,
+    Extension(project): Extension<Arc<RequestProjectLease>>,
     Json(request): Json<WorkspaceTrustRequest>,
 ) -> Result<Json<WorkspaceTrustResponse>, ApiError> {
-    let workspace = state.workspace.clone();
+    let workspace = request_workspace(&project).await;
     let trusted = request.trusted;
     let target = workspace.clone();
     let (config_path, recorded) = tokio::task::spawn_blocking(move || {
@@ -621,6 +643,7 @@ fn confined_directory(root: &FsPath, relative: &FsPath) -> Result<PathBuf, ApiEr
 
 pub(super) async fn workspace_files_list(
     State(state): State<RuntimeApiState>,
+    Extension(project): Extension<Arc<RequestProjectLease>>,
     Query(query): Query<WorkspaceFilesListQuery>,
 ) -> Result<Json<WorkspaceFilesListResponse>, ApiError> {
     let relative = relative_request_path(&query.path, true)?;
@@ -630,7 +653,12 @@ pub(super) async fn workspace_files_list(
             "limit must be between 1 and {FILE_LIST_LIMIT_MAX}"
         )));
     }
-    let workspace = scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    let workspace = scoped_workspace_for(
+        &state,
+        query.thread_id.as_deref(),
+        request_workspace(&project).await,
+    )
+    .await?;
     tokio::task::spawn_blocking(move || list_workspace_directory(&workspace, &relative, limit))
         .await
         .map_err(|_| ApiError::internal("workspace listing failed"))?
@@ -796,11 +824,17 @@ pub(super) fn precheck_file_target(
 
 pub(super) async fn workspace_file_read(
     State(state): State<RuntimeApiState>,
+    Extension(project): Extension<Arc<RequestProjectLease>>,
     Query(query): Query<WorkspaceFileReadQuery>,
 ) -> Result<Json<WorkspaceFileReadResponse>, ApiError> {
     let relative = relative_request_path(&query.path, false)?;
     let (offset, limit) = parse_read_window(query.offset, query.limit)?;
-    let workspace = scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    let workspace = scoped_workspace_for(
+        &state,
+        query.thread_id.as_deref(),
+        request_workspace(&project).await,
+    )
+    .await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_workspace(&workspace)?;
         if precheck_file_target(&root, &relative)?.is_none() {
@@ -828,7 +862,7 @@ pub(super) async fn workspace_file_read(
 }
 
 pub(super) async fn workspace_file_write(
-    State(state): State<RuntimeApiState>,
+    Extension(project): Extension<Arc<RequestProjectLease>>,
     Json(request): Json<WorkspaceFileWriteRequest>,
 ) -> Result<(StatusCode, Json<WorkspaceFileWriteResponse>), ApiError> {
     let relative = relative_request_path(&request.path, false)?;
@@ -848,7 +882,7 @@ pub(super) async fn workspace_file_write(
         .expected_revision
         .map(|revision| revision.trim().to_ascii_lowercase())
         .filter(|revision| !revision.is_empty());
-    let workspace = state.workspace.clone();
+    let workspace = request_workspace(&project).await;
     tokio::task::spawn_blocking(move || {
         write_workspace_file(&workspace, &relative, &bytes, expected_revision.as_deref())
     })
@@ -1008,8 +1042,9 @@ fn instruction_source_status_name(
 /// the prompt loaders give it. Edits go through the workspace file routes.
 pub(super) async fn workspace_instructions(
     State(state): State<RuntimeApiState>,
+    Extension(project): Extension<Arc<RequestProjectLease>>,
 ) -> Result<Json<WorkspaceInstructionsResponse>, ApiError> {
-    let workspace = state.workspace.clone();
+    let workspace = request_workspace(&project).await;
     let config = state.config.read().clone();
     let configured = config.instructions_paths();
     let settings = codewhale_engine::project_context::InstructionSettings::from_config(&config);

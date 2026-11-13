@@ -91,7 +91,13 @@ pub(super) async fn execute(state: RuntimeApiState, request: RuntimeOwnerRequest
             serde_json::to_value(value)?
         }
         RuntimeOwnerRequest::CreateThread(body) => {
-            let (_, Json(value)) = api(create_thread(State(state), Json(decode(body)?)).await)?;
+            // Owner calls run in the owner's own project: build the request
+            // project the middleware would have inserted from the home scope.
+            let project = owner_project_lease(&state)?;
+            let (_, Json(value)) = api(
+                create_thread(State(state), axum::extract::Extension(project), Json(decode(body)?))
+                    .await,
+            )?;
             serde_json::to_value(value)?
         }
         RuntimeOwnerRequest::ListThreads {
@@ -246,4 +252,15 @@ pub(super) async fn events(
         },
     )
     .await)
+}
+
+/// The request project for an owner-scoped call: the home (default) project
+/// with a lease held for the call's duration.
+fn owner_project_lease(state: &RuntimeApiState) -> Result<std::sync::Arc<super::RequestProjectLease>> {
+    let scope = state
+        .workspace_scopes
+        .home_scope()
+        .ok_or_else(|| anyhow::anyhow!("default workspace scope is unavailable"))?;
+    let lease = scope.activity.hold_lease();
+    Ok(std::sync::Arc::new(super::RequestProjectLease { scope, _lease: lease }))
 }
