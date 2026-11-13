@@ -1,12 +1,18 @@
 {
   "schema_version": 1,
   "default_profile": "standard",
-  "custom_allowed_profiles": ["standard"],
+  "custom_allowed_profiles": [
+    "standard"
+  ],
   "profiles": [
     {
       "id": "standard",
-      "endpoint": { "path": "versioned_responses" },
-      "headers": { "protocol_headers": "standard_json" },
+      "endpoint": {
+        "path": "versioned_responses"
+      },
+      "headers": {
+        "protocol_headers": "standard_json"
+      },
       "request": {
         "store": "explicit_false",
         "include": "encrypted_reasoning",
@@ -48,8 +54,12 @@
     },
     {
       "id": "codex",
-      "endpoint": { "path": "versioned_responses" },
-      "headers": { "protocol_headers": "standard_json" },
+      "endpoint": {
+        "path": "versioned_responses"
+      },
+      "headers": {
+        "protocol_headers": "standard_json"
+      },
       "request": {
         "store": "explicit_false",
         "include": "encrypted_reasoning",
@@ -90,9 +100,60 @@
       }
     },
     {
+      "id": "chatgpt_subscription",
+      "endpoint": {
+        "path": "backend_api_codex_responses"
+      },
+      "headers": {
+        "protocol_headers": "chatgpt_subscription_identity"
+      },
+      "request": {
+        "store": "explicit_false",
+        "include": "encrypted_reasoning",
+        "instructions": "top_level",
+        "max_output_tokens": "omit",
+        "sampling": "omit"
+      },
+      "reasoning": {
+        "effort_mapping": "chatgpt_subscription",
+        "shape": "effort_with_summary",
+        "summary": "auto"
+      },
+      "replay": {
+        "encrypted_state": "account_api_model_scoped",
+        "plain_reasoning": "ignore",
+        "system_role": "system_to_developer"
+      },
+      "tools": {
+        "envelope": "namespace_wrapped",
+        "namespace": "codewhale",
+        "parallel_calls": "disallow"
+      },
+      "stream": {
+        "malformed_json": "fail",
+        "unknown_event": "ignore",
+        "done_marker": "ignore",
+        "completion": "require_successful_response_completed",
+        "incomplete": "fail"
+      },
+      "usage": {
+        "cache_fields": "top_level_then_nested_fallback",
+        "reasoning_fields": "output_tokens_details",
+        "audio_fields": "nested_details"
+      },
+      "capabilities": {
+        "function_tools": "supported",
+        "server_side_tools": "route_and_adapter_gated"
+      }
+    },
+    {
       "id": "deepseek_stateless_plain_reasoning",
-      "endpoint": { "path": "unversioned_responses" },
-      "headers": { "protocol_headers": "standard_json" },
+      "endpoint": {
+        "path": "unversioned_responses"
+      },
+      "headers": {
+        "protocol_headers": "standard_json"
+      },
       "request": {
         "store": "omit",
         "include": "omit",
@@ -134,8 +195,12 @@
     },
     {
       "id": "concentrate",
-      "endpoint": { "path": "versioned_responses" },
-      "headers": { "protocol_headers": "standard_json" },
+      "endpoint": {
+        "path": "versioned_responses"
+      },
+      "headers": {
+        "protocol_headers": "standard_json"
+      },
       "request": {
         "store": "omit",
         "include": "omit",
@@ -180,13 +245,28 @@
     {
       "provider_kind": "OpenaiCodex",
       "protocol": "responses",
-      "base_url_match": { "type": "any" },
+      "base_url_match": {
+        "type": "any"
+      },
       "profile": "codex"
+    },
+    {
+      "provider_kind": "OpenaiCodex",
+      "protocol": "responses",
+      "base_url_match": {
+        "type": "exact_normalized",
+        "urls": [
+          "https://chatgpt.com/backend-api/codex"
+        ]
+      },
+      "profile": "chatgpt_subscription"
     },
     {
       "provider_kind": "Concentrate",
       "protocol": "responses",
-      "base_url_match": { "type": "any" },
+      "base_url_match": {
+        "type": "any"
+      },
       "profile": "concentrate"
     },
     {

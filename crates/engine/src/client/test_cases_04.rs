@@ -376,6 +376,7 @@
                 wire,
                 false,
                 AuthHeaderSurface::Inference,
+            None,
             )
             .expect("headers");
             assert_eq!(

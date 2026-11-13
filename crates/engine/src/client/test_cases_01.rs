@@ -36,6 +36,7 @@ fn openrouter_routes_carry_app_attribution_headers() {
         WireFormat::ChatCompletions,
         false,
         AuthHeaderSurface::Inference,
+    None,
     )
     .expect("headers");
     assert_eq!(
@@ -80,6 +81,7 @@ fn openrouter_routes_carry_app_attribution_headers() {
             WireFormat::ChatCompletions,
             false,
             AuthHeaderSurface::Inference,
+        None,
         )
         .expect("headers");
         assert!(
@@ -98,6 +100,7 @@ fn openrouter_routes_carry_app_attribution_headers() {
         WireFormat::ChatCompletions,
         false,
         AuthHeaderSurface::Inference,
+    None,
     )
     .expect("headers");
     // A user title on the legacy header alone must follow onto the
@@ -120,6 +123,7 @@ fn openrouter_routes_carry_app_attribution_headers() {
         WireFormat::ChatCompletions,
         false,
         AuthHeaderSurface::Inference,
+    None,
     )
     .expect("headers");
     for name in ["x-title", "x-openrouter-title"] {

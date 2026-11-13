@@ -1813,3 +1813,304 @@ fn responses_input_preserves_system_history_with_the_provider_role() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ChatGPT subscription backend (https://chatgpt.com/backend-api/codex/responses)
+// ─────────────────────────────────────────────────────────────────────────────
+
+use super::subscription::{
+    ContinuationShape, ReplaySafety, SubscriptionSessionKey, SubscriptionTurnCache,
+    TurnObservation, anchor_from_completion, plan_request,
+};
+
+const SUBSCRIPTION_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+
+fn subscription_profile() -> &'static codewhale_config::responses_dialect::ResponsesDialectProfile {
+    codewhale_config::responses_dialect::profile("chatgpt_subscription")
+        .expect("chatgpt_subscription dialect profile")
+}
+
+fn subscription_request() -> MessageRequest {
+    minimal_responses_request()
+}
+
+/// The subscription profile's wire body: store:false, encrypted reasoning
+/// include, namespace-wrapped tools, no output cap, strict terminal.
+#[test]
+fn subscription_profile_body_matches_the_backend_contract() {
+    let profile = subscription_profile();
+    let request = subscription_request();
+    let (body, _omitted) = super::build_responses_wire_body(
+        &request,
+        profile,
+        super::ResponsesReplayContext {
+            provider_id: ProviderKind::OpenaiCodex.as_str(),
+            wire_model_id: request.model.as_str(),
+            reasoning_api_id: None,
+        },
+    )
+    .expect("subscription body builds");
+    assert_eq!(body["store"], json!(false));
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(body["model"], "gpt-5.5");
+    assert!(body.get("max_output_tokens").is_none(), "{body}");
+    assert!(
+        body.get("temperature").is_none() && body.get("top_p").is_none(),
+        "sampling is omitted: {body}"
+    );
+    assert_eq!(
+        profile.stream.completion,
+        codewhale_config::responses_dialect::CompletionPolicy::RequireSuccessfulResponseCompleted
+    );
+    assert_eq!(
+        profile.stream.incomplete,
+        codewhale_config::responses_dialect::IncompleteResponsePolicy::Fail
+    );
+    assert_eq!(
+        profile.stream.malformed_json,
+        codewhale_config::responses_dialect::MalformedEventPolicy::Fail
+    );
+    // Tools are namespace-wrapped under the codewhale namespace.
+    assert_eq!(profile.tools.namespace, Some("codewhale"));
+}
+
+/// `ultra` names the top rung on the subscription product ladder and maps to
+/// the wire's `max`; every other tier keeps its Codex spelling.
+#[test]
+fn subscription_ultra_effort_maps_to_max() {
+    let profile = subscription_profile();
+    let mut request = subscription_request();
+    for (raw, wire) in [
+        ("ultra", "max"),
+        ("ultracode", "max"),
+        ("max", "max"),
+        ("xhigh", "xhigh"),
+        ("high", "high"),
+        ("medium", "medium"),
+        ("low", "low"),
+    ] {
+        request.reasoning_effort = Some(raw.to_string());
+        let (body, _) = super::build_responses_wire_body(
+            &request,
+            profile,
+            super::ResponsesReplayContext {
+                provider_id: ProviderKind::OpenaiCodex.as_str(),
+                wire_model_id: request.model.as_str(),
+                reasoning_api_id: None,
+            },
+        )
+        .expect("subscription body builds");
+        assert_eq!(
+            body.pointer("/reasoning/effort"),
+            Some(&json!(wire)),
+            "{raw}"
+        );
+    }
+    // The public codex profile keeps `ultra` verbatim: two dialects, two
+    // ladders, one shared source of truth per profile.
+    request.reasoning_effort = Some("ultra".to_string());
+    let codex_profile = codewhale_config::responses_dialect::profile("codex").unwrap();
+    let (codex_body, _) = super::build_responses_wire_body(
+        &request,
+        codex_profile,
+        super::ResponsesReplayContext {
+            provider_id: ProviderKind::OpenaiCodex.as_str(),
+            wire_model_id: request.model.as_str(),
+            reasoning_api_id: None,
+        },
+    )
+    .expect("codex body builds");
+    assert_eq!(
+        codex_body.pointer("/reasoning/effort"),
+        Some(&json!("ultra"))
+    );
+}
+
+/// The subscription endpoint appends `/responses` to the backend root and
+/// never invents a `/v1` segment.
+#[test]
+fn subscription_endpoint_url_is_the_backend_responses_path() {
+    for (base, expected) in [
+        (
+            SUBSCRIPTION_BASE_URL,
+            "https://chatgpt.com/backend-api/codex/responses",
+        ),
+        (
+            "https://chatgpt.com/backend-api/codex/",
+            "https://chatgpt.com/backend-api/codex/responses",
+        ),
+    ] {
+        let url =
+            crate::client::responses_api_url_for_test(base, subscription_profile().endpoint.path);
+        assert_eq!(url, expected, "{base}");
+    }
+}
+
+/// Credential fence: the exact subscription endpoint is sanctioned for the
+/// official grant; every neighboring chatgpt.com spelling fails closed.
+#[test]
+fn subscription_credential_fence_admits_only_the_exact_endpoint() {
+    assert!(crate::pricing::is_chatgpt_codex_backend(
+        SUBSCRIPTION_BASE_URL
+    ));
+    for rejected in [
+        "https://chatgpt.com/backend-api",
+        "https://chatgpt.com/backend-api/codex/v1",
+        "https://chatgpt.com/backend-api/codex/responses",
+        "https://chatgpt.com.example.net/backend-api/codex",
+        "http://chatgpt.com/backend-api/codex",
+        "https://chatgpt.com/v1",
+        "",
+    ] {
+        assert!(
+            !crate::pricing::is_chatgpt_codex_backend(rejected),
+            "{rejected} must not be classified as the subscription backend"
+        );
+    }
+    // The public API route keeps its own shape and does not become the
+    // subscription backend.
+    assert!(!crate::pricing::is_chatgpt_codex_backend(
+        "https://api.openai.com/v1"
+    ));
+}
+
+/// Headers: the subscription backend carries originator/account/session
+/// identity headers on inference; the public API carries none of them.
+#[test]
+fn subscription_headers_are_isolated_from_the_public_api() {
+    use std::collections::HashMap;
+
+    let subscription_headers = crate::client::build_default_headers_for_test(
+        "grant-access-token",
+        &HashMap::new(),
+        ProviderKind::OpenaiCodex,
+        SUBSCRIPTION_BASE_URL,
+        codewhale_config::provider::WireFormat::Responses,
+        false,
+        Some("acct-verified"),
+    )
+    .expect("subscription headers");
+
+    assert_eq!(
+        subscription_headers.get("originator").unwrap(),
+        "codewhale_cli_rs"
+    );
+    assert_eq!(
+        subscription_headers.get("chatgpt-account-id").unwrap(),
+        "acct-verified"
+    );
+    assert!(
+        subscription_headers.get("session_id").is_some(),
+        "session id header present: {subscription_headers:?}"
+    );
+    // The bearer grant still authenticates.
+    assert!(
+        subscription_headers
+            .get("authorization")
+            .is_some_and(|value| value.to_str().unwrap().starts_with("Bearer "))
+    );
+
+    let public_headers = crate::client::build_default_headers_for_test(
+        "grant-access-token",
+        &HashMap::new(),
+        ProviderKind::OpenaiCodex,
+        "https://api.openai.com/v1",
+        codewhale_config::provider::WireFormat::Responses,
+        false,
+        Some("acct-verified"),
+    )
+    .expect("public headers");
+    for forbidden in [
+        "originator",
+        "chatgpt-account-id",
+        "session_id",
+        "openai-beta",
+    ] {
+        assert!(
+            public_headers.get(forbidden).is_none(),
+            "{forbidden} must not reach the public API"
+        );
+    }
+}
+
+/// Quota classification: the subscription endpoint bills as the OAuth
+/// subscription surface; the public API does not.
+#[test]
+fn subscription_endpoint_classifies_as_oauth_subscription_quota() {
+    assert_eq!(
+        crate::pricing::billing_surface_for_route(
+            ProviderKind::OpenaiCodex,
+            Some(SUBSCRIPTION_BASE_URL)
+        ),
+        Some(crate::pricing::OAUTH_SUBSCRIPTION_BILLING_SURFACE)
+    );
+    assert_eq!(
+        crate::pricing::billing_surface_for_route(ProviderKind::OpenaiCodex, Some("")),
+        Some(crate::pricing::UNCLASSIFIED_BILLING_SURFACE)
+    );
+    assert_eq!(
+        crate::pricing::endpoint_metering_for_billing_surface(Some(
+            crate::pricing::OAUTH_SUBSCRIPTION_BILLING_SURFACE
+        )),
+        crate::pricing::EndpointMetering::ExactSubscription
+    );
+}
+
+/// WS continuation: baseline → delta with previous_response_id; the
+/// turn-state header replays only for tool turns; the cache stays bounded.
+#[test]
+fn subscription_ws_state_machine_covers_baseline_delta_and_turn_state() {
+    let key = SubscriptionSessionKey {
+        endpoint: SUBSCRIPTION_BASE_URL.to_string(),
+        account: "acct-1".to_string(),
+        session: "sess-1".to_string(),
+    };
+    let mut cache = SubscriptionTurnCache::new();
+
+    // Baseline: nothing settled yet.
+    let baseline = plan_request(&cache, &key, false, false);
+    assert_eq!(baseline.shape, ContinuationShape::Baseline);
+
+    // Settle a tool turn and continue with tool results: delta + header.
+    cache.settle(
+        key.clone(),
+        anchor_from_completion(&serde_json::json!({
+            "type":"response.completed",
+            "response":{"status":"completed","id":"resp_tool","turn_state":"ts_tool"}
+        }))
+        .expect("anchor"),
+    );
+    let tool_turn = plan_request(&cache, &key, true, false);
+    assert_eq!(
+        tool_turn.shape,
+        ContinuationShape::Delta {
+            previous_response_id: "resp_tool".to_string()
+        }
+    );
+    assert_eq!(tool_turn.turn_state_header.as_deref(), Some("ts_tool"));
+
+    // The next user turn continues but never replays tool state.
+    let user_turn = plan_request(&cache, &key, false, false);
+    assert_eq!(
+        user_turn.shape,
+        ContinuationShape::Delta {
+            previous_response_id: "resp_tool".to_string()
+        }
+    );
+    assert_eq!(user_turn.turn_state_header, None);
+
+    // Prewarm is generate:false and does not continue.
+    let prewarm = plan_request(&cache, &key, false, true);
+    assert_eq!(prewarm.shape, ContinuationShape::Baseline);
+
+    // Replay safety: no semantic events yet → safe; after the first delta →
+    // both WS reconnect and HTTP fallback are forbidden.
+    let mut observation = TurnObservation::new();
+    assert_eq!(observation.replay_safe(), ReplaySafety::Yes);
+    observation.observe(&serde_json::json!({
+        "type":"response.output_text.delta","delta":"h"
+    }));
+    assert_eq!(observation.replay_safe(), ReplaySafety::No);
+    observation.settle();
+    assert_eq!(observation.replay_safe(), ReplaySafety::No);
+}
