@@ -37,7 +37,8 @@ process restarts, sleep or remote execution, use Fleet or a Workflow-backed run.
 Sub-agents inherit the parent's permitted tool registry, including `agent`
 coordination. Spawning obeys one absolute depth ceiling: the root is depth 0,
 its child is depth 1, and a child at `max_spawn_depth` cannot spawn again.
-The default has no product depth cap. Explicit operator, role and saved-profile
+The default is three levels including the root (root, child, grandchild) — an
+intentional safety default. Explicit operator, role and saved-profile
 limits still narrow descendant authority; model requests cannot choose caps. Recovery and transcript
 forking retain the source's position and bounds; they do not buy another
 generation. The removed `agent_open`/`agent_eval`/`agent_close` lifecycle tools
@@ -464,6 +465,62 @@ The model can spell each role multiple ways:
 All matching is case-insensitive. Unknown values produce a typed
 error listing the accepted set, so the model can self-correct on
 the next turn.
+
+
+## Swarm batch fan-out
+
+`agent action=swarm` fans one batch of independent items out through the same
+worker runtime — no second scheduler or turn loop. Three input arms are
+accepted:
+
+1. `items` + `prompt_template` — the template must contain the `{{item}}`
+   placeholder (`{{index}}` and `{{total}}` are also substituted; object items
+   render as compact JSON).
+2. `items` + `preset` — one of the four batch presets
+   (`audit-followup`, `audit-review`, `oracle-followup`, `file-review`),
+   which supply the worker prompt shape and ask each worker to return the
+   structured `Status / Changed files / Verification / Remaining risk /
+   Parent follow-up` labels.
+3. `from` — a read-only evidence-source port over the project evidence store
+   (`pending/claimed/stale/active_obligations`, `failing/unknown/
+   failing_or_unknown_oracles`). Without a materialized store the call fails
+   loud with an empty-input error; it never fabricates items.
+
+`description` is required (one line naming the batch), `items` and `from` are
+mutually exclusive, and a single run accepts at most 128 items (`limit`
+slices explicit items and bounds `from` reads, default 20, cap 100).
+
+**Foreground** (default) joins every item inline in the call and returns
+per-item results: one `<swarm_worker_result>` block per worker with its
+summary or error, a success/failure count, and the parent-closeout guidance.
+**Background** (`background: true`) returns a frozen start receipt with the
+real child agent ids and pushes each worker completion to this session as it
+happens — do not sleep or poll. Prefer background for large batches.
+
+Per-run `concurrency` defaults to and is capped at **16** workers executing
+at once; excess items queue for the manager's existing launch gate, which
+stays the authority for the global pool. A single worker's failure lands in
+that item's result row — it never fails the whole batch.
+
+Files named by two or more object items produce advisory `scope_warnings`
+rows (and a prompt prefix for the affected workers). They are warnings, not
+locks: real conflict prevention stays with the write-scope and claims
+authority. Model routing is resolved once at fan-out time and frozen for the
+whole run; the runtime never re-selects a model mid-batch, and a swarm never
+widens the parent's permission posture (write-capable batches keep the
+approval gate).
+
+Background worker completions are durably exactly-once: each terminal worker
+commits a generation-stamped outbox row in the delegated-agent store, a
+recovered session re-delivers only undelivered rows, and a delivered row can
+never resurrect. Foreground and background children alike are fresh per item
+— no hidden resume; use `action=followup` to continue a specific child, or
+`action=cancel` with its `agent_id` to stop one.
+
+Default delegation depth is **3 levels including the root** (root, child,
+grandchild) — an intentional safety default (`DEFAULT_SPAWN_DEPTH`). An
+operator may narrow it via `[subagents] max_depth`; a child can never widen
+it. Zero disables delegation.
 
 ## Concurrency cap
 
