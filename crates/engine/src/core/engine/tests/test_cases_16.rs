@@ -471,7 +471,7 @@ fn caller_policy_defaults_to_direct() {
 }
 
 #[test]
-fn tool_search_activates_discovered_deferred_tools() {
+fn tool_search_reveals_discovered_deferred_tools_without_activation() {
     let mut catalog = vec![
         Tool {
             tool_type: None,
@@ -512,7 +512,19 @@ fn tool_search_activates_discovered_deferred_tools() {
     )
     .expect("search succeeds");
     assert!(result.success);
-    assert!(active.contains("read_file"));
+    // Phase-2 reveal: the tool is revealed and callable by name, but its
+    // schema never joins the request tool array.
+    assert!(!active.contains("read_file"));
+    assert!(
+        result
+            .metadata
+            .as_ref()
+            .unwrap()["tool_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "read_file")
+    );
 }
 
 #[test]
@@ -546,7 +558,18 @@ fn tool_search_scenario() {
         .expect("search succeeds");
 
         assert!(result.success);
-        assert!(active.contains(REQUEST_USER_INPUT_NAME));
+        // Phase-2 reveal: the modal tool is revealed by name, not activated.
+        assert!(!active.contains(REQUEST_USER_INPUT_NAME));
+        assert!(
+            result
+                .metadata
+                .as_ref()
+                .unwrap()["tool_references"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|name| name == REQUEST_USER_INPUT_NAME)
+        );
     }
     // from tool_search_defaults_to_eight_results_for_regex_and_bm25
     {

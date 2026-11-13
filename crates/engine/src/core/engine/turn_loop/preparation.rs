@@ -230,7 +230,21 @@ impl Engine {
             .await
         {
             AutoCompactionStep::Proceed => {}
-            AutoCompactionStep::Restart => return PhaseResult::Retry,
+            AutoCompactionStep::Restart => {
+                // The history was reset; reveals at or before the compaction
+                // boundary are promoted into the tool array now, under a
+                // declared `change:tool_surface` — separate from the
+                // compaction's own `reset:compaction`.
+                let promoted = super::super::tool_catalog::promoted_reveal_names(
+                    &self.session.messages,
+                    &progress.tool_catalog,
+                );
+                if !promoted.is_empty() {
+                    progress.active_tool_names.extend(promoted);
+                    self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
+                }
+                return PhaseResult::Retry;
+            }
             AutoCompactionStep::EndTurn(status, error) => {
                 return PhaseResult::Return((status, error));
             }
