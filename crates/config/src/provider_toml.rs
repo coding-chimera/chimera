@@ -527,6 +527,18 @@ pub struct ProvidersToml {
         alias = "alibaba-coding-plan-anthropic"
     )]
     pub modelstudio_coding_plan_anthropic: ProviderConfigToml,
+    /// Alibailian — explicitly named Model Studio relay profile. Distinct
+    /// from every official Model Studio table; the relay endpoint is
+    /// controlled configuration with no committed default.
+    #[serde(
+        default,
+        skip_serializing_if = "ProviderConfigToml::is_empty",
+        alias = "ali-bailian",
+        alias = "ali_bailian",
+        alias = "bailian-relay",
+        alias = "bailian_relay"
+    )]
+    pub alibailian: ProviderConfigToml,
     /// Catch-all table for the dynamic OpenAI-compatible custom provider
     /// identity (#1519). Arbitrary `[providers.<name>]` tables are handled by
     /// the tui-side flatten map; this named slot keeps the canonical
@@ -607,7 +619,7 @@ impl ProvidersToml {
             ProviderKind::ModelstudioTokenPlan => &self.modelstudio_token_plan,
             ProviderKind::ModelstudioTokenPlanAnthropic => &self.modelstudio_token_plan_anthropic,
             ProviderKind::ModelstudioCodingPlan => &self.modelstudio_coding_plan,
-            ProviderKind::ModelstudioCodingPlanAnthropic => &self.modelstudio_coding_plan_anthropic,
+            ProviderKind::Alibailian => &self.alibailian,
             ProviderKind::Custom => &self.custom,
         }
     }
@@ -669,6 +681,7 @@ impl ProvidersToml {
             ProviderKind::ModelstudioCodingPlanAnthropic => {
                 &mut self.modelstudio_coding_plan_anthropic
             }
+            ProviderKind::Alibailian => &mut self.alibailian,
             ProviderKind::Custom => &mut self.custom,
         }
     }

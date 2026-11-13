@@ -1,3 +1,4 @@
+use crate::importer::IMPORTED_SCHEMA_VERSION;
 use crate::catalog;
 use crate::extension_toml::{
     ControlSocketToml, HookSinksToml, LifecycleOutboxToml, SkillsToml, SnapshotsToml, ToolsToml,
@@ -12,9 +13,14 @@ use crate::service_toml::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
+    /// Explicit config schema version (RFC §13.1). Absent on every historic
+    /// document; a versioned document is subject to the strict unknown-root-
+    /// key gate in [`parse_config_toml_str`], while unversioned documents
+    /// keep the tolerant `extras` behavior so old files keep loading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u64>,
     // There is no top-level `api_key` or `base_url`: every parse moves the
     // legacy root keys into `[providers.<name>]` first (`legacy_root`, #6394).
     /// Optional extra HTTP headers forwarded to model API requests.
@@ -35,11 +41,13 @@ pub struct ConfigToml {
     pub selected_provider_id: Option<String>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
-    pub verbosity: Option<String>,
-    pub log_level: Option<String>,
-    pub telemetry: Option<bool>,
-    /// Where telemetry batches are sent, when telemetry is enabled at all.
-    ///
+    /// Unset here means "no destination": this build ships no first-party
+    /// endpoint, so a session with no configured `telemetry_endpoint` stays
+    /// off rather than contacting a host nobody chose. Setting it to a URL
+    /// names your own sink; setting it to the empty string is the local
+    /// dry-run sink, which appends batches to `dryrun.jsonl` and constructs
+    /// no HTTP client. Either way a persistent or run-scoped opt-out still
+    /// prevents any batch from being constructed.
     /// Unset here means "take the shipped default",
     /// `DEFAULT_TELEMETRY_ENDPOINT` — not "send nowhere". Setting it to the
     /// empty string is the way to say send nowhere: that resolves to no

@@ -241,7 +241,9 @@ pub fn load_setup_state_for_decision_at(path: &Path) -> Option<SetupState> {
 /// 2. Any recorded notice decline → `OptedOut`, including a decline recorded
 ///    by the former opt-in notice.
 /// 3. No resolvable home → `ForcedOff`.
-/// 4. Endpoint configured but refused by [`validate_endpoint`] → `ForcedOff`.
+/// 4. Endpoint configured but refused by [`validate_endpoint`] → `ForcedOff`;
+///    an unconfigured endpoint → `ForcedOff`, because there is no first-party
+///    sink to fall back to. An explicit blank endpoint is the dry-run sink.
 /// 5. Otherwise `Enabled`, including an absent configuration preference.
 ///
 /// The disclosure is policy metadata, not a consent gate. Every armed surface
@@ -306,7 +308,10 @@ fn evaluate_in_home(
         return TelemetryEvaluation::ForcedOff;
     };
 
-    // 4. A refused endpoint is a configuration error, not a user answer.
+    // 4. A refused endpoint is a configuration error, not a user answer, and
+    //    an *unconfigured* one is no destination at all: this build ships no
+    //    first-party sink, so consent alone never selects a host. An explicit
+    //    blank endpoint stays the local dry-run sink.
     let endpoint = match resolved.telemetry_endpoint.as_deref() {
         Some(raw) if !raw.trim().is_empty() => match validate_endpoint(raw) {
             Ok(endpoint) => Some(endpoint),
@@ -318,7 +323,15 @@ fn evaluate_in_home(
                 return TelemetryEvaluation::ForcedOff;
             }
         },
-        _ => None,
+        Some(_) => None,
+        None => {
+            tracing::warn!(
+                "telemetry is off for this run: no telemetry_endpoint is configured. Set \
+                 telemetry_endpoint to your own sink in config.toml (or \
+                 CODEWHALE_TELEMETRY_ENDPOINT), or an empty value for the local dry-run file"
+            );
+            return TelemetryEvaluation::ForcedOff;
+        }
     };
 
     let Ok(tombstone_generation) = buffer::tombstone_generation(&root) else {

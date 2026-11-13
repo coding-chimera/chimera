@@ -1,21 +1,19 @@
 use crate::display_redaction::parse_bool;
 
-/// Where an enabled session's batches go when nobody has said otherwise.
+/// Where an enabled session's batches go when nobody has said otherwise: no
+/// destination at all.
 ///
-/// The first-party ingest service — a Cloudflare Worker that appends to Workers
-/// Analytics Engine, with an optional disclosed PostHog sink. See
-/// `docs/TELEMETRY.md` for what a batch contains and `telemetry-ingest/` for the handler.
+/// This build has no first-party ingest service. An unconfigured endpoint is
+/// therefore *not* a URL — it is the absence of one, and a session that never
+/// resolves an explicit `telemetry_endpoint` stays off rather than contacting a
+/// host nobody configured. `CODEWHALE_TELEMETRY=0`, `telemetry = false`, and a
+/// recorded decline all stop the session the same way.
 ///
-/// This is a *default*, not a floor, and it changes nothing about permission:
-/// `CODEWHALE_TELEMETRY=0`, `telemetry = false`, and a recorded decline all
-/// stop the session long before an endpoint is read.
-///
-/// An explicit value — `CODEWHALE_TELEMETRY_ENDPOINT` or `telemetry_endpoint` in
-/// the config file — wins outright, and an explicit *empty* value resolves to no
-/// endpoint at all, which is the local dry-run sink: batches are serialized
+/// An explicit value — `CODEWHALE_TELEMETRY_ENDPOINT` or `telemetry_endpoint`
+/// in the config file — wins outright and names an operator-owned sink. An
+/// explicit *empty* value is the local dry-run sink: batches are serialized
 /// exactly as a server would see them and appended to
 /// `$CODEWHALE_HOME/telemetry/dryrun.jsonl`, and no HTTP client is constructed.
-pub const DEFAULT_TELEMETRY_ENDPOINT: &str = "https://telemetry.codewhale.net/v1/telemetry";
 
 /// Provider-neutral credential value forwarded from the CLI dispatcher to the
 /// in-process TUI when `--api-key` must survive profile-late route selection.
@@ -77,7 +75,7 @@ pub enum TelemetrySource {
     Env,
     /// `telemetry = …` written to the config file.
     Config,
-    /// Nobody said anything; the shipped preference is on.
+    /// Nobody said anything; the shipped preference is off.
     Default,
 }
 
@@ -130,7 +128,7 @@ pub(crate) fn read_telemetry_env() -> (Option<bool>, bool) {
 /// This is the same resolution `ConfigToml::resolve_runtime_options`
 /// applies without its CLI term: environment first (an explicit value, an
 /// unreadable one, or a dispatcher floor), then the file, then the shipped
-/// default of `on`; a persisted `telemetry = false` is a floor no later
+/// default of `off`; a persisted `telemetry = false` is a floor no later
 /// term can climb over. The runtime resolver calls this directly, so the
 /// preference surfaces agree. The telemetry owner also checks historical
 /// durable declines and fails closed on unreadable privacy state.
@@ -155,7 +153,7 @@ pub(crate) fn telemetry_consent_from_env(
     file_telemetry: Option<bool>,
 ) -> (bool, TelemetrySource) {
     let persisted_off = file_telemetry == Some(false);
-    let allowed = env_telemetry.or(file_telemetry).unwrap_or(true);
+    let allowed = env_telemetry.or(file_telemetry).unwrap_or(false);
     let on = allowed && env_telemetry != Some(false) && !env_invalid && !floor && !persisted_off;
     let source = if !on && (env_telemetry == Some(false) || env_invalid || floor) {
         // An environment kill switch decided the outcome.

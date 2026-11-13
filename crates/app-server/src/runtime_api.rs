@@ -274,6 +274,238 @@ struct RuntimeWorkspaceScope {
     /// (`workspace_lease`). Watch-only observers never reach scope admission.
     /// Underscored because it is held for its `Drop` side effect, never read.
     _drive_lease: Option<codewhale_runtime::workspace_lease::SharedWorkspaceDriveLease>,
+    _drive_lease: Option<codewhale_runtime::workspace_lease::SharedWorkspaceDriveLease>,
+    /// Request-lifetime activity: leases held by in-flight requests and SSE
+    /// streams, short restart-jitter pins, and the last moment a request
+    /// touched this scope (presence). Idle recycling consults these; a scope
+    /// with a live lease or pin, or touched inside the idle TTL, is never
+    /// reclaimed.
+    activity: Arc<ScopeActivity>,
+}
+
+#[derive(Default)]
+struct ScopeActivity {
+    leases: std::sync::atomic::AtomicUsize,
+    pins: std::sync::atomic::AtomicUsize,
+    last_presence_ms: std::sync::atomic::AtomicU64,
+}
+
+fn presence_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+impl ScopeActivity {
+    fn touch(&self) {
+        self.last_presence_ms
+            .store(presence_now_ms(), std::sync::atomic::Ordering::Release);
+    }
+
+    fn hold_lease(self: &Arc<Self>) -> ScopeLeaseGuard {
+        self.leases.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.touch();
+        ScopeLeaseGuard { activity: self }
+    }
+
+    fn pin(self: &Arc<Self>) -> ScopePin {
+        self.pins.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.touch();
+        ScopePin { activity: self }
+    }
+
+    fn idle_for(&self) -> Duration {
+        let last = self
+            .last_presence_ms
+            .load(std::sync::atomic::Ordering::Acquire);
+        let now = presence_now_ms();
+        Duration::from_millis(now.saturating_sub(last))
+    }
+
+    fn is_protected(&self, idle_ttl: Duration) -> bool {
+        self.leases.load(std::sync::atomic::Ordering::Acquire) > 0
+            || self.pins.load(std::sync::atomic::Ordering::Acquire) > 0
+            || self.idle_for() < idle_ttl
+    }
+}
+
+/// A request-lifetime lease on one workspace scope, released on drop. SSE
+/// streams hold it for their whole lifetime, which keeps a live scope from
+/// being recycled out from under an open stream.
+struct ScopeLeaseGuard {
+    activity: Arc<ScopeActivity>,
+}
+
+impl Drop for ScopeLeaseGuard {
+    fn drop(&mut self) {
+        self.activity
+            .leases
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.activity.touch();
+    }
+}
+
+/// A short-lived pin held for a recycled scope's jitter window, so a client
+/// reconnecting right after a restart does not make the owner boot that
+/// workspace's engine again immediately. Dropping releases the pin.
+struct ScopePin {
+    activity: Arc<ScopeActivity>,
+}
+
+impl Drop for ScopePin {
+    fn drop(&mut self) {
+        self.activity
+            .pins
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.activity.touch();
+    }
+}
+    /// SSE streams, one for short restart-jitter pins, and the last moment
+    /// any request touched this scope (presence). Idle recycling reads these
+    /// to decide whether the scope may retire; a scope with a live lease or
+    /// pin, or one touched inside the idle TTL, is never reclaimed.
+    activity: ScopeActivity,
+}
+
+#[derive(Default)]
+struct ScopeActivity {
+    leases: std::sync::atomic::AtomicUsize,
+    pins: std::sync::atomic::AtomicUsize,
+    last_presence_ms: std::sync::atomic::AtomicU64,
+}
+
+impl ScopeActivity {
+    fn hold_lease(&self) -> ScopeLease {
+        self.leases.fetch_add(1, Ordering::AcqRel);
+        ScopeLease { activity: self }
+    }
+
+    fn pin(&self) {
+        self.pins.fetch_add(1, Ordering::AcqRel);
+        self.touch();
+    }
+
+    fn unpin(&self) {
+        self.pins.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn touch(&self) {
+        self.last_presence_ms.store(presence_now_ms(), Ordering::Release);
+    }
+
+    fn idle_for(&self) -> Duration {
+        let last = self.last_presence_ms.load(Ordering::Acquire);
+        let now = presence_now_ms();
+        Duration::from_millis(now.saturating_sub(last))
+    }
+
+    fn is_protected(&self, idle_ttl: Duration) -> bool {
+        self.leases.load(Ordering::Acquire) > 0
+            || self.pins.load(Ordering::Acquire) > 0
+            || self.idle_for() < idle_ttl
+    }
+}
+
+fn presence_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// A request-lifetime lease on one workspace scope. Released on drop; SSE
+/// streams hold it for their whole lifetime, which is what keeps an active
+/// scope from being recycled out from under an open stream.
+struct ScopeLease<'a> {
+    activity: &'a ScopeActivity,
+}
+
+impl Drop for ScopeLease<'_> {
+    fn drop(&mut self) {
+        self.activity.leases.fetch_sub(1, Ordering::AcqRel);
+        self.activity.touch();
+    }
+}
+
+/// An owned short-lived pin: a scope that was just recycled gets pinned for
+/// a brief window so a client reconnecting through a restart does not make
+/// the owner boot it again immediately (restart jitter).
+#[must_use = "a pin unheld is a pin unused; keep it for its jitter window"]
+struct ScopePin {
+    scope: Option<Arc<RuntimeWorkspaceScope>>,
+}
+
+impl ScopePin {
+    fn hold(scope: Arc<RuntimeWorkspaceScope>) -> Self {
+        scope.activity.pin();
+        Self { scope: Some(scope) }
+    }
+}
+
+impl Drop for ScopePin {
+    fn drop(&mut self) {
+        if let Some(scope) = self.scope.take() {
+            scope.activity.unpin();
+        }
+    }
+}
+
+impl RuntimeWorkspaceScope {
+    fn validate_sync(&self) -> Result<()> {
+        let (canonical, directory) =
+            codewhale_util::workspace_dir::open_workspace_directory(&self.lexical)?;
+        anyhow::ensure!(
+            canonical == self.canonical
+                && codewhale_util::files::same_file(&self.directory, &directory)?,
+            "selected workspace identity changed"
+        );
+        Ok(())
+    }
+    async fn validate(self: &Arc<Self>) -> Result<()> {
+        let scope = self.clone();
+        codewhale_runtime::runtime_control::owner_work(move || scope.validate_sync()).await
+    }
+
+    /// Bind one request to this scope for the request's lifetime. Presence
+    /// is refreshed so the idle clock restarts at each touch.
+    fn hold_lease(self: &Arc<Self>) -> ScopeLease<'static> {
+        // SAFETY-free: the activity state lives in the scope's Arc, which
+        // outlives every request lease; the 'static here is the ordinary
+        // self-referential-free counter, not a borrow of the scope.
+        self.activity.hold_lease()
+    }
+}
+
+impl Drop for RuntimeWorkspaceScope {
+    fn drop(&mut self) {
+        let mcp = self.mcp.get_mut().take().map(|(_, pool)| pool);
+        let lsp = self.lsp.take();
+        let drive_lease = self._drive_lease.take();
+        // The canonical writer lease and held directory survive the actual
+        // transport cleanup, including waiter cancellation and guest detach.
+        let owner = self.owner.clone();
+        let directory = self.directory.clone();
+        self.cleanup_runtime.spawn(async move {
+            let _owner = owner;
+            let _directory = directory;
+            let _drive_lease = drive_lease;
+            if let Some(pool) = mcp {
+                pool.lock().await.shutdown_all().await;
+            }
+            if let Some(manager) = lsp {
+                manager.shutdown_all().await;
+            }
+        });
+    }
+}
+
+struct RuntimeWorkspaceScopes {
+    scopes: parking_lot::Mutex<BTreeMap<PathBuf, Arc<RuntimeWorkspaceScope>>>,
+    mcp_generation: std::sync::atomic::AtomicU64,
+    owner: SharedRuntimeThreadManager,
+    workers: SharedSubAgentManager,
+    cleanup_runtime: tokio::runtime::Handle,
+    /// The scope this owner was started with; never recycled.
+    default_scope: parking_lot::Mutex<Option<Arc<RuntimeWorkspaceScope>>>,
 }
 
 impl RuntimeWorkspaceScope {

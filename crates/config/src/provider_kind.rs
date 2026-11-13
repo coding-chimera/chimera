@@ -204,6 +204,24 @@ pub enum ProviderKind {
         alias = "alibaba-coding-plan-anthropic"
     )]
     ModelstudioCodingPlanAnthropic,
+    /// Alibailian — explicitly named Model Studio relay profile.
+    ///
+    /// A distinct relay identity, never the official Model Studio provider:
+    /// official Model Studio endpoint, thinking, reasoning, and native-search
+    /// behavior stays bound to the `Modelstudio*` kinds. The relay's endpoint
+    /// arrives from controlled configuration; no internal infrastructure
+    /// address or credential is committed here. Relay quirks (zero-tool
+    /// native `json_schema` structured output with a no-tool extraction
+    /// backstop, the multi-tool `tool_choice` Named backstop, hosted
+    /// `web_search` replay, and the Alibailian → DeepSeek → Kimi websearch
+    /// fallback) bind to this kind only.
+    #[serde(
+        alias = "ali-bailian",
+        alias = "ali_bailian",
+        alias = "bailian-relay",
+        alias = "bailian_relay"
+    )]
+    Alibailian,
     /// Legacy Antigravity configuration identity.
     ///
     /// Kept only so existing configuration can be read and cleared. It is not

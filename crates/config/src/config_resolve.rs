@@ -40,8 +40,7 @@ use crate::stream_timeouts::{
     DEFAULT_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS, MIN_STREAM_CHUNK_TIMEOUT_SECS,
 };
 use crate::telemetry::{
-    DEFAULT_TELEMETRY_ENDPOINT, TelemetrySource, resolved_telemetry_consent,
-    telemetry_consent_from_env,
+    TelemetrySource, resolved_telemetry_consent, telemetry_consent_from_env,
 };
 use crate::{cloud_facts, notifications, provider};
 use anyhow::Context as _;
@@ -1136,24 +1135,20 @@ impl ConfigToml {
         // answer would also make the default state indistinguishable from a
         // revocation.
         let telemetry_explicit_off = telemetry_persisted_off;
-        // The shipped default is [`DEFAULT_TELEMETRY_ENDPOINT`], and it is a
-        // default rather than a floor: an explicit value in the environment or
-        // the config file wins outright. An explicit *empty* value is not a
-        // missing value — it is the local dry-run sink, and it stays reachable
-        // by resolving to `None` instead of falling through to the default.
+        // There is no shipped endpoint: this build has no first-party ingest
+        // service, so an unconfigured endpoint resolves to `None` — no
+        // destination — instead of naming a host nobody chose. An explicit
+        // value in the environment or the config file wins outright and is
+        // kept verbatim, including a whitespace-empty one, which the
+        // telemetry owner reads as the local dry-run sink.
         //
         // None of this changes the user's opt-out. A session only reaches an
         // endpoint after `telemetry` above resolved true; every persistent and
         // run-scoped kill switch is upstream of this line.
-        let telemetry_endpoint = match env
+        let telemetry_endpoint = env
             .telemetry_endpoint
             .clone()
-            .or_else(|| self.telemetry_endpoint.clone())
-        {
-            Some(configured) if configured.trim().is_empty() => None,
-            Some(configured) => Some(configured),
-            None => Some(DEFAULT_TELEMETRY_ENDPOINT.to_string()),
-        };
+            .or_else(|| self.telemetry_endpoint.clone());
         let approval_policy = cli
             .approval_policy
             .clone()

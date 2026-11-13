@@ -53,11 +53,21 @@ pub struct ResponsesEndpointPolicy {
 pub enum ResponsesPathPolicy {
     VersionedResponses,
     UnversionedResponses,
+    /// `https://chatgpt.com/backend-api/codex` subscription Responses
+    /// surface: the request path is `/responses` under the unversioned
+    /// backend root. Kept distinct from `UnversionedResponses` so the
+    /// DeepSeek stateless profile cannot be confused with the subscription
+    /// backend.
+    BackendApiCodexResponses,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResponsesHeaderPolicy {
-    pub protocol_headers: ProtocolHeaderPolicy,
+    StandardJson,
+    /// Subscription-backend identity headers: `originator: codewhale_cli_rs`
+    /// plus a per-session id and account id. Isolated from
+    /// [`ProtocolHeaderPolicy::StandardJson`] so the public API's header
+    /// contract never inherits them and vice versa.
+    ChatgptSubscriptionIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

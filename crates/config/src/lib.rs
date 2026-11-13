@@ -11,6 +11,7 @@ pub mod extension_host;
 pub mod external_credentials;
 pub mod hooks;
 pub mod instruction_budget;
+pub mod importer;
 pub mod legacy_root;
 pub mod local_reasoning;
 pub mod model_reference;
@@ -87,6 +88,7 @@ pub use xai_credentials::{
     with_xai_oauth_lifecycle_lock, with_xai_oauth_revocation_transaction,
     xai_oauth_credentials_dir, xai_oauth_generation_path,
 };
+pub use importer::IMPORTED_SCHEMA_VERSION;
 mod base_url_resolution;
 mod config_backup;
 mod config_migration;
@@ -131,6 +133,8 @@ pub use service_toml::*;
 pub use state_dirs::*;
 pub use stream_timeouts::*;
 pub use telemetry::*;
+#[cfg(test)]
+mod config_importer_tests;
 
 #[cfg(test)]
 mod tests;

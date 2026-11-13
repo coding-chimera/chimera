@@ -88,7 +88,6 @@
 
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
 
 /// Why a read was refused, so callers can render one clear message.
 ///
@@ -380,54 +379,6 @@ impl ReadDenylist {
 
         Ok(())
     }
-}
-
-// ---------------------------------------------------------------------------
-// Process-wide active deny-list
-//
-// Codewhale's file-reading tools (`read_file`, `read`, `read_media`, …) run
-// in-process and are never wrapped by `sandbox-exec` or `bwrap`, so they have
-// to consult the deny-list themselves. Threading config through every tool
-// signature would touch dozens of call sites for one read; a process-global
-// set once at startup keeps the blast radius to the tools that actually read
-// files.
-// ---------------------------------------------------------------------------
-
-static ACTIVE: RwLock<Option<Arc<ReadDenylist>>> = RwLock::new(None);
-static FALLBACK: OnceLock<Arc<ReadDenylist>> = OnceLock::new();
-
-/// Install the deny-list resolved from user config. Called once during startup.
-pub fn set_active(list: ReadDenylist) {
-    if let Ok(mut slot) = ACTIVE.write() {
-        *slot = Some(Arc::new(list));
-    }
-}
-
-/// The deny-list in force for this process.
-///
-/// Falls back to the built-in defaults when startup has not installed one, so
-/// a code path that runs before config load is protected rather than open.
-#[must_use]
-pub fn active() -> Arc<ReadDenylist> {
-    if let Ok(slot) = ACTIVE.read()
-        && let Some(list) = slot.as_ref()
-    {
-        return Arc::clone(list);
-    }
-    Arc::clone(FALLBACK.get_or_init(|| Arc::new(ReadDenylist::build(true, &[], &[]))))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn with_test_active_denylist<R>(list: ReadDenylist, callback: impl FnOnce() -> R) -> R {
-    struct RestoreActive(Option<Arc<ReadDenylist>>);
-    impl Drop for RestoreActive {
-        fn drop(&mut self) {
-            *ACTIVE.write().unwrap() = self.0.take();
-        }
-    }
-    let previous = (*ACTIVE.write().unwrap()).replace(Arc::new(list));
-    let _restore = RestoreActive(previous);
-    callback()
 }
 
 /// `.env`, `.env.local`, `.env.production` — but deliberately NOT
