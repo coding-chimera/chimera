@@ -105,12 +105,16 @@ impl ToolSpec for FileSearchTool {
         // path, never a symlink target it might resolve to.
         let base_path = match optional_str(&input, "path")? {
             Some(path) if !path.trim().is_empty() => {
-                super::file::enforce_read_denylist(Path::new(path), "file_search")?;
+                super::file::enforce_read_denylist(
+                    Path::new(path),
+                    "file_search",
+                    &context.read_denylist,
+                )?;
                 context.resolve_path(path)?
             }
             _ => context.workspace.clone(),
         };
-        super::file::enforce_read_denylist(&base_path, "file_search")?;
+        super::file::enforce_read_denylist(&base_path, "file_search", &context.read_denylist)?;
 
         let extensions = parse_extensions(&input);
         let exclude_patterns = parse_exclude_patterns(&input);
@@ -124,6 +128,7 @@ impl ToolSpec for FileSearchTool {
             context.cancel_token.clone(),
             FILE_SEARCH_TIMEOUT,
             context.follow_symlinks,
+            std::sync::Arc::clone(&context.read_denylist),
         )
         .await?;
         ToolResult::json(&matches).map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -141,6 +146,7 @@ async fn search_files_async(
     cancel_token: Option<CancellationToken>,
     timeout: Duration,
     follow_symlinks: bool,
+    denylist: std::sync::Arc<codewhale_sandbox::read_guard::ReadDenylist>,
 ) -> Result<Vec<FileSearchMatch>, ToolError> {
     let workspace_canonical = tokio::fs::canonicalize(&workspace).await.ok();
     run_blocking_file_search(timeout, cancel_token, move |worker_cancel_token| {
@@ -154,6 +160,7 @@ async fn search_files_async(
             limit,
             Some(&worker_cancel_token),
             follow_symlinks,
+            &denylist,
         )
     })
     .await
@@ -269,6 +276,7 @@ fn search_files(
     limit: usize,
     cancel_token: Option<&CancellationToken>,
     follow_symlinks: bool,
+    denylist: &codewhale_sandbox::read_guard::ReadDenylist,
 ) -> Result<Vec<FileSearchMatch>, ToolError> {
     check_cancelled(cancel_token)?;
 
@@ -332,6 +340,7 @@ fn search_files(
     let mut results: Vec<FileSearchMatch> = Vec::with_capacity(limit);
     let walk_root = base_path.to_path_buf();
     let walk_cancel_token = cancel_token.cloned();
+    let walk_denylist = std::sync::Arc::new(denylist.clone());
 
     let mut builder = WalkBuilder::new(base_path);
     builder
@@ -354,7 +363,7 @@ fn search_files(
             // Sandbox read deny-list (S1). A walk rooted above a denied tree
             // must not enumerate its names. Reject directories before descent;
             // the explicit root refusal remains at the guard above.
-            if let Err(denial) = codewhale_sandbox::read_guard::active().check(entry.path()) {
+            if let Err(denial) = walk_denylist.check(entry.path()) {
                 tracing::debug!(
                     target: "codewhale::sandbox::read_guard",
                     requested = %denial.requested.display(),

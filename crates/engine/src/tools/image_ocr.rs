@@ -98,7 +98,7 @@ impl CapturedOcr {
         context: &ToolContext,
         deadline: tokio::time::Instant,
     ) -> Result<Self, ToolError> {
-        crate::tools::file::enforce_read_denylist(path, "image_ocr")?;
+        crate::tools::file::enforce_read_denylist(path, "image_ocr", &context.read_denylist)?;
         if crate::tools::file::is_codewhale_credential_path(path) {
             return Err(ToolError::permission_denied(
                 "image_ocr cannot expose Codewhale configuration or credential-store files",

@@ -318,7 +318,11 @@ pub async fn execute_read_media(
     // that location. `read_guard::check` canonicalizes internally, so the raw
     // spelling still matches by target; the resolved check below remains as
     // defense in depth.
-    crate::tools::file::enforce_read_denylist(std::path::Path::new(path_str), "read_media")?;
+    crate::tools::file::enforce_read_denylist(
+        std::path::Path::new(path_str),
+        "read_media",
+        &context.read_denylist,
+    )?;
     let file_path = match context.resolve_path(path_str) {
         Ok(path) => path,
         Err(primary_err) => {
@@ -358,7 +362,7 @@ pub async fn execute_read_media(
             "read_media cannot read Codewhale configuration or credential-store files; use `codewhale config list` or `codewhale auth status` for safe inspection",
         ));
     }
-    crate::tools::file::enforce_read_denylist(&file_path, "read_media")?;
+    crate::tools::file::enforce_read_denylist(&file_path, "read_media", &context.read_denylist)?;
 
     // Check cancellation immediately before dispatching blocking I/O and decode work
     if context

@@ -2811,21 +2811,25 @@ async fn expected_hash_is_advertised_on_every_mutating_action() {
 /// applies to the built-in defaults with no config required.
 #[test]
 fn read_tools_refuse_paths_under_the_default_sandbox_read_denylist() {
-    // Take the env lock WITHOUT rebinding `HOME`. The sandbox denylist is a
-    // process-wide `OnceLock` (sandbox/read_guard.rs:346-347, 411-416) that
-    // snapshots the home directory the first time it is built, so pointing
-    // `HOME` at a fixture here could never match the cached table. What this
-    // test needs is mutual exclusion against siblings that DO rebind `HOME`,
-    // not a home of its own.
+    // Take the env lock WITHOUT rebinding `HOME`. The deny-list below is
+    // built from the ambient home, and the other process-global guards
+    // (`is_codewhale_credential_path`) resolve the active config the same
+    // way. What this test needs is mutual exclusion against siblings that DO
+    // rebind `HOME`, not a home of its own.
     let _env_lock = crate::test_support::lock_test_env();
+    let denylist = codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]);
     let Some(home) = dirs::home_dir() else {
         // No home directory: only machine-wide rules exist and the assertion
         // below would be vacuous. Skip rather than pretend to have evidence.
         return;
     };
 
-    let error = enforce_read_denylist(&home.join(".ssh").join("id_ed25519"), "read_file")
-        .expect_err("~/.ssh must be denied by the built-in defaults");
+    let error = enforce_read_denylist(
+        &home.join(".ssh").join("id_ed25519"),
+        "read_file",
+        &denylist,
+    )
+    .expect_err("~/.ssh must be denied by the built-in defaults");
     assert!(
         matches!(error, ToolError::PermissionDenied { .. }),
         "a denied read must be an explicit refusal, never an empty or missing-file result: {error:?}"
@@ -2842,7 +2846,7 @@ fn read_tools_refuse_paths_under_the_default_sandbox_read_denylist() {
     let temporary = tempfile::tempdir().expect("tempdir");
     let source = temporary.path().join("main.rs");
     std::fs::write(&source, "fn main() {}\n").expect("fixture");
-    assert!(enforce_read_denylist(&source, "read_file").is_ok());
+    assert!(enforce_read_denylist(&source, "read_file", &denylist).is_ok());
 }
 
 /// A symlink whose own name is innocuous but whose target is a credential
@@ -2853,13 +2857,13 @@ fn read_tools_refuse_paths_under_the_default_sandbox_read_denylist() {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn read_file_refuses_a_workspace_symlink_pointing_at_a_denied_tree() {
-    // Take the env lock WITHOUT rebinding `HOME`. The sandbox denylist is a
-    // process-wide `OnceLock` (sandbox/read_guard.rs:346-347, 411-416) that
-    // snapshots the home directory the first time it is built, so pointing
-    // `HOME` at a fixture here could never match the cached table. What this
-    // test needs is mutual exclusion against siblings that DO rebind `HOME`,
-    // not a home of its own.
+    // Take the env lock WITHOUT rebinding `HOME`. The deny-list below is
+    // built from the ambient home, and the other process-global guards
+    // (`is_codewhale_credential_path`) resolve the active config the same
+    // way. What this test needs is mutual exclusion against siblings that DO
+    // rebind `HOME`, not a home of its own.
     let _env_lock = crate::test_support::lock_test_env();
+    let denylist = codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]);
     let Some(home) = dirs::home_dir() else {
         return;
     };
@@ -2873,7 +2877,7 @@ async fn read_file_refuses_a_workspace_symlink_pointing_at_a_denied_tree() {
     let link = workspace.path().join("notes.txt");
     std::os::unix::fs::symlink(&ssh, &link).expect("symlink");
 
-    let error = enforce_read_denylist(&link, "read_file")
+    let error = enforce_read_denylist(&link, "read_file", &denylist)
         .expect_err("a symlink into ~/.ssh must be refused by its target");
     let message = error.to_string();
     assert!(message.contains("symlink"), "{message}");
@@ -2944,12 +2948,11 @@ async fn list_dir_refuses_to_enumerate_a_denied_directory() {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn read_file_refusal_names_the_callers_spelling_not_the_symlink_target() {
-    // Take the env lock WITHOUT rebinding `HOME`. The sandbox denylist is a
-    // process-wide `OnceLock` (sandbox/read_guard.rs:346-347, 411-416) that
-    // snapshots the home directory the first time it is built, so pointing
-    // `HOME` at a fixture here could never match the cached table. What this
-    // test needs is mutual exclusion against siblings that DO rebind `HOME`,
-    // not a home of its own.
+    // Take the env lock WITHOUT rebinding `HOME`. The deny-list below is
+    // built from the ambient home, and the other process-global guards
+    // (`is_codewhale_credential_path`) resolve the active config the same
+    // way. What this test needs is mutual exclusion against siblings that DO
+    // rebind `HOME`, not a home of its own.
     let _env_lock = crate::test_support::lock_test_env();
     let Some(home) = dirs::home_dir() else {
         return;
