@@ -56,7 +56,10 @@ pub fn extract_file(file_path: &str, content: &str, language: &str) -> Result<Em
         "pascal" => unimplemented_walker(file_path, content, language),
         "nix" => unimplemented_walker(file_path, content, language),
         "objc" => unimplemented_walker(file_path, content, language),
-        _ => tsjs::extract(file_path, content, language),
+        "typescript" | "tsx" | "javascript" | "jsx" => tsjs::extract(file_path, content, language),
+        _ => Err(format!(
+            "walker for {language} is not ported yet: {file_path}"
+        )),
     })
 }
 
@@ -68,4 +71,19 @@ fn unimplemented_walker(
     Err(format!(
         "walker for {language} is not ported yet: {file_path}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_language_is_rejected_instead_of_using_tsjs() {
+        let error = match extract_file("sample.unknown", "const answer = 42", "unknown-language") {
+            Err(error) => error,
+            Ok(_) => panic!("unknown languages must fail closed"),
+        };
+        assert!(error.contains("unknown-language"), "{error}");
+        assert!(error.contains("sample.unknown"), "{error}");
+    }
 }
