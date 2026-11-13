@@ -31,6 +31,65 @@ def allowed(path: str, rules: dict[str, str]) -> str | None:
     return None
 
 
+class RustLex:
+    def __init__(self) -> None:
+        self.double_string = False
+        self.raw_hashes = None
+        self.block_comments = 0
+
+    def sanitize(self, line: str) -> str:
+        out = []
+        i = 0
+        while i < len(line):
+            if self.block_comments:
+                if line.startswith("/*", i):
+                    self.block_comments += 1
+                    i += 2
+                elif line.startswith("*/", i):
+                    self.block_comments -= 1
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if self.raw_hashes is not None:
+                if line[i] == '"' and line.startswith("#" * self.raw_hashes, i + 1):
+                    i += 1 + self.raw_hashes
+                    self.raw_hashes = None
+                else:
+                    i += 1
+                continue
+            if self.double_string:
+                if line[i] == "\\":
+                    i += 2
+                else:
+                    if line[i] == '"':
+                        self.double_string = False
+                    i += 1
+                continue
+            if line.startswith("//", i):
+                break
+            if line.startswith("/*", i):
+                self.block_comments = 1
+                i += 2
+                continue
+            if line[i] == '"':
+                self.double_string = True
+                i += 1
+                continue
+            if line[i] == "r" or line.startswith("br", i):
+                prefix_len = 1 if line[i] == "r" else 2
+                j = i + prefix_len
+                while j < len(line) and line[j] == "#":
+                    j += 1
+                if j < len(line) and line[j] == '"':
+                    self.raw_hashes = j - i - prefix_len
+                    i = j + 1
+                    continue
+            out.append(line[i])
+            i += 1
+        return "".join(out)
+
+
 def evaluate(
     changed_files: list[str],
     added_rust_lines: dict[str, list[str]],
@@ -41,12 +100,11 @@ def evaluate(
         if path.endswith((".ts", ".tsx")) and not allowed(path, policy.get("typescript", {})):
             violations.append(f"{path}: new TypeScript implementation is forbidden")
     for path, lines in added_rust_lines.items():
+        lexer = RustLex()
         for line in lines:
-            stripped = line.lstrip()
-            if stripped.startswith("//"):
-                continue
-            if UNSAFE_CODE.search(line) and not allowed(path, policy.get("unsafe", {})):
-                violations.append(f"{path}: unreviewed unsafe addition: {stripped}")
+            code = lexer.sanitize(line)
+            if UNSAFE_CODE.search(code) and not allowed(path, policy.get("unsafe", {})):
+                violations.append(f"{path}: unreviewed unsafe addition: {line.strip()}")
     return violations
 
 

@@ -43,6 +43,21 @@ class MigrationRustOnlyTest(unittest.TestCase):
         self.assertEqual(mod.evaluate([], accepted, policy), [])
         self.assertEqual(len(mod.evaluate([], rejected, policy)), 1)
 
+    def test_regex_and_raw_strings_are_not_unsafe_code(self) -> None:
+        lines = {
+            "crates/codegraph/src/resolve/resolver.rs": [
+                'rust_impl_header: r(format!("^{S}*(pub(?:\\\\([^)]*\\\\))?{S}+)?(unsafe{S}+)?impl\\\\b")),',
+                'let pattern = r#"start',
+                'unsafe { not_code() }',
+                'end"#;',
+            ]
+        }
+        self.assertEqual(mod.evaluate([], lines, {}), [])
+
+    def test_unsafe_outside_strings_is_still_reported(self) -> None:
+        lines = {"crates/demo/src/lib.rs": ['let pattern = "safe";', "unsafe { ptr.read() }"]}
+        self.assertEqual(len(mod.evaluate([], lines, {})), 1)
+
     def test_diff_parser_only_returns_added_rust_lines(self) -> None:
         diff = "+++ b/crates/demo/src/lib.rs\n+fn added() {}\n-fn old() {}\n+++ /dev/null\n"
         self.assertEqual(mod.added_rust_lines(diff), {"crates/demo/src/lib.rs": ["fn added() {}"]})
