@@ -186,6 +186,7 @@ impl ToolSpec for GrepFilesTool {
         let workspace = context.workspace.clone();
         let cancel_token = context.cancel_token.clone();
         let follow_symlinks = context.follow_symlinks;
+        let denylist = std::sync::Arc::clone(&context.read_denylist);
 
         // The directory walk and per-file regex are synchronous blocking work.
         // Run them on a blocking worker bounded by a hard timeout so a huge tree
@@ -214,6 +215,7 @@ impl ToolSpec for GrepFilesTool {
                 &exclude_patterns,
                 cancel_token,
                 follow_symlinks,
+                &denylist,
                 &mut |file_path| {
                     if truncated || results.len() >= max_results {
                         truncated = true;
@@ -486,6 +488,7 @@ fn visit_files(
     exclude_patterns: &[String],
     cancel_token: Option<&CancellationToken>,
     follow_symlinks: bool,
+    denylist: &codewhale_sandbox::read_guard::ReadDenylist,
     visit: &mut dyn FnMut(&Path) -> Result<WalkControl, ToolError>,
 ) -> Result<usize, ToolError> {
     let mut visited_dirs: HashSet<PathBuf> = HashSet::new();
@@ -509,6 +512,7 @@ fn visit_files(
         cancel_token,
         &mut visited_dirs,
         follow_symlinks,
+        denylist,
         &mut skipped,
         visit,
     )?;
@@ -524,6 +528,7 @@ fn visit_files_recursive(
     cancel_token: Option<&CancellationToken>,
     visited_dirs: &mut HashSet<PathBuf>,
     follow_symlinks: bool,
+    denylist: &codewhale_sandbox::read_guard::ReadDenylist,
     skipped: &mut usize,
     visit: &mut dyn FnMut(&Path) -> Result<WalkControl, ToolError>,
 ) -> Result<WalkControl, ToolError> {
@@ -610,6 +615,7 @@ fn visit_files_recursive(
                 cancel_token,
                 visited_dirs,
                 follow_symlinks,
+                denylist,
                 skipped,
                 visit,
             )? {
@@ -622,7 +628,7 @@ fn visit_files_recursive(
             // make `search` useless. The skip is logged; a directed
             // `read_file`/`read`/`read_media` on the same path still returns an
             // explicit refusal rather than an empty result.
-            if let Err(denial) = codewhale_sandbox::read_guard::active().check(&path) {
+            if let Err(denial) = denylist.check(&path) {
                 tracing::debug!(
                     target: "codewhale::sandbox::read_guard",
                     requested = %denial.requested.display(),

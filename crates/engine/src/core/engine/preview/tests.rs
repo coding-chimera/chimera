@@ -2314,10 +2314,12 @@ async fn building_a_manifest_writes_no_engine_state() {
     let model_before = engine.session.model.clone();
     let system_prompt_before = system_prompt_hash(engine.session.system_prompt.as_ref());
     let system_hash_before = engine.session.last_system_prompt_hash;
-    let working_set_before = engine.session.working_set.summary_block(
-        &engine.config.workspace,
-        &crate::tools::file::working_set_read_allowed,
-    );
+    let working_set_before = engine
+        .session
+        .working_set
+        .summary_block(&engine.config.workspace, &|path| {
+            crate::tools::file::working_set_read_allowed(path, &engine.read_denylist)
+        });
     let provider_before = engine.api_provider;
     let mode_before = engine.current_mode;
     let narrowing_before = format!("{:?}", engine.last_policy_narrowing);
@@ -2349,10 +2351,12 @@ async fn building_a_manifest_writes_no_engine_state() {
     );
     assert_eq!(engine.session.last_system_prompt_hash, system_hash_before);
     assert_eq!(
-        engine.session.working_set.summary_block(
-            &engine.config.workspace,
-            &crate::tools::file::working_set_read_allowed,
-        ),
+        engine
+            .session
+            .working_set
+            .summary_block(&engine.config.workspace, &|path| {
+                crate::tools::file::working_set_read_allowed(path, &engine.read_denylist)
+            },),
         working_set_before,
         "the hypothetical message is observed on a clone, never on the session"
     );

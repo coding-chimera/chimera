@@ -82,6 +82,9 @@ include!("tests/test_cases_20.rs");
 #[path = "tests/rlm_host.rs"]
 pub mod rlm_host;
 
+#[path = "tests/read_guard_isolation.rs"]
+mod read_guard_isolation;
+
 #[test]
 fn run_completion_real_factories_observe_shutdown_and_direct_handles_do_not() {
     let _env = lock_test_env();
