@@ -208,9 +208,11 @@ impl StructuredState {
         working_set: &WorkingSet,
         subagents: Option<&SharedSubAgentManager>,
         active_session_id: &str,
+        denylist: &std::sync::Arc<codewhale_sandbox::read_guard::ReadDenylist>,
     ) -> Self {
-        let working_set_summary =
-            working_set.summary_block(&workspace, &crate::tools::file::working_set_read_allowed);
+        let working_set_summary = working_set.summary_block(&workspace, &|path| {
+            crate::tools::file::working_set_read_allowed(path, denylist)
+        });
 
         let subagent_snapshots = if let Some(handle) = subagents {
             let guard = handle.read().await;
@@ -703,10 +705,10 @@ impl Default for EngineConfig {
             prefer_bwrap: true,
             tool_launcher: None,
             bwrap_extensions: codewhale_sandbox::BwrapMountExtensions::default(),
-            // Fail-closed (F7): `Engine::new` unconditionally installs this
-            // list process-wide via `read_guard::set_active`, so a default
-            // here must be the built-in credential-store defaults — an empty
-            // list would override the safe fallback and fail open. Mirrors
+            // Fail-closed (F7): `Engine::new` captures this list as the
+            // engine-owned immutable read deny-list, so a default here must
+            // be the built-in credential-store defaults — an empty list
+            // would leave an unconfigured engine fail-open. Mirrors
             // `Config::default`, where `sandbox_read_denylist_defaults`
             // defaults to true.
             read_denylist: codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]),
@@ -1087,6 +1089,7 @@ pub struct Engine {
     /// so children are gated by the same rules as the parent turn.
     shared_auto_review_policy: Arc<crate::core::authority::auto_review::AutoReviewPolicy>,
     shell_manager: SharedShellManager,
+    read_denylist: std::sync::Arc<codewhale_sandbox::read_guard::ReadDenylist>,
     /// Read-before-edit snapshots live for the session, not for one turn's
     /// transient `ToolContext` (#4475).
     file_read_tracker: SharedFileReadTracker,
@@ -2528,12 +2531,6 @@ impl Engine {
                 |host| Arc::clone(host.subagent_manager()),
             )
         });
-        // The OS wrappers below only cover child processes. Codewhale's own
-        // `read_file`/`read`/`read_media` tools read in-process, so the same
-        // deny-list is installed process-wide for them to consult (S1).
-        if host.is_none() {
-            codewhale_sandbox::read_guard::set_active(config.read_denylist.clone());
-        }
         let shell_manager = host
             .as_ref()
             .map(|host| host.context().shell_manager.clone())
@@ -2561,6 +2558,15 @@ impl Engine {
             .map_or_else(new_shared_file_read_tracker, |host| {
                 host.context().file_read_tracker.clone()
             });
+        // W1: the engine captures its own immutable read deny-list. Hosted
+        // engines (child/RLM) inherit the Arc their caller's context already
+        // carries; a root engine captures the list resolved from its config.
+        // The in-process file tools consult the context's list, so no
+        // process-global slot exists for a later engine to overwrite.
+        let read_denylist = host
+            .as_ref()
+            .map(|host| std::sync::Arc::clone(&host.context().read_denylist))
+            .unwrap_or_else(|| std::sync::Arc::new(config.read_denylist.clone()));
         let lsp_manager = Arc::new(match config.lsp_config.clone() {
             Some(cfg) => codewhale_lsp::LspManager::new(cfg, config.workspace.clone()),
             None => codewhale_lsp::LspManager::disabled(),
@@ -2665,6 +2671,7 @@ impl Engine {
             subagent_execution_limits,
             shared_auto_review_policy,
             shell_manager,
+            read_denylist,
             file_read_tracker,
             mcp_pool,
             turn_tool_surface_budget: None,
@@ -5201,10 +5208,9 @@ impl Engine {
         } = snapshot;
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let working_set_summary = working_set
-            .summary_block(
-                &self.config.workspace,
-                &crate::tools::file::working_set_read_allowed,
-            )
+            .summary_block(&self.config.workspace, &|path| {
+                crate::tools::file::working_set_read_allowed(path, &self.read_denylist)
+            })
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
@@ -6351,6 +6357,7 @@ impl Engine {
                 &self.session.working_set,
                 Some(&self.subagent_manager),
                 &self.session.id,
+                &self.read_denylist,
             )
             .await;
             let mut messages = self.messages_with_turn_metadata();
@@ -8583,6 +8590,7 @@ impl Engine {
         .with_trusted_external_paths(trusted_external_paths)
         .with_follow_symlinks(self.config.workspace_follow_symlinks);
         ctx.acp_host = self.is_acp_turn().then_some(authority.mode);
+        ctx.read_denylist = std::sync::Arc::clone(&self.read_denylist);
         ctx.disallowed_tools = self.config.disallowed_tools.clone().unwrap_or_default();
         ctx.persist_services_enabled = self.config.runtime_services.persist_services_enabled;
         // A tool that starts work of its own (a durable task) pins the posture

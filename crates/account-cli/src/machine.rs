@@ -214,29 +214,6 @@ Set {MACHINE_KEY_ENV}, or create one with `codewhale account api-keys create` af
 // Base URL
 // ---------------------------------------------------------------------------
 
-/// Resolve the account API origin.
-///
-/// Order: explicit `--api-base`, then `CODEWHALE_API_BASE`, then whatever the
-/// device flow already uses, then the production default. The flag outranks
-/// the variable for the same reason `--api-key` would outrank the environment:
-/// the nearer, more deliberate signal wins.
-pub(crate) fn resolve_api_base(
-    flag: Option<&str>,
-    machine_base: Option<&str>,
-    device_base: Option<&str>,
-    default_base: &str,
-) -> String {
-    [flag, machine_base, device_base]
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .find(|value| !value.is_empty())
-        .map_or_else(
-            || default_base.to_string(),
-            |value| value.trim_end_matches('/').to_string(),
-        )
-}
-
 /// Reject a plaintext origin for a non-loopback host.
 ///
 /// A machine token is a bearer credential with no replay protection, so

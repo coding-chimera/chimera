@@ -114,11 +114,11 @@ def extract_match_block(
 
 def provider_data() -> dict:
     data = json.loads(read(PROVIDER_DATA))
-    if data.get("schema_version") != 3 or len(data.get("providers", [])) != 52:
+    if data.get("schema_version") != 3 or len(data.get("providers", [])) != 53:
         raise ValueError("unsupported or incomplete provider metadata")
     rows = [*data["providers"], data.get("legacy_tui", {})]
     fields = ("id", "kind", "tui_wire_tag", "config_key", "catalog_id", "catalog_source_id")
-    if len(rows) != 53 or any(any(not isinstance(row.get(field), str) or not row[field] for field in fields) for row in rows):
+    if len(rows) != 54 or any(any(not isinstance(row.get(field), str) or not row[field] for field in fields) for row in rows):
         raise ValueError("incomplete released presentation metadata")
     for field in ("id", "tui_wire_tag", "tui_order"):
         if len({row.get(field) for row in rows}) != len(rows):

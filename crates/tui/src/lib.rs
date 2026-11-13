@@ -2647,7 +2647,7 @@ async fn run_async_main_inner(
     }
 
     // A due interactive disclosure belongs to the native TUI. Presentation
-    // does not gate the default-on policy; unreadable privacy state does.
+    // does not gate the default-off policy; unreadable privacy state does.
     // Settings can disable this session and erase its pending aggregates.
     let surface = telemetry_surface(command.as_ref());
     let telemetry_notice_plan = if surface == codewhale_telemetry::Surface::Tui {

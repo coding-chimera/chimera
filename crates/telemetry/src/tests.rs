@@ -652,12 +652,16 @@ fn git_sha_is_null_without_release_env() {
 fn decision_matrix_is_exhaustive() {
     let home = temp_home();
     let path = home.path();
+    // A blank endpoint is an explicit dry-run choice; `None` (unconfigured)
+    // is no destination at all and forces off, so the Enabled rows below all
+    // carry a blank endpoint as their chosen destination.
+    let dry_run = Some("");
 
     // Row: nobody has said anything. No acceptance is inferred.
     assert!(matches!(
         decide_in_home(
             Some(path),
-            &resolved(true, false, None),
+            &resolved(true, false, dry_run),
             &SetupState::default(),
             Surface::Tui
         ),
@@ -668,18 +672,18 @@ fn decision_matrix_is_exhaustive() {
     assert!(matches!(
         decide_in_home(
             Some(path),
-            &resolved(false, true, None),
+            &resolved(false, true, dry_run),
             &accepted_setup(),
             Surface::Tui
         ),
         TelemetryDecision::OptedOut
     ));
 
-    // Row: config on with no notice record also uses the default-on policy.
+    // Row: config on with no notice record also arms on an explicit endpoint.
     assert!(matches!(
         decide_in_home(
             Some(path),
-            &resolved(true, false, None),
+            &resolved(true, false, dry_run),
             &SetupState::default(),
             Surface::Tui
         ),
@@ -690,18 +694,19 @@ fn decision_matrix_is_exhaustive() {
     assert!(matches!(
         decide_in_home(
             Some(path),
-            &resolved(true, false, None),
+            &resolved(true, false, dry_run),
             &declined_setup(),
             Surface::Tui
         ),
         TelemetryDecision::OptedOut
     ));
 
-    // Row: old explicit yes remains on under the current default-on policy.
+    // Row: old explicit yes remains on under the current default-off policy
+    // once an endpoint is chosen.
     assert!(matches!(
         decide_in_home(
             Some(path),
-            &resolved(true, false, None),
+            &resolved(true, false, dry_run),
             &stale_setup(),
             Surface::Tui
         ),
@@ -730,18 +735,18 @@ fn decision_matrix_is_exhaustive() {
         TelemetryDecision::ForcedOff
     ));
 
-    // Row: on and accepted, no endpoint — the dry-run sink, which resolution
-    // reaches from an explicitly empty `telemetry_endpoint`. (The *shipped*
-    // default is `DEFAULT_TELEMETRY_ENDPOINT`; this predicate never sees it,
-    // because it reads an already-resolved value.)
+    // Row: on and accepted, an explicitly blank endpoint — the dry-run sink.
+    // Resolution keeps the blank value verbatim; this predicate reads it as
+    // `None`, meaning "construct no HTTP client", which is distinct from an
+    // unconfigured endpoint (no destination at all, ForcedOff).
     let decision = decide_in_home(
         Some(path),
-        &resolved(true, false, None),
+        &resolved(true, false, Some("")),
         &accepted_setup(),
         Surface::Exec,
     );
     let TelemetryDecision::Enabled(consent) = decision else {
-        panic!("an accepted, endpoint-less machine must be Enabled");
+        panic!("an accepted machine with a blank endpoint must be Enabled");
     };
     assert_eq!(consent.endpoint(), None);
     assert_eq!(consent.surface(), Surface::Exec);
@@ -759,17 +764,35 @@ fn decision_matrix_is_exhaustive() {
     );
 
     // Row: every headless surface uses the same documented default and kill
-    // switches.
+    // switches, on an explicitly chosen dry-run destination.
     for surface in Surface::ALL {
         assert!(
             decide_in_home(
                 Some(path),
-                &resolved(true, false, None),
+                &resolved(true, false, dry_run),
                 &SetupState::default(),
                 *surface
             )
             .is_enabled(),
-            "{surface:?} uses default-on without inferring acceptance"
+            "{surface:?} arms on an explicit dry-run endpoint without inferring acceptance"
+        );
+    }
+
+    // Row: consent without any configured endpoint has no destination, so
+    // the run is off no matter which surface asked — this build has no
+    // first-party sink to fall back to.
+    for surface in Surface::ALL {
+        assert!(
+            matches!(
+                decide_in_home(
+                    Some(path),
+                    &resolved(true, false, None),
+                    &accepted_setup(),
+                    *surface
+                ),
+                TelemetryDecision::ForcedOff
+            ),
+            "{surface:?} must stay off with an unconfigured endpoint"
         );
     }
 }
@@ -962,7 +985,7 @@ fn the_tombstone_outlives_every_run_the_opt_out_covers() {
     // one path allowed to clear the tombstone.
     let TelemetryDecision::Enabled(consent) = decide_in_home(
         Some(home.path()),
-        &resolved(true, false, None),
+        &resolved(true, false, Some("")),
         &accepted_setup(),
         Surface::Tui,
     ) else {
@@ -1349,7 +1372,7 @@ fn stale_consent_cannot_clear_a_newer_opt_out_but_fresh_reenable_can() {
 
     // This process resolved the old enabled config before another process
     // persisted an opt-out and completed its wipe.
-    let stale_resolved = resolved(true, false, None);
+    let stale_resolved = resolved(true, false, Some(""));
     let TelemetryDecision::Enabled(pre_wipe_consent) = decide_in_home(
         Some(home.path()),
         &stale_resolved,
@@ -1394,11 +1417,16 @@ fn stale_consent_cannot_clear_a_newer_opt_out_but_fresh_reenable_can() {
 
     // The documented explicit re-enable updates the durable register first. A
     // fresh consent observes both that value and the current generation, so it
-    // may clear exactly that tombstone.
-    std::fs::write(&config_path, "telemetry = true\n").expect("persist re-enable");
+    // may clear exactly that tombstone. The re-enable also carries the dry-run
+    // endpoint, which an enabled session now needs to have a destination.
+    std::fs::write(
+        &config_path,
+        "telemetry = true\ntelemetry_endpoint = \"\"\n",
+    )
+    .expect("persist re-enable");
     let TelemetryDecision::Enabled(fresh_consent) = decide_in_home(
         Some(home.path()),
-        &resolved(true, false, None),
+        &resolved(true, false, Some("")),
         &accepted_setup(),
         Surface::Tui,
     ) else {
@@ -1647,7 +1675,7 @@ fn no_public_api_accepts_a_bare_bool() {
     assert!(
         decide_in_home(
             Some(home.path()),
-            &resolved(true, false, None),
+            &resolved(true, false, Some("")),
             &accepted_setup(),
             Surface::Cli
         )
@@ -1959,8 +1987,8 @@ fn the_notice_summarizes_what_the_schema_collects_and_states_every_red_line() {
         "aggregate feature and error counters",
         "random ID stored on this machine",
         "every 90 days",
-        "on by default",
-        "PostHog",
+        "off by default",
+        "telemetry_endpoint to your own sink",
     ] {
         assert!(
             flat.contains(&claim.split_whitespace().collect::<String>()),

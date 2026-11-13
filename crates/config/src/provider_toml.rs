@@ -619,6 +619,7 @@ impl ProvidersToml {
             ProviderKind::ModelstudioTokenPlan => &self.modelstudio_token_plan,
             ProviderKind::ModelstudioTokenPlanAnthropic => &self.modelstudio_token_plan_anthropic,
             ProviderKind::ModelstudioCodingPlan => &self.modelstudio_coding_plan,
+            ProviderKind::ModelstudioCodingPlanAnthropic => &self.modelstudio_coding_plan_anthropic,
             ProviderKind::Alibailian => &self.alibailian,
             ProviderKind::Custom => &self.custom,
         }

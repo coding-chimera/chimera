@@ -184,6 +184,28 @@ MCP 工具是动态的。连接成功的服务器会从 `~/.codewhale/mcp.json` 
 但子智能体的缓存从空开始，并在本地发现工具；分叉的上下文和缓存都不能变成发现白名单。
 子智能体仍能搜索其自身权限所允许的每一个工具，包括只读研究角色使用的 Web 搜索/抓取。
 
+### 渐进式披露 reveal（phase 2）
+
+`tool_search` 命中后**揭示（reveal）**延迟工具，而不是把它的 schema 加进
+请求工具数组。结果在 `revealed_tool_references` 下列出每个匹配项，附带紧凑
+签名（如 `(path: string, offset?: integer)`），随后一条 runtime 指引消息跟随
+搜索进入会话历史。工具数组——以及固定提示前缀——在每次 reveal 前后字节不变。
+
+模型**按名调用**被揭示的工具。调用走常规 turn-loop 路径：deny/allow 列表、
+准备、钩子、审批、repo law、沙箱门都在调用时重新执行。reveal 不授予任何
+权限；格式错误的首次调用仍得到带期望字段的 schema 水合结果，被逐出的
+reveal 得到指向 `tool_search` 的明确不可用提示。
+
+reveal 是会话历史记录，因此保存、resume、重启都能保留，无需独立存储，
+两个会话也绝不共享揭示集合。off-array 集合有界于最新 16 条未提升 reveal；
+更早的从集合中逐出（历史记录保留），需要重新揭示。
+
+在 compaction 边界，reveal 记录位于最新 compaction 检查点之前（含）的工具
+被**提升**：其 schema 在下一个请求加入工具数组，前缀在已声明的
+`change:tool_surface` 下重新固定（compaction 本身另行记录
+`reset:compaction`，见 [CACHE.md](CACHE.md)）。不再以延迟工具存在于当前目录
+的名称，绝不会因提升而复活。
+
 ## 检查模型客户端请求里的工具载荷
 
 在模型回合之后运行 `/tools`，检查最近一次准备好的模型客户端请求中那个确切的

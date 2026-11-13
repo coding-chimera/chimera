@@ -62,6 +62,7 @@ pub(crate) fn provider_passes_model_through(provider: ProviderKind) -> bool {
             | ProviderKind::ModelstudioTokenPlanAnthropic
             | ProviderKind::ModelstudioCodingPlan
             | ProviderKind::ModelstudioCodingPlanAnthropic
+            | ProviderKind::Alibailian
             | ProviderKind::Custom
     )
 }

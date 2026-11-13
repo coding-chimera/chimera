@@ -72,6 +72,7 @@ impl ProviderNativeSearchClient {
                 | ProviderKind::ModelstudioTokenPlan
                 | ProviderKind::Deepseek
                 | ProviderKind::Moonshot
+                | ProviderKind::Alibailian
         )
         .then_some(Self { inner })
     }
@@ -190,6 +191,11 @@ impl ProviderNativeSearchClient {
                 request,
                 ResponsesSearchDialect::ModelStudio,
             ),
+            ProviderKind::Alibailian => build_responses_search_body(
+                &self.inner.default_model,
+                request,
+                ResponsesSearchDialect::Alibailian,
+            ),
             ProviderKind::Deepseek => build_responses_search_body(
                 &self.inner.default_model,
                 request,
@@ -211,12 +217,13 @@ impl ProviderNativeSearchClient {
             _ => bail!("active provider has no native web-search adapter"),
         };
         let url = match self.inner.api_provider {
-            ProviderKind::Openai | ProviderKind::Xai | ProviderKind::ModelstudioTokenPlan => {
-                responses_api_url(
-                    &self.inner.base_url,
-                    codewhale_config::responses_dialect::ResponsesPathPolicy::VersionedResponses,
-                )
-            }
+            ProviderKind::Openai
+            | ProviderKind::Xai
+            | ProviderKind::ModelstudioTokenPlan
+            | ProviderKind::Alibailian => responses_api_url(
+                &self.inner.base_url,
+                codewhale_config::responses_dialect::ResponsesPathPolicy::VersionedResponses,
+            ),
             ProviderKind::Deepseek => responses_api_url(
                 &self.inner.base_url,
                 codewhale_config::responses_dialect::bound_responses_path(
@@ -250,7 +257,8 @@ impl ProviderNativeSearchClient {
             ProviderKind::Openai
             | ProviderKind::Xai
             | ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::Deepseek => parse_responses_search(&payload),
+            | ProviderKind::Deepseek
+            | ProviderKind::Alibailian => parse_responses_search(&payload),
             ProviderKind::Anthropic => parse_anthropic_search(&payload),
             ProviderKind::XiaomiMimo => parse_mimo_search(&payload),
             ProviderKind::Zai => zai::parse(&payload),
@@ -319,6 +327,7 @@ enum ResponsesSearchDialect {
     Openai,
     Xai,
     ModelStudio,
+    Alibailian,
     Deepseek,
 }
 
@@ -336,7 +345,11 @@ fn build_responses_search_body(
     request: &ProviderNativeSearchRequest,
     dialect: ResponsesSearchDialect,
 ) -> Value {
-    let mut tool = json!({ "type": "web_search" });
+    let mut tool = if matches!(dialect, ResponsesSearchDialect::Alibailian) {
+        super::alibailian::hosted_web_search_declaration()
+    } else {
+        json!({ "type": "web_search" })
+    };
     if !request.domains.is_empty()
         && matches!(
             dialect,
@@ -360,6 +373,9 @@ fn build_responses_search_body(
             body["tool_choice"] = json!("required");
         }
         ResponsesSearchDialect::ModelStudio => {
+            body["tool_choice"] = json!("required");
+        }
+        ResponsesSearchDialect::Alibailian => {
             body["tool_choice"] = json!("required");
         }
         ResponsesSearchDialect::Deepseek => {
@@ -426,7 +442,7 @@ fn parse_responses_search(payload: &Value) -> ProviderNativeSearchResponse {
     if let Some(output) = payload.get("output").and_then(Value::as_array) {
         for item in output {
             let item_type = item.get("type").and_then(Value::as_str);
-            if item_type == Some("web_search_call")
+            if super::alibailian::is_hosted_web_search_call(item)
                 && let Some(action) = item.get("action")
             {
                 if let Some(sources) = action.get("sources").and_then(Value::as_array) {
@@ -828,6 +844,55 @@ mod tests {
         assert_eq!(body["tool_choice"], "required");
         assert!(body.get("include").is_none());
         assert!(body.get("store").is_none());
+    }
+
+    #[test]
+    fn alibailian_uses_the_modelstudio_harness_search_shape() {
+        // The relay reuses the Model Studio harness-search body dialect: a
+        // hosted web_search tool with tool_choice required and no domain
+        // filters, and no store/include extras.
+        let body = build_responses_search_body(
+            "qwen3.8-max",
+            &request(),
+            ResponsesSearchDialect::ModelStudio,
+        );
+        assert_eq!(body["tools"][0]["type"], "web_search");
+        assert!(body["tools"][0].get("filters").is_none());
+        assert_eq!(body["tool_choice"], "required");
+        assert!(body.get("include").is_none());
+        assert!(body.get("store").is_none());
+    }
+
+    #[test]
+    fn alibailian_hosted_web_search_call_replays_as_a_citation_source() {
+        // A hosted web_search_call output item replays through the same
+        // Responses search parser the relay shares with Model Studio.
+        let payload = serde_json::json!({
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "action": {
+                        "sources": [
+                            { "url": "https://example.com/docs", "title": "Docs" }
+                        ]
+                    }
+                },
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "The answer is 42." }
+                    ]
+                }
+            ]
+        });
+        let parsed = parse_responses_search(&payload);
+        assert_eq!(parsed.answer.as_deref(), Some("The answer is 42."));
+        assert!(
+            parsed
+                .citations
+                .iter()
+                .any(|c| c.url == "https://example.com/docs")
+        );
     }
 
     #[test]

@@ -365,14 +365,14 @@ pub fn resolve_guarded_read_path(
     raw: &str,
     tool: &str,
 ) -> Result<PathBuf, ToolError> {
-    enforce_read_denylist(Path::new(raw), tool)?;
+    enforce_read_denylist(Path::new(raw), tool, &context.read_denylist)?;
     let path = context.resolve_path(raw)?;
     if is_codewhale_credential_path(&path) {
         return Err(ToolError::permission_denied(format!(
             "{tool} cannot expose Codewhale configuration or credential-store files; use `codewhale config list` or `codewhale auth status` for safe inspection"
         )));
     }
-    enforce_read_denylist(&path, tool)?;
+    enforce_read_denylist(&path, tool, &context.read_denylist)?;
     Ok(path)
 }
 
@@ -411,7 +411,7 @@ pub async fn user_attached_image_read_path(
             "{tool} cannot expose Codewhale configuration or credential-store files; use `codewhale config list` or `codewhale auth status` for safe inspection"
         )));
     }
-    enforce_read_denylist(&path, tool)?;
+    enforce_read_denylist(&path, tool, &context.read_denylist)?;
     Ok(Some(path))
 }
 
@@ -423,7 +423,11 @@ pub async fn user_attached_image_read_path(
 /// those tools, and the refusal is always an explicit error — never an empty
 /// result, which would read as "the file is empty" and invite the model to
 /// probe siblings.
-pub fn enforce_read_denylist(path: &Path, tool: &str) -> Result<(), ToolError> {
+pub fn enforce_read_denylist(
+    path: &Path,
+    tool: &str,
+    denylist: &codewhale_sandbox::read_guard::ReadDenylist,
+) -> Result<(), ToolError> {
     // Expand the user's home before authorization, retaining the spelling they
     // supplied in every denial. This shares the file tools' path resolution;
     // expansion grants no additional access and never exposes a symlink target.
@@ -440,7 +444,7 @@ pub fn enforce_read_denylist(path: &Path, tool: &str) -> Result<(), ToolError> {
             "{tool} cannot expose Codewhale configuration or credential-store files; use `codewhale config list` or `codewhale auth status` for safe inspection"
         )));
     }
-    match codewhale_sandbox::read_guard::active().check(home_path.as_deref().unwrap_or(path)) {
+    match denylist.check(home_path.as_deref().unwrap_or(path)) {
         Ok(()) => Ok(()),
         Err(mut denial) => {
             denial.requested = path.to_path_buf();
@@ -457,8 +461,11 @@ pub fn enforce_read_denylist(path: &Path, tool: &str) -> Result<(), ToolError> {
     }
 }
 
-pub fn working_set_read_allowed(path: &Path) -> bool {
-    enforce_read_denylist(path, "working_set").is_ok()
+pub fn working_set_read_allowed(
+    path: &Path,
+    denylist: &codewhale_sandbox::read_guard::ReadDenylist,
+) -> bool {
+    enforce_read_denylist(path, "working_set", denylist).is_ok()
 }
 
 /// Return whether `read_file` must refuse a CodeWhale-owned credential file.
@@ -3435,9 +3442,9 @@ impl ToolSpec for ListDirTool {
         // readdir of denied dirs, so refusing here matches the OS layer. The
         // raw spelling is checked first (F2) so the refusal names the caller's
         // path, never a symlink target it might resolve to.
-        enforce_read_denylist(Path::new(path_str), "list_dir")?;
+        enforce_read_denylist(Path::new(path_str), "list_dir", &context.read_denylist)?;
         let dir_path = context.resolve_path(path_str)?;
-        enforce_read_denylist(&dir_path, "list_dir")?;
+        enforce_read_denylist(&dir_path, "list_dir", &context.read_denylist)?;
 
         let entries =
             list_dir_entries_async(dir_path, context.cancel_token.clone(), LIST_DIR_TIMEOUT)

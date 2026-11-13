@@ -738,6 +738,25 @@ pub struct ToolExecutionState {
     /// overwrite each other; defaults to the fail-safe built-in set.
     pub read_denylist: Arc<codewhale_sandbox::read_guard::ReadDenylist>,
     pub child_activation: Option<Arc<crate::tools::subagent::ChildActivationRequest>>,
+    /// Read deny-list the in-process file tools enforce for this context.
+    /// Captured immutably by the owning Engine (or its host's captured
+    /// context) so concurrent Engines with different projects' deny-lists
+    /// never overwrite each other; defaults to the fail-safe built-in set.
+    pub read_denylist: Arc<codewhale_sandbox::read_guard::ReadDenylist>,
+}
+
+static DEFAULT_READ_DENYLIST: std::sync::LazyLock<
+    Arc<codewhale_sandbox::read_guard::ReadDenylist>,
+> = std::sync::LazyLock::new(|| {
+    Arc::new(codewhale_sandbox::read_guard::ReadDenylist::build(
+        true,
+        &[],
+        &[],
+    ))
+});
+
+fn default_read_denylist() -> Arc<codewhale_sandbox::read_guard::ReadDenylist> {
+    Arc::clone(&DEFAULT_READ_DENYLIST)
 }
 
 impl std::ops::Deref for ToolContext {
@@ -849,6 +868,7 @@ static DEFAULT_READ_DENYLIST: LazyLock<Arc<codewhale_sandbox::read_guard::ReadDe
                 live_posture: None,
                 browser_tool: None,
                 child_activation: None,
+                read_denylist: default_read_denylist(),
             }),
         }
     }
@@ -867,6 +887,17 @@ static DEFAULT_READ_DENYLIST: LazyLock<Arc<codewhale_sandbox::read_guard::ReadDe
         // session's resolved posture, which is the authority that counts.
         context.approval_mode = codewhale_execpolicy::ApprovalMode::from_auto_approve(auto_approve);
         context
+    }
+
+    /// Attach this context's immutable read deny-list. Engines stamp the
+    /// policy they captured at construction; tests attach explicit fixtures.
+    #[must_use]
+    pub fn with_read_denylist(
+        mut self,
+        denylist: Arc<codewhale_sandbox::read_guard::ReadDenylist>,
+    ) -> Self {
+        self.read_denylist = denylist;
+        self
     }
 
     /// Attach a per-domain network policy to this context (#135).

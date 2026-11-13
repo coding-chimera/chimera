@@ -41,6 +41,11 @@ pub struct ConfigToml {
     pub selected_provider_id: Option<String>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
+    pub verbosity: Option<String>,
+    pub log_level: Option<String>,
+    pub telemetry: Option<bool>,
+    /// Where telemetry batches are sent, when telemetry is enabled at all.
+    ///
     /// Unset here means "no destination": this build ships no first-party
     /// endpoint, so a session with no configured `telemetry_endpoint` stays
     /// off rather than contacting a host nobody chose. Setting it to a URL
@@ -48,12 +53,7 @@ pub struct ConfigToml {
     /// dry-run sink, which appends batches to `dryrun.jsonl` and constructs
     /// no HTTP client. Either way a persistent or run-scoped opt-out still
     /// prevents any batch from being constructed.
-    /// Unset here means "take the shipped default",
-    /// `DEFAULT_TELEMETRY_ENDPOINT` — not "send nowhere". Setting it to the
-    /// empty string is the way to say send nowhere: that resolves to no
-    /// endpoint, which appends batches to `dryrun.jsonl` and constructs no HTTP
-    /// client. Either way a persistent or run-scoped opt-out still prevents any
-    /// batch from being constructed.
+
     ///
     /// Kept as a scalar sibling of `telemetry` rather than folded into a
     /// `[telemetry]` table. `telemetry` is already a scalar and every section
@@ -129,6 +129,18 @@ pub struct ConfigToml {
     /// [`WorkflowConfigToml::default`].
     #[serde(default)]
     pub workflow: Option<WorkflowConfigToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workshop: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<toml::Value>,
     /// Model-bound credential redaction policy (`[redaction]`). When absent,
     /// masking is enabled — the shipped security default.
     #[serde(default, skip_serializing_if = "Option::is_none")]

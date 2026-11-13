@@ -39,9 +39,7 @@ use crate::settings_schema::setting;
 use crate::stream_timeouts::{
     DEFAULT_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS, MIN_STREAM_CHUNK_TIMEOUT_SECS,
 };
-use crate::telemetry::{
-    TelemetrySource, resolved_telemetry_consent, telemetry_consent_from_env,
-};
+use crate::telemetry::{TelemetrySource, resolved_telemetry_consent, telemetry_consent_from_env};
 use crate::{cloud_facts, notifications, provider};
 use anyhow::Context as _;
 use anyhow::{Result, bail};

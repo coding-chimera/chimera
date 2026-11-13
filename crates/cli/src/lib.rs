@@ -117,8 +117,9 @@ struct Cli {
     #[arg(
         long,
         value_name = "BOOL",
-        help = "Control aggregate usage counting (default on; Codewhale + PostHog; \
-                durable off: config set telemetry false; CODEWHALE_TELEMETRY=0 always wins)"
+        help = "Control aggregate usage counting (default off; nothing is sent without \
+                telemetry_endpoint; durable off: config set telemetry false; \
+                CODEWHALE_TELEMETRY=0 always wins)"
     )]
     telemetry: Option<bool>,
     /// Tool approval policy for this run: on-request, untrusted, or never.
@@ -1957,7 +1958,7 @@ enum ConfigCommand {
     Unset {
         key: String,
     },
-    /// Review aggregate usage counting by Codewhale and PostHog (default on).
+    /// Review aggregate usage counting and its default-off policy.
     Telemetry {
         /// Optional compatibility form: enable future sessions under this policy version.
         #[arg(long, value_name = "VERSION")]
@@ -5941,6 +5942,7 @@ fn telemetry_preference_status(preference: Option<bool>) -> &'static str {
     let (enabled, source) = codewhale_config::resolved_telemetry_consent(preference);
     if !enabled {
         return match source {
+            codewhale_config::TelemetrySource::Default => "Off (default)",
             codewhale_config::TelemetrySource::Env => "Off (environment or run kill switch)",
             _ => "Off (saved preference)",
         };
@@ -13009,7 +13011,7 @@ verbosity = "concise"
             "expected a help string beside --telemetry, got: {telemetry_line}"
         );
         assert!(
-            telemetry_line.contains("default on"),
+            telemetry_line.contains("default off"),
             "the help string must disclose the default: {telemetry_line}"
         );
         assert!(
@@ -13018,7 +13020,7 @@ verbosity = "concise"
             "the help string must document the always-winning opt-out: {telemetry_line}"
         );
         let help = help_for(&["codewhale", "config", "telemetry", "--help"]);
-        assert!(help.contains("PostHog"));
+        assert!(help.contains("default-off"));
         assert!(help.contains("--accept-notice"));
     }
 

@@ -26,30 +26,30 @@ fn sandbox_read_guard_denies_active_and_known_agent_credentials_in_real_file_too
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "read-s10-synthetic-value").unwrap();
     }
-    codewhale_sandbox::read_guard::with_test_active_denylist(
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    // W1: the deny-list is policy captured by the tool context, not
+    // process-global state. Building it here (after the env guards above)
+    // makes the fixture home the home it snapshots.
+    let context = ToolContext::new(temp.path()).with_read_denylist(std::sync::Arc::new(
         codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]),
-        || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let context = ToolContext::new(temp.path());
-            for path in denied {
-                let result = runtime.block_on(
-                    codewhale_engine::tools::file::ReadFileTool
-                        .execute(serde_json::json!({"path": path}), &context),
-                );
-                assert!(result.is_err(), "file tool read a credential source");
-            }
-            let safe = home.join(".claude/settings.json");
-            std::fs::write(&safe, "ordinary-readable-setting").unwrap();
-            let allowed = runtime
-                .block_on(
-                    codewhale_engine::tools::file::ReadFileTool
-                        .execute(serde_json::json!({"path": safe}), &context),
-                )
-                .expect("ordinary settings remain readable");
-            assert!(allowed.content.contains("ordinary-readable-setting"));
-        },
-    );
+    ));
+    for path in denied {
+        let result = runtime.block_on(
+            codewhale_engine::tools::file::ReadFileTool
+                .execute(serde_json::json!({"path": path}), &context),
+        );
+        assert!(result.is_err(), "file tool read a credential source");
+    }
+    let safe = home.join(".claude/settings.json");
+    std::fs::write(&safe, "ordinary-readable-setting").unwrap();
+    let allowed = runtime
+        .block_on(
+            codewhale_engine::tools::file::ReadFileTool
+                .execute(serde_json::json!({"path": safe}), &context),
+        )
+        .expect("ordinary settings remain readable");
+    assert!(allowed.content.contains("ordinary-readable-setting"));
 }

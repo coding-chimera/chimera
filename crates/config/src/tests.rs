@@ -5755,12 +5755,12 @@ fn meta_model_api_scopes_both_documented_key_names_to_official_endpoint() {
 fn provider_metadata_registry_covers_every_provider_kind_once() {
     let providers = provider::all_providers();
     // Full registry keeps legacy dialect/plan kinds for provider_for_kind.
-    assert_eq!(providers.len(), 52);
+    assert_eq!(providers.len(), 53);
     // Catalog surface is one identity per vendor (no dual-wire / plan rows),
     // and never a retired tombstone: Antigravity stays in the full registry
     // so old config parses and can be cleared, but it left `ALL` when it
     // stopped being selectable (PRD §4.4 PROD-002).
-    assert_eq!(ProviderKind::ALL.len(), 46);
+    assert_eq!(ProviderKind::ALL.len(), 47);
     assert!(
         !ProviderKind::ALL.contains(&ProviderKind::Antigravity),
         "a tombstone must never be offered as a selectable provider"
@@ -8775,10 +8775,9 @@ impl TelemetryEnvGuard {
             codewhale: env::var_os("CODEWHALE_TELEMETRY"),
             deepseek: env::var_os("DEEPSEEK_TELEMETRY"),
             floor: env::var_os(TELEMETRY_FLOOR_ENV),
-            // The endpoint variables are cleared too. Resolution now has a
-            // shipped default, so an ambient endpoint in the developer's or
-            // CI's environment is the difference between pinning the default
-            // and pinning whatever that machine happened to export.
+            // The endpoint variables are cleared too: an ambient endpoint in
+            // the developer's or CI's environment would otherwise pin a host
+            // the test never chose.
             codewhale_endpoint: env::var_os("CODEWHALE_TELEMETRY_ENDPOINT"),
             deepseek_endpoint: env::var_os("DEEPSEEK_TELEMETRY_ENDPOINT"),
             _lock: lock,
@@ -8805,6 +8804,14 @@ impl TelemetryEnvGuard {
         // Safety: test-only environment mutation guarded by the module mutex.
         unsafe {
             env::set_var("CODEWHALE_TELEMETRY_ENDPOINT", value);
+        }
+    }
+
+    fn clear_endpoint(&self) {
+        // Safety: test-only environment mutation guarded by the module mutex.
+        unsafe {
+            env::remove_var("CODEWHALE_TELEMETRY_ENDPOINT");
+            env::remove_var("DEEPSEEK_TELEMETRY_ENDPOINT");
         }
     }
 
@@ -8954,9 +8961,9 @@ fn a_run_scoped_off_is_a_kill_switch_and_not_a_revocation() {
 fn telemetry_consent_names_its_source() {
     let guard = TelemetryEnvGuard::take();
 
-    // Nobody said anything: on, by default.
+    // Nobody said anything: off, by default.
     let (on, source) = resolved_telemetry_consent(None);
-    assert!(on);
+    assert!(!on);
     assert_eq!(source, TelemetrySource::Default);
 
     // The config file owns the answer.
@@ -9012,7 +9019,7 @@ fn resolved_runtime_options_reports_telemetry_source() {
     let guard = TelemetryEnvGuard::take();
 
     let resolved = ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
-    assert!(resolved.telemetry);
+    assert!(!resolved.telemetry);
     assert_eq!(resolved.telemetry_source, TelemetrySource::Default);
 
     // The CLI flag owns the answer for this run, off or on.
@@ -9044,7 +9051,7 @@ fn config_display_for_telemetry_reports_resolved_consent_with_source() {
     let config = ConfigToml::default();
     assert_eq!(
         config.get_display_value("telemetry").as_deref(),
-        Some("on (default)")
+        Some("off (default)")
     );
 
     let config = ConfigToml {
@@ -9146,9 +9153,10 @@ fn telemetry_env_invalid_is_recorded_rather_than_swallowed() {
 fn telemetry_explicit_off_distinguishes_an_answer_from_the_default() {
     let _guard = TelemetryEnvGuard::take();
 
-    // Nobody said anything: default on, with no explicit opt-out.
+    // Nobody said anything: default off, with no explicit opt-out (the
+    // unconfigured default is a run-scoped off, never a persisted answer).
     let resolved = ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
-    assert!(resolved.telemetry);
+    assert!(!resolved.telemetry);
     assert!(!resolved.telemetry_explicit_off);
 
     // The config file says no.
@@ -9181,28 +9189,27 @@ fn telemetry_explicit_off_distinguishes_an_answer_from_the_default() {
     assert!(!resolved.telemetry_explicit_off);
 }
 
-/// The shipped default endpoint, pinned by value.
+/// An unconfigured endpoint is no destination at all, and an unconfigured
+/// preference is off.
 ///
-/// A default nobody asserts is a default that drifts, and this one decides
-/// which host an enabled session contacts. The literal is repeated here on
-/// purpose: comparing the constant to itself would pass against any edit.
+/// This build has no first-party ingest service, so the fork's default state
+/// must not name an upstream host or invent consent: a fresh config resolves
+/// to `telemetry = false` from `Default` with no endpoint configured, which
+/// the telemetry owner reads as ForcedOff before any HTTP client could be
+/// constructed.
 #[test]
-fn an_unconfigured_endpoint_resolves_to_the_shipped_default() {
+fn an_unconfigured_run_has_no_telemetry_destination() {
     let _guard = TelemetryEnvGuard::take();
 
-    assert_eq!(
-        DEFAULT_TELEMETRY_ENDPOINT,
-        "https://telemetry.codewhale.net/v1/telemetry"
-    );
     let resolved = ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
     assert_eq!(
-        resolved.telemetry_endpoint.as_deref(),
-        Some(DEFAULT_TELEMETRY_ENDPOINT),
-        "an unconfigured endpoint must resolve to the shipped default"
+        resolved.telemetry_endpoint, None,
+        "an unconfigured endpoint must resolve to no destination, not a host nobody chose"
     );
-
-    // The shipped usage preference is on without an acceptance prerequisite.
-    assert!(resolved.telemetry);
+    assert!(
+        !resolved.telemetry,
+        "the shipped usage preference is off without an explicit enable"
+    );
     assert!(!resolved.telemetry_explicit_off);
 }
 
@@ -9225,7 +9232,9 @@ fn a_configured_endpoint_beats_the_shipped_default() {
         "the config file must outrank the shipped default"
     );
 
-    // The environment outranks the file, which outranks the default.
+    // The environment outranks the file, and once it is cleared again an
+    // unconfigured endpoint stays empty: there is no shipped default for it
+    // to fall through to.
     guard.set_endpoint("https://collector.env.internal/v1/batch");
     assert_eq!(
         config
@@ -9234,22 +9243,24 @@ fn a_configured_endpoint_beats_the_shipped_default() {
             .as_deref(),
         Some("https://collector.env.internal/v1/batch")
     );
+    guard.clear_endpoint();
     assert_eq!(
         ConfigToml::default()
             .resolve_runtime_options(&CliRuntimeOverrides::default())
-            .telemetry_endpoint
-            .as_deref(),
-        Some("https://collector.env.internal/v1/batch")
+            .telemetry_endpoint,
+        None,
+        "an unconfigured endpoint must resolve to no destination, not a host nobody chose"
     );
 }
 
-/// An empty endpoint means "contact nobody", not "use the default".
+/// An empty endpoint means "contact nobody", not "no destination".
 ///
-/// `None` at the resolved layer is what `codewhale-telemetry`'s client reads as
-/// the dry-run sink: batches are serialized exactly as a server would see them
-/// and appended to `dryrun.jsonl`, and no HTTP client is constructed. With a
-/// shipped default in place that path is only reachable through an explicit
-/// empty value, so both ways of writing one are pinned here.
+/// An explicitly blank endpoint stays verbatim at the resolved layer and the
+/// telemetry owner reads it as the dry-run sink: batches are serialized
+/// exactly as a server would see them and appended to `dryrun.jsonl`, and no
+/// HTTP client is constructed. That differs from an unconfigured endpoint,
+/// which keeps the run off entirely — so both ways of writing "blank" are
+/// pinned here as `Some(blank)`, distinct from `None`.
 #[test]
 fn an_empty_endpoint_keeps_the_dry_run_sink_reachable() {
     let guard = TelemetryEnvGuard::take();
@@ -9262,7 +9273,7 @@ fn an_empty_endpoint_keeps_the_dry_run_sink_reachable() {
         config
             .resolve_runtime_options(&CliRuntimeOverrides::default())
             .telemetry_endpoint,
-        None,
+        Some(String::new()),
         "`telemetry_endpoint = \"\"` must resolve to the dry-run sink"
     );
 
@@ -9275,7 +9286,7 @@ fn an_empty_endpoint_keeps_the_dry_run_sink_reachable() {
         config
             .resolve_runtime_options(&CliRuntimeOverrides::default())
             .telemetry_endpoint,
-        None
+        Some("   ".to_string())
     );
 
     // An emptied environment variable says it too, and it says it over a
@@ -9290,14 +9301,14 @@ fn an_empty_endpoint_keeps_the_dry_run_sink_reachable() {
         config
             .resolve_runtime_options(&CliRuntimeOverrides::default())
             .telemetry_endpoint,
-        None
+        Some(String::new())
     );
     assert_eq!(
         ConfigToml::default()
             .resolve_runtime_options(&CliRuntimeOverrides::default())
             .telemetry_endpoint,
-        None,
-        "an emptied environment variable must not fall through to the default"
+        Some(String::new()),
+        "an emptied environment variable must keep the dry-run statement, not become unset"
     );
 }
 

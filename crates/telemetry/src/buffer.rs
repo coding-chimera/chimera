@@ -60,7 +60,7 @@ pub fn buffer_path(root: &Path) -> PathBuf {
 /// `dryrun.jsonl` — where batches go when the endpoint resolves to `None`.
 ///
 /// Reached by configuring `telemetry_endpoint` empty; an unconfigured endpoint
-/// resolves to `codewhale_config::DEFAULT_TELEMETRY_ENDPOINT` instead.
+/// resolves to no destination at all and telemetry stays off.
 #[must_use]
 pub fn dryrun_path(root: &Path) -> PathBuf {
     root.join("dryrun.jsonl")

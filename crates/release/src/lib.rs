@@ -133,6 +133,10 @@ impl ReleaseChannel {
 /// Describes where to fetch release metadata from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseQuery {
+    /// No release source is configured: neither an operator mirror nor a
+    /// first-party endpoint exists, so every update check and install fails
+    /// with an explicit error instead of contacting a host nobody chose.
+    Disabled,
     /// Use a custom mirror base URL and a pinned version.
     Mirror { base_url: String, version: String },
     /// Query the GitHub single-latest-release endpoint.
@@ -141,20 +145,31 @@ pub enum ReleaseQuery {
     GitHubReleaseList { url: &'static str },
 }
 
+/// The error message every `ReleaseQuery::Disabled` consumer reports.
+///
+/// Update checks must fail loud and name both ways out: an operator mirror
+/// through the environment, or an explicit update URI for the TUI startup
+/// check. Falling back to a release host nobody configured is exactly the
+/// supply-chain hazard this variant exists to close.
+pub const NO_RELEASE_SOURCE_MESSAGE: &str = "update is disabled: no release source is configured \
+    for this build. Set CODEWHALE_RELEASE_BASE_URL=https://<mirror>/<release-assets>/ and \
+    CODEWHALE_VERSION=X.Y.Z to update from your own mirror, or configure \
+    [update] update_uri in config.toml for the TUI startup check";
+
 /// Determines the appropriate [`ReleaseQuery`] for the given channel, taking
 /// environment-variable overrides (mirror URL, pinned version) into account.
-pub fn resolve_release_query(channel: ReleaseChannel) -> ReleaseQuery {
+///
+/// This build ships no first-party release endpoint, so an unconfigured
+/// environment resolves to [`ReleaseQuery::Disabled`]; only an operator-set
+/// base URL (explicit mirror or the CNB mirror flag) selects a source. The
+/// GitHub channel endpoints stay reachable for callers that name them
+/// explicitly, never as a fallback.
+pub fn resolve_release_query(_channel: ReleaseChannel) -> ReleaseQuery {
     let version = update_version_from_env().unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
     if let Some(base_url) = release_base_url_from_env(&version) {
         return ReleaseQuery::Mirror { base_url, version };
     }
-
-    match channel {
-        ReleaseChannel::Stable => ReleaseQuery::GitHubLatest {
-            url: LATEST_RELEASE_URL,
-        },
-        ReleaseChannel::Beta => ReleaseQuery::GitHubReleaseList { url: RELEASES_URL },
-    }
+    ReleaseQuery::Disabled
 }
 
 /// Reads the release base URL from environment variables, falling back to the
@@ -246,8 +261,8 @@ pub fn mirror_asset_url(base_url: &str, asset_name: &str) -> String {
 /// downloads are blocked or slow (e.g. on mainland China networks).
 pub fn update_network_fallback_hint() -> String {
     format!(
-        "GitHub release downloads may be blocked or slow on this network.\n\
-         For mainland China, use one of these fallback paths:\n\
+        "No release source is configured for this build.\n\
+         To update from a mirror, pick one of these paths:\n\
            1. Source build from the CNB mirror, installing the shipped binary:\n\
               cargo install --git {CNB_REPO_URL} --tag vX.Y.Z codewhale-cli --locked --force\n\
            2. Use a binary asset mirror:\n\
@@ -400,6 +415,7 @@ pub fn latest_beta_tag_from_release_list_json(body: &str) -> Result<String> {
 /// for GitHub channels the appropriate API endpoint is queried.
 pub async fn latest_release_tag_async(channel: ReleaseChannel) -> Result<String> {
     match resolve_release_query(channel) {
+        ReleaseQuery::Disabled => bail!("{}", NO_RELEASE_SOURCE_MESSAGE),
         ReleaseQuery::Mirror { version, .. } => Ok(format!("v{}", version.trim_start_matches('v'))),
         ReleaseQuery::GitHubLatest { url } => {
             let body = fetch_release_json_async(url, "latest release").await?;
@@ -799,18 +815,36 @@ mod tests {
     }
 
     #[test]
-    fn resolve_release_query_uses_github_without_overrides() {
+    fn resolve_release_query_is_disabled_without_overrides() {
         let _env = ReleaseEnvGuard::clear();
 
+        // The fork's hard stop: an unconfigured environment must not resolve
+        // to any release host, so update checks can never fall back to a
+        // Codewhale Releases endpoint nobody chose.
         assert_eq!(
             resolve_release_query(ReleaseChannel::Stable),
-            ReleaseQuery::GitHubLatest {
-                url: LATEST_RELEASE_URL
-            }
+            ReleaseQuery::Disabled
         );
         assert_eq!(
             resolve_release_query(ReleaseChannel::Beta),
-            ReleaseQuery::GitHubReleaseList { url: RELEASES_URL }
+            ReleaseQuery::Disabled
+        );
+    }
+
+    #[test]
+    fn the_disabled_source_error_names_both_ways_out() {
+        let message = NO_RELEASE_SOURCE_MESSAGE;
+        assert!(
+            message.contains(RELEASE_BASE_URL_ENV),
+            "the error must name the mirror override: {message}"
+        );
+        assert!(
+            message.contains(UPDATE_VERSION_ENV),
+            "the error must name the version pin: {message}"
+        );
+        assert!(
+            message.contains("update_uri"),
+            "the error must name the config-file update URI: {message}"
         );
     }
 

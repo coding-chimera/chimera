@@ -29,7 +29,6 @@ use codewhale_engine::{
     git_status::normalize_observed_git_repo,
 };
 
-const PRODUCTION_CONTROL_PLANE: &str = "https://api.codewhale.net/";
 const ENROLLMENT_SECRET_SLOT: &str = "cwc-remote-control-enrollment-v1";
 /// Machine-stable device identity. It outlives individual enrollments so the
 /// control plane can fold every folder enrolled from this terminal into one
@@ -4940,24 +4939,26 @@ async fn read_bounded_json_with_limit(
 }
 
 fn runner_control_plane_base() -> Result<String, String> {
-    if cfg!(debug_assertions)
-        && let Ok(value) = std::env::var("CWC_RUNNER_CONTROL_PLANE_BASE")
+    let value = std::env::var("CWC_RUNNER_CONTROL_PLANE_BASE").map_err(|_| {
+        "Remote control is unavailable: set CWC_RUNNER_CONTROL_PLANE_BASE to your own control-plane endpoint.".to_string()
+    })?;
+    let parsed =
+        Url::parse(&value).map_err(|_| "The runner control plane is invalid.".to_string())?;
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
     {
-        let parsed =
-            Url::parse(&value).map_err(|_| "The runner control plane is invalid.".to_string())?;
-        let loopback = parsed.scheme() == "http"
-            && matches!(parsed.host_str(), Some("127.0.0.1" | "localhost"))
-            && parsed.path() == "/"
-            && parsed.query().is_none()
-            && parsed.fragment().is_none();
-        if loopback {
-            return Ok(parsed.to_string());
-        }
-        return Err(
-            "Debug remote control only accepts an explicit loopback control plane.".to_string(),
-        );
+        return Err("The runner control plane must be an origin without credentials, a path, a query, or a fragment.".to_string());
     }
-    Ok(PRODUCTION_CONTROL_PLANE.to_string())
+    let loopback_http = cfg!(debug_assertions)
+        && parsed.scheme() == "http"
+        && matches!(parsed.host_str(), Some("127.0.0.1" | "localhost"));
+    if parsed.scheme() == "https" || loopback_http {
+        return Ok(parsed.to_string());
+    }
+    Err("The runner control plane must use HTTPS, or loopback HTTP in a debug build.".to_string())
 }
 
 fn control_plane_url(
@@ -9235,5 +9236,51 @@ mod tests {
             MAX_RESPONSE_BYTES + 1
         );
         server.abort();
+    }
+
+    #[test]
+    fn missing_control_plane_is_unavailable_instead_of_using_the_first_party_service() {
+        let _lock = codewhale_engine::test_support::lock_test_env();
+        let _endpoint =
+            codewhale_engine::test_support::EnvVarGuard::remove("CWC_RUNNER_CONTROL_PLANE_BASE");
+        let error = runner_control_plane_base().expect_err("explicit endpoint required");
+        assert!(error.contains("Remote control is unavailable"));
+        assert!(error.contains("CWC_RUNNER_CONTROL_PLANE_BASE"));
+        assert!(!error.contains("api.codewhale.net"));
+    }
+
+    #[test]
+    fn explicit_https_control_plane_is_accepted() {
+        let _lock = codewhale_engine::test_support::lock_test_env();
+        let _endpoint = codewhale_engine::test_support::EnvVarGuard::set(
+            "CWC_RUNNER_CONTROL_PLANE_BASE",
+            "https://control.example/",
+        );
+        assert_eq!(
+            runner_control_plane_base().expect("self-owned endpoint"),
+            "https://control.example/"
+        );
+    }
+
+    #[test]
+    fn remote_control_http_is_restricted_to_loopback() {
+        let _lock = codewhale_engine::test_support::lock_test_env();
+        {
+            let _endpoint = codewhale_engine::test_support::EnvVarGuard::set(
+                "CWC_RUNNER_CONTROL_PLANE_BASE",
+                "http://control.example/",
+            );
+            assert!(runner_control_plane_base().is_err());
+        }
+        {
+            let _endpoint = codewhale_engine::test_support::EnvVarGuard::set(
+                "CWC_RUNNER_CONTROL_PLANE_BASE",
+                "http://127.0.0.1:8787/",
+            );
+            assert_eq!(
+                runner_control_plane_base().expect("loopback endpoint"),
+                "http://127.0.0.1:8787/"
+            );
+        }
     }
 }

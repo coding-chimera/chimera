@@ -369,7 +369,7 @@ The canonical provider IDs are the entries of `ProviderKind::ALL`
 `together`, `qianfan`, `openai-codex`, `anthropic`, `openmodel`, `zai`,
 `stepfun`, `minimax`, `deepinfra`, `sakana`, `longcat`, `opencode-go`,
 `opencode-zen`, `meta`, `xai`, `mistral`, `telecomjs`, `modelstudio-token-plan`, `modelscope`,
-`google`, `edenai`, `zenmux`, `csdn`, `concentrate`, `codewhale`, and `custom`.
+`google`, `edenai`, `zenmux`, `csdn`, `concentrate`, `codewhale`, `alibailian`, and `custom`.
 
 `deepseek-anthropic` is *not* on this list — it is a wire dialect of
 `deepseek`, reached with `wire = "anthropic"`, not a separate route to select.
@@ -1008,6 +1008,7 @@ overlay and lets DSH resolve its own keys.
 | `modelstudio-token-plan-anthropic` | `[providers.modelstudio_token_plan_anthropic]` | `MODELSTUDIO_API_KEY`, `DASHSCOPE_API_KEY` | default `https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic` | Same model catalog as `modelstudio-token-plan` | Token Plan Anthropic-compatible Messages route (`/apps/anthropic`). Same API key as the OpenAI dialect. Provider aliases: `modelstudio-token-plan-anthropic`, `alibaba-token-plan-anthropic`. |
 | `modelstudio-coding-plan` | `[providers.modelstudio_coding_plan]` | `MODELSTUDIO_API_KEY`, `DASHSCOPE_API_KEY` | `MODELSTUDIO_CODING_PLAN_BASE_URL`; default `https://coding-intl.dashscope.aliyuncs.com/v1` | `qwen3.8-max` (default); same ids as Token Plan except `qwen4-max-preview`, which is Token Plan only | Alibaba Cloud Model Studio Coding Plan OpenAI-compatible Chat Completions route. `MODELSTUDIO_CODING_PLAN_MODEL` is accepted. Provider aliases: `modelstudio-coding-plan`, `alibaba-coding-plan`, `dashscope-coding-plan`. |
 | `modelstudio-coding-plan-anthropic` | `[providers.modelstudio_coding_plan_anthropic]` | `MODELSTUDIO_API_KEY`, `DASHSCOPE_API_KEY` | default `https://coding-intl.dashscope.aliyuncs.com/apps/anthropic` | Same model catalog as `modelstudio-coding-plan` | Coding Plan Anthropic-compatible Messages route (`/apps/anthropic`). Provider aliases: `modelstudio-coding-plan-anthropic`, `alibaba-coding-plan-anthropic`. |
+| `alibailian` | `[providers.alibailian]` | `ALIBAILIAN_API_KEY` | `ALIBAILIAN_BASE_URL`; no default — the relay endpoint is controlled configuration | Model ids pass through verbatim; `qwen3.8-max` is the offline placeholder | Alibailian relay: an explicitly named Model Studio-compatible relay profile, separate from the official `modelstudio-*` providers. Model-id pass-through, zero-tool native `json_schema` structured output with a no-tool extraction retry, the multi-tool `tool_choice` Named(`StructuredOutput`) backstop, hosted `web_search` replay on its Responses dialect, an Alibailian → DeepSeek → Kimi websearch fallback chain, and explicit header merging (including the DashScope session-cache header) bind to this route only; official Model Studio behavior is never inherited. Provider aliases: `ali-bailian`, `bailian-relay`. |
 
 StepFun's four coding models are available through both its standard API and
 [Step Plan](https://platform.stepfun.ai/docs/en/step-plan/integrations/reasoning-api).

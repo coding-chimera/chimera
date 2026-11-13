@@ -30,6 +30,7 @@ mod member_operations;
 mod owner_bootstrap;
 mod plugin_ui;
 mod profile_constitution;
+mod project_scope;
 #[cfg(any(unix, windows))]
 mod runtime_store_convergence;
 mod workspace_instructions;

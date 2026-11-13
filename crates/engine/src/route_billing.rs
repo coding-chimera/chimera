@@ -486,6 +486,9 @@ fn classify(
         {
             BillingPresentation::Unknown
         }
+        // The relay is a named profile with no public price list; its cost
+        // basis is unproven rather than a guessed metered rate.
+        ProviderKind::Alibailian => BillingPresentation::Unknown,
         ProviderKind::Custom => product_billing(product),
         // These providers are endpoint-shaped — but
         // only on an endpoint we actually recognize. A first-party or

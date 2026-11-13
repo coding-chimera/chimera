@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 /// reused. `crates/telemetry/tests/golden/v1.json` pins what v1 was.
 pub const SCHEMA_VERSION: u32 = 4;
 
-/// Default-on policy disclosure version. This is not human consent.
-pub const NOTICE_VERSION: u32 = 6;
+/// Default policy disclosure version. This is not human consent.
+pub const NOTICE_VERSION: u32 = 7;
 
 /// Which product surface produced a batch.
 ///

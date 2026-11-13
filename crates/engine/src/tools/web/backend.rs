@@ -189,6 +189,15 @@ fn should_prepend_provider_native(context: &ToolContext) -> bool {
     )
 }
 
+/// The Alibailian relay's ordered websearch fallback: the relay's own hosted
+/// search first, then DeepSeek, then Kimi. Each hop authenticates with its own
+/// provider identity; this projection only orders the chain, it never mints
+/// credentials or hides a hop's error.
+#[must_use]
+pub fn alibailian_websearch_fallback_chain() -> &'static [codewhale_config::ProviderKind] {
+    crate::client::alibailian_fallback_chain()
+}
+
 const fn provider_native_is_available(capability_supported: bool, client_present: bool) -> bool {
     capability_supported && client_present
 }

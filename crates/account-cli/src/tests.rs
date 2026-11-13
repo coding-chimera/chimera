@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use clap::Parser;
 use codewhale_secrets::account::{
     ACCOUNT_SESSION_SCHEMA_VERSION, AccountSession as AuthSession,
-    account_auth_slot as cloud_auth_slot,
+    DEFAULT_ACCOUNT_API_BASE as DEFAULT_API_BASE, account_auth_slot as cloud_auth_slot,
 };
 use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
 use serde_json::json;

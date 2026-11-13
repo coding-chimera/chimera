@@ -119,6 +119,8 @@ pub(crate) struct EnvRuntimeOverrides {
     pub(crate) modelstudio_token_plan_model: Option<String>,
     pub(crate) modelstudio_coding_plan_base_url: Option<String>,
     pub(crate) modelstudio_coding_plan_model: Option<String>,
+    pub(crate) alibailian_base_url: Option<String>,
+    pub(crate) alibailian_model: Option<String>,
 }
 
 /// The first of `names` that is set to a non-blank value. A variable exported
@@ -188,12 +190,10 @@ impl EnvRuntimeOverrides {
             telemetry,
             telemetry_env_invalid,
             telemetry_floor,
-            // Empty is kept, not discarded. Since the config file's *absent*
-            // endpoint now resolves to `DEFAULT_TELEMETRY_ENDPOINT`, dropping
-            // an explicitly emptied variable here would make
-            // `CODEWHALE_TELEMETRY_ENDPOINT=` select the shipped endpoint —
-            // the opposite of what anyone typing it means. Resolution reads an
-            // empty override as "contact nobody, write the dry-run file".
+            // Empty is kept, not discarded: an explicitly emptied variable
+            // says "contact nobody, write the dry-run file", which differs
+            // from an unset one ("no destination, telemetry stays off"), so
+            // dropping it here would change what the user typed.
             telemetry_endpoint: std::env::var("CODEWHALE_TELEMETRY_ENDPOINT")
                 .or_else(|_| std::env::var("DEEPSEEK_TELEMETRY_ENDPOINT"))
                 .ok(),
@@ -511,6 +511,12 @@ impl EnvRuntimeOverrides {
             modelstudio_coding_plan_model: std::env::var("MODELSTUDIO_CODING_PLAN_MODEL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            alibailian_base_url: std::env::var("ALIBAILIAN_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            alibailian_model: std::env::var("ALIBAILIAN_MODEL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -597,6 +603,9 @@ impl EnvRuntimeOverrides {
             ProviderKind::ModelstudioCodingPlan | ProviderKind::ModelstudioCodingPlanAnthropic => {
                 self.modelstudio_coding_plan_base_url.clone()
             }
+            // The relay's endpoint is controlled configuration; the env
+            // override is the operator's own declaration, not a default.
+            ProviderKind::Alibailian => self.alibailian_base_url.clone(),
             // No dedicated CODEWHALE_CUSTOM_BASE_URL env override: a custom
             // provider's base URL comes from its `[providers.<name>]` table.
             ProviderKind::Custom => None,
@@ -649,6 +658,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::ModelstudioCodingPlan | ProviderKind::ModelstudioCodingPlanAnthropic => {
                 self.modelstudio_coding_plan_model.clone()
             }
+            ProviderKind::Alibailian => self.alibailian_model.clone(),
             ProviderKind::OllamaCloud => self.ollama_cloud_model.clone(),
             _ => None,
         }?;

@@ -1,0 +1,8 @@
+{
+  "base": "d6f6783",
+  "typescript": {},
+  "unsafe": {
+    "crates/codegraph/src/extract/stack.rs": "Only platform stack-bound query FFI used to stop deeply nested parser input before stack overflow; all remaining CodeGraph code is safe Rust.",
+    "crates/config/src/tests.rs": "Test-only process environment mutation required by Rust 2024 unsafe env APIs and serialized by the existing test environment lock."
+  }
+}

@@ -1618,10 +1618,22 @@ impl Engine {
                 .names()
                 .map(str::to_string),
         );
+        // Compaction promotion (Chimera phase-2): reveals recorded at or
+        // before the newest compaction boundary join the request tool array
+        // at the next turn. The tool array change is declared separately
+        // from the compaction's own `reset:compaction` history reset.
+        let promoted =
+            super::tool_catalog::promoted_reveal_names(&self.session.messages, &tool_catalog);
+        let promotion_changed = !promoted.is_empty();
+        active_tool_names.extend(promoted);
         // This is a fresh admitted turn, whose permitted outbound tools may
-        // differ from the previous turn (ACP narrowing or a child report).
-        // Declare only that actual boundary change; the request-time C5 guard
-        // still rejects any undeclared drift inside this turn.
+        // differ from the previous turn (ACP narrowing, a child report, or a
+        // compaction-promoted reveal). Declare only that actual boundary
+        // change; the request-time C5 guard still rejects any undeclared
+        // drift inside this turn.
+        if promotion_changed && self.session.pending_prefix_change_reason.is_none() {
+            self.session.pending_prefix_change_reason = Some("tool_surface".into());
+        }
         if self.session.pending_prefix_change_reason.is_none()
             && let Some(pinned) = self
                 .session
@@ -2670,25 +2682,32 @@ impl Engine {
                 cache.record_use(&plan.name);
             }
         }
-        let activation = cache.activate_measured(
-            tool_catalog,
-            &deferred_tools_hydrated_in_order,
-            &mut |names| {
-                super::tool_catalog::measure_deferred_tools(
-                    client,
-                    &self.session.model,
-                    self.session.reasoning_effort.as_deref(),
-                    tool_policy.strict_tool_mode,
-                    tool_catalog,
-                    names,
-                )
-            },
-        );
+        // A revealed tool executes by name off the request tool array; the
+        // activation admission below would put its schema on the wire and
+        // re-pin the prefix. Filter revealed names out so only unrevealed
+        // deferred first calls keep the existing admit-and-execute path.
+        let reveal_projection =
+            super::tool_catalog::ToolRevealProjection::from_history(&self.session.messages);
+        let admitting: Vec<String> = deferred_tools_hydrated_in_order
+            .iter()
+            .filter(|name| !reveal_projection.is_revealed(name))
+            .cloned()
+            .collect();
+        let activation = cache.activate_measured(tool_catalog, &admitting, &mut |names| {
+            super::tool_catalog::measure_deferred_tools(
+                client,
+                &self.session.model,
+                self.session.reasoning_effort.as_deref(),
+                tool_policy.strict_tool_mode,
+                tool_catalog,
+                names,
+            )
+        });
         let activation = match activation {
             Ok(activation) => activation,
             Err(error) => {
                 for plan in &mut plans {
-                    if deferred_tools_hydrated_in_order.contains(&plan.name)
+                    if admitting.contains(&plan.name)
                         && plan.guard_result.is_some()
                         && plan.blocked_error.is_none()
                     {
@@ -2701,7 +2720,7 @@ impl Engine {
             }
         };
         for plan in &mut plans {
-            if deferred_tools_hydrated_in_order.contains(&plan.name)
+            if admitting.contains(&plan.name)
                 && !activation.admitted.contains(&plan.name)
                 && plan.guard_result.is_some()
                 && plan.blocked_error.is_none()
@@ -3233,10 +3252,11 @@ impl Engine {
                             Some(self.cancel_token.clone()),
                         )
                         .await;
-                        // Tool-search activation changes the request-visible
-                        // catalog for the rest of the turn; declare it so the
-                        // next request re-pins under `change:tool_surface`
-                        // instead of tripping the C5 drift guard.
+                        // Tool search may refresh the MCP catalog during
+                        // discovery (that change is a declared surface
+                        // change). The reveal itself never touches the
+                        // request tool array: reveals are appended to
+                        // history and executed by name.
                         let active_before_search = active_tool_names.clone();
                         let discovery = self
                             .discover_mcp_for_tool_search(
@@ -3275,6 +3295,43 @@ impl Engine {
                         if *active_tool_names != active_before_search {
                             self.session.pending_prefix_change_reason =
                                 Some("tool_surface".to_string());
+                        }
+                        // Record each revealed deferred tool as a session
+                        // message: the reveal is durable, rebuildable from
+                        // history, and the model gets one guidance message
+                        // with compact signatures. The tool array stays
+                        // byte-identical — no prefix re-pin for reveals.
+                        if let Ok(output) = result.as_ref()
+                            && output.success
+                        {
+                            let revealed_names =
+                                super::tool_catalog::revealed_names_from_search_result(output);
+                            let revealed_at_ms =
+                                chrono::Utc::now().timestamp_millis().unsigned_abs();
+                            let reveals: Vec<super::tool_catalog::ToolReveal> = revealed_names
+                                .into_iter()
+                                .map(|name| super::tool_catalog::ToolReveal {
+                                    name,
+                                    revealed_at_ms,
+                                })
+                                .collect();
+                            for reveal in &reveals {
+                                self.add_session_message(super::tool_catalog::tool_reveal_message(
+                                    reveal,
+                                ))
+                                .await;
+                            }
+                            if let Some(guidance) =
+                                super::tool_catalog::revealed_tools_guidance(&reveals, tool_catalog)
+                            {
+                                self.add_session_message(
+                                    self.runtime_text_message_with_turn_metadata(
+                                        guidance,
+                                        UserInputProvenance::Runtime,
+                                    ),
+                                )
+                                .await;
+                            }
                         }
 
                         let _ = self

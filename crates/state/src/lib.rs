@@ -15,25 +15,7 @@ pub use turn_store::{
     TurnBootRegistry, TurnOwner, TurnPendingRecord, TurnRecoveryAction, TurnTerminalRecord,
     TurnUsage,
 };
-mod turn_store;
 
-pub use turn_store::{
-    DEFAULT_TURN_LEASE_SECONDS, DEFAULT_TURN_TTL_SECONDS, SideEffectState, TurnAdmit,
-    TurnBootRegistry, TurnOwner, TurnPendingRecord, TurnRecoveryAction, TurnTerminalRecord,
-    TurnUsage,
-};
-
-pub use turn_store::{
-    DEFAULT_TURN_LEASE_SECONDS, DEFAULT_TURN_TTL_SECONDS, SideEffectState, TurnAdmit,
-    TurnBootRegistry, TurnOwner, TurnPendingRecord, TurnRecoveryAction, TurnTerminalRecord,
-    TurnUsage,
-};
-
-pub use turn_store::{
-    DEFAULT_TURN_LEASE_SECONDS, DEFAULT_TURN_TTL_SECONDS, SideEffectState, TurnAdmit,
-    TurnBootRegistry, TurnOwner, TurnPendingRecord, TurnRecoveryAction, TurnTerminalRecord,
-    TurnUsage,
-};
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -269,14 +251,7 @@ fn session_index_compact_line_threshold() -> usize {
 const SCHEMA_VERSION: u32 = 8;
 
 /// The `user_version` the last step of `StateStore::migrate_schema` writes.
-/// The `user_version` the last step of `StateStore::migrate_schema` writes.
 const SCHEMA_VERSION: u32 = 8;
-
-pub use turn_store::{
-    DEFAULT_TURN_LEASE_SECONDS, DEFAULT_TURN_TTL_SECONDS, SideEffectState, TurnAdmit,
-    TurnBootRegistry, TurnOwner, TurnPendingRecord, TurnRecoveryAction, TurnTerminalRecord,
-    TurnUsage,
-};
 
 /// Persistent storage for conversation threads, messages, and checkpoints.
 ///
@@ -786,6 +761,70 @@ impl StateStore {
                  CREATE TABLE IF NOT EXISTS thread_runtime_operations (operation_key TEXT PRIMARY KEY, request_digest TEXT NOT NULL, receipt_json TEXT NOT NULL);
                  PRAGMA user_version = 7;",
             ).context("failed to initialize bound canonical Runtime receipts")?;
+        }
+        if user_version < 8 {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS turn_boots (
+                    boot TEXT PRIMARY KEY NOT NULL,
+                    pid INTEGER NOT NULL,
+                    registered_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS turn_leases (
+                    session TEXT PRIMARY KEY NOT NULL,
+                    boot TEXT NOT NULL,
+                    acquired_at INTEGER NOT NULL,
+                    renewed_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_leases_expires_at
+                    ON turn_leases(expires_at);
+
+                -- One pending request per session; the terminal row keeps
+                -- the same (session, request_key) so a retry can replay.
+                CREATE TABLE IF NOT EXISTS turn_pending (
+                    session TEXT NOT NULL,
+                    request_key TEXT NOT NULL,
+                    boot TEXT NOT NULL,
+                    prompt_digest TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    -- NULL = nothing recorded yet; treated as unknown.
+                    side_effect_state TEXT,
+                    PRIMARY KEY (session, request_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_pending_session
+                    ON turn_pending(session);
+
+                CREATE TABLE IF NOT EXISTS turn_terminal (
+                    session TEXT NOT NULL,
+                    request_key TEXT NOT NULL,
+                    turn_id TEXT NOT NULL,
+                    outcome TEXT NOT NULL CHECK(outcome IN (
+                        'completed', 'interrupted', 'failed'
+                    )),
+                    record_json TEXT NOT NULL,
+                    prompt_digest TEXT NOT NULL,
+                    committed_at INTEGER NOT NULL,
+                    PRIMARY KEY (session, request_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_terminal_committed_at
+                    ON turn_terminal(committed_at);
+
+                CREATE TABLE IF NOT EXISTS turn_events (
+                    session TEXT NOT NULL,
+                    event_key TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (session, event_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_events_created_at
+                    ON turn_events(created_at);
+
+                PRAGMA user_version = 8;
+                "#,
+            )
+            .context("failed to initialize durable turn admission schema")?;
         }
         Ok(())
     }

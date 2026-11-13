@@ -1,9 +1,10 @@
 //! Self-update for the `codewhale` binary.
 //!
-//! The `update` subcommand fetches the latest release from
-//! `github.com/codewhale-hq/CodeWhale/releases/latest`, downloads the
-//! platform-correct binary, verifies its SHA256 checksum, and atomically
-//! replaces the currently running binary.
+//! The `update` subcommand resolves the release source first: without an
+//! operator-configured mirror it refuses with an explicit error rather than
+//! falling back to an upstream release host. With a mirror configured it
+//! downloads the platform-correct binary, verifies its SHA256 checksum, and
+//! atomically replaces the currently running binary.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -16,11 +17,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use codewhale_release::install::GITHUB_MIGRATION_HELP;
 use codewhale_release::{
-    CHECKSUM_MANIFEST_ASSET, InstallMethod, ReleaseChannel, ReleaseQuery, UPDATE_USER_AGENT,
-    cnb_mirror_override_active, cnb_mirror_supports_target, cnb_release_base_url,
-    compare_release_versions, is_beta_tag, mirror_asset_url, parse_release_json,
-    read_release_metadata, read_update_response, resolve_release_query, update_is_needed,
-    update_network_fallback_hint,
+    CHECKSUM_MANIFEST_ASSET, InstallMethod, NO_RELEASE_SOURCE_MESSAGE, ReleaseChannel,
+    ReleaseQuery, UPDATE_USER_AGENT, cnb_mirror_override_active, cnb_mirror_supports_target,
+    cnb_release_base_url, compare_release_versions, is_beta_tag, mirror_asset_url,
+    parse_release_json, read_release_metadata, read_update_response, resolve_release_query,
+    update_is_needed, update_network_fallback_hint,
 };
 use reqwest::Proxy;
 use std::io::Write;
@@ -2042,6 +2043,7 @@ fn update_redirect_policy(policy: UpdateTransportPolicy) -> reqwest::redirect::P
 /// Fetch the latest release metadata from GitHub.
 fn fetch_latest_release(channel: ReleaseChannel, proxy: Option<&Proxy>) -> Result<FetchedRelease> {
     match resolve_release_query(channel) {
+        ReleaseQuery::Disabled => bail!("{NO_RELEASE_SOURCE_MESSAGE}"),
         ReleaseQuery::Mirror { base_url, version } => {
             UpdateTransportPolicy::from_env()
                 .check_str(&base_url)

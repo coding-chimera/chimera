@@ -32,6 +32,8 @@
 #   - dead-code / blocking-calls         each ratchet's --update, committed in the
 #     (and with --full runtime-contract, same PR with the reason in the PR body
 #     persistence-backlog)
+#   - Rust-only migration               no new TS; unsafe additions need exact
+#                                       scripts/migration-rust-only.json entries
 #   - feature release-note receipts      add each feat commit's #issue to
 #     for this branch's own commits      CHANGELOG.md in the same PR
 #   - clippy (with --clippy)            the Lint job's exact command; fix the lint
@@ -91,6 +93,8 @@ step "dead-code budget" "python3 scripts/check-dead-code-budget.py --update" \
   python3 scripts/check-dead-code-budget.py
 step "blocking-calls budget" "python3 scripts/check-blocking-calls-budget.py --update" \
   python3 scripts/check-blocking-calls-budget.py
+step "Rust-only migration" "review scripts/migration-rust-only.json for exact exceptions" \
+  python3 scripts/check-migration-rust-only.py
 if command -v node >/dev/null 2>&1; then
   step "website generated facts" \
     "cd web && npm ci (if node_modules is missing) && npm run prebuild, then commit web/lib/facts.generated.ts and web/data/*.generated.json and web/data/agent-docs.release.json and agent-docs.release-index.json (check-facts.mjs and check-release-docs.mjs name the stale file); for a stale docs/RUNTIME_ROUTES.md run node web/scripts/check-runtime-routes.mjs --write, then node web/scripts/derive-facts.mjs" \

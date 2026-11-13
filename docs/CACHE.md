@@ -34,6 +34,20 @@ Concretely:
 - Every miss is **attributable**. `PrefixStabilityManager` (`prefix_cache.rs`)
   records each change with a reason and reports it through `/cache stats`.
 
+### Provider prompt profiles (one BASE + one static overlay)
+
+Provider/model specialization is a **static, compile-time overlay** appended
+after the shared constitution segments (`BASE_PROMPT` + Language + Output),
+selected purely from the resolved route family at composition time. It is not
+a second base prompt: `BASE_PROMPT` stays the sole identity and priority
+authority, unknown routes append nothing (byte-identical to a profile-less
+prefix), and the overlay text carries no model ids, context-window, or pricing
+facts. The profile is fixed when the session's header is composed — session
+construction (`initial`) and declared header changes only (`/model` re-pins
+under `change:model`), never mid-tool-loop. Volatile graph, reveal, swarm,
+claim, or scope-drift facts never enter the overlay: they ride the append-only
+`<context_update>` / runtime-event history described above.
+
 ## What counts as a declared header change
 
 These re-pin the prefix under a logged `change:<what>` reason. A changed

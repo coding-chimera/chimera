@@ -14,7 +14,6 @@ use crate::display_redaction::parse_bool;
 /// explicit *empty* value is the local dry-run sink: batches are serialized
 /// exactly as a server would see them and appended to
 /// `$CODEWHALE_HOME/telemetry/dryrun.jsonl`, and no HTTP client is constructed.
-
 /// Provider-neutral credential value forwarded from the CLI dispatcher to the
 /// in-process TUI when `--api-key` must survive profile-late route selection.
 pub const CLI_API_KEY_ENV: &str = "CODEWHALE_CLI_API_KEY";
@@ -30,6 +29,21 @@ pub const LEGACY_CLI_API_KEY_SOURCE_ENV: &str = "DEEPSEEK_API_KEY_SOURCE";
 /// Private to the `codewhale` → `codewhale-tui` hop, in the same spirit as
 /// [`CLI_API_KEY_SOURCE_ENV`]. Set to `1`/`0` on every delegated run.
 pub const TELEMETRY_FLOOR_ENV: &str = "CODEWHALE_TELEMETRY_FLOOR";
+
+/// Where an enabled session's batches go when nobody has said otherwise: no
+/// destination at all.
+///
+/// This build has no first-party ingest service, so an unconfigured
+/// `telemetry_endpoint` resolves to "no destination" and the session stays off
+/// rather than contacting a host nobody chose. An explicit value —
+/// `CODEWHALE_TELEMETRY_ENDPOINT` or `telemetry_endpoint` in the config file —
+/// names an operator-owned sink and wins outright, and an explicit *empty*
+/// value is the local dry-run sink: batches are serialized exactly as a server
+/// would see them and appended to
+/// `$CODEWHALE_HOME/telemetry/dryrun.jsonl`, and no HTTP client is constructed.
+///
+/// Permission is unchanged: `CODEWHALE_TELEMETRY=0`, `telemetry = false`, and a
+/// recorded decline all stop the session long before an endpoint is read.
 
 /// Whether an environment-level kill switch forces telemetry off here.
 ///

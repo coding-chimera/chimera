@@ -327,7 +327,7 @@ impl ProviderKind {
     /// stay on the enum for serde and `provider_for_kind`, but they are not
     /// first-class catalog rows. Plan is `mode` / base_url; dialect is
     /// `wire = openai|anthropic` on the primary provider config.
-    pub const ALL: [Self; 46] = crate::descriptors::SELECTABLE_PROVIDER_KINDS;
+    pub const ALL: [Self; 47] = crate::descriptors::SELECTABLE_PROVIDER_KINDS;
 
     #[must_use]
     pub fn all() -> &'static [Self] {

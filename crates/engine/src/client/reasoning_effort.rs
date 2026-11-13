@@ -111,6 +111,10 @@ pub fn apply_reasoning_effort(body: &mut Value, effort: Option<&str>, provider: 
             | ProviderKind::ModelstudioTokenPlanAnthropic
             | ProviderKind::ModelstudioCodingPlan
             | ProviderKind::ModelstudioCodingPlanAnthropic => {}
+            // Alibailian relay: reasoning controls are owned by the relay
+            // profile (client::alibailian strips sampling when reasoning is
+            // forced); this table writes no Model Studio-style fields for it.
+            ProviderKind::Alibailian => {}
             ProviderKind::OpenaiCodex => {
                 // OpenAI Codex uses Responses API — thinking handled differently
             }
@@ -209,6 +213,10 @@ pub fn apply_reasoning_effort(body: &mut Value, effort: Option<&str>, provider: 
             | ProviderKind::ModelstudioTokenPlanAnthropic
             | ProviderKind::ModelstudioCodingPlan
             | ProviderKind::ModelstudioCodingPlanAnthropic => {}
+            // Alibailian relay: reasoning controls are owned by the relay
+            // profile (client::alibailian strips sampling when reasoning is
+            // forced); this table writes no Model Studio-style fields for it.
+            ProviderKind::Alibailian => {}
             // OpenRouter/OrcaRouter/Novita/Together: pass through the actual
             // user-chosen value. OpenRouter's unified scale is
             // none/minimal/low/medium/high/xhigh; DeepSeek models hosted there
@@ -337,6 +345,10 @@ pub fn apply_reasoning_effort(body: &mut Value, effort: Option<&str>, provider: 
             | ProviderKind::ModelstudioTokenPlanAnthropic
             | ProviderKind::ModelstudioCodingPlan
             | ProviderKind::ModelstudioCodingPlanAnthropic => {}
+            // Alibailian relay: reasoning controls are owned by the relay
+            // profile (client::alibailian strips sampling when reasoning is
+            // forced); this table writes no Model Studio-style fields for it.
+            ProviderKind::Alibailian => {}
             ProviderKind::Openrouter
             | ProviderKind::Orcarouter
             | ProviderKind::Novita

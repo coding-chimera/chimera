@@ -1,26 +1,25 @@
 //! One-shot Chimera configuration importer (W6A, RFC §13).
 //!
-//! Reads a Chimera JSON/JSONC configuration (plus an optional project-level
-//! overlay) and an old Codewhale TOML file, and emits the *new* TOML the
-//! existing runtime loader already understands. This is an explicit, one-time
-//! migration command: the production loader never grows a second JSONC path,
-//! and after import the runtime only ever reads TOML.
+//! Reads a Chimera JSON/JSONC configuration (global layer plus an optional
+//! project overlay) and an old Codewhale TOML document, and emits the TOML
+//! bodies the existing runtime loaders already understand. This is an
+//! explicit, one-time migration surface: the production loader never grows a
+//! second JSONC path, and after import the runtime only ever reads TOML.
 //!
 //! Contract (RFC §13.1):
 //! - Unknown or unsupported Chimera keys fail loud with the complete list of
 //!   offending paths. Nothing is written, and no value is ever echoed — a
 //!   Chimera config can carry provider API keys.
-//! - Arrays and instructions compute to a final value here; there is no
-//!   second merge language.
-//! - A project overlay may only tighten permissions (deny > ask > allow);
-//!   loosening is a hard error, matching the project-overlay "only tighten"
-//!   rule the TOML loader already enforces for approval/sandbox.
-//! - Project-scope imports never carry credentials; provider `apiKey`
-//!   entries are user-global only.
-//! - Output TOML always carries an explicit `schema_version = 1`; the runtime
-//!   strict gate (unknown root key rejection) applies to versioned documents.
-//! - well-known/account remote Chimera sources are not read here. Only file
-//!   text the caller already holds is imported.
+//! - Arrays and instructions compute to a final value here (the winning
+//!   layer's array replaces the other's wholesale); there is no second merge
+//!   language.
+//! - Project imports never carry credentials; provider `apiKey` entries are
+//!   user-global only.
+//! - Output TOML always carries an explicit `schema_version = 1`, which opts
+//!   the document into the strict unknown-root-key gate in
+//!   `parse_config_toml_str`.
+//! - well-known/account remote Chimera sources are never read here; only
+//!   file text the caller already holds is imported.
 
 use std::collections::BTreeMap;
 
@@ -50,9 +49,19 @@ pub struct ImportOutcome {
     pub mcp_json: Option<String>,
 }
 
+/// Which document the imported `config.toml` targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportScope {
+    /// The user-global config; may carry provider credentials.
+    Global,
+    /// The workspace project config; never carries credentials and may only
+    /// tighten permission posture.
+    Project,
+}
+
 /// Parse Chimera JSONC: `//` and `/* */` comments plus trailing commas are
 /// stripped outside string literals, then the document is parsed. Errors
-/// report the parse class and position only, never content.
+/// report position only, never content.
 pub fn parse_chimera_jsonc(text: &str, source: &str) -> Result<serde_json::Value> {
     if text.len() > MAX_IMPORT_INPUT_BYTES {
         bail!(
@@ -61,79 +70,14 @@ pub fn parse_chimera_jsonc(text: &str, source: &str) -> Result<serde_json::Value
         );
     }
     let stripped = strip_jsonc(text);
-    serde_json::from_str(&stripped).map_err(|err| {
-        anyhow::anyhow!(
-            "chimera config at {source} is not valid JSON/JSONC: {err} (line {}, column {})",
-            err.line(),
-            err.column()
-        )
-    })
+    serde_json::from_str(&stripped)
+        .map_err(|err| anyhow::anyhow!("chimera config at {source} is not valid JSON/JSONC: {err}"))
 }
 
 /// Strip `//` and `/* */` comments and trailing commas outside string
-/// literals. A state machine over bytes keeps escapes and nested quotes
-/// intact; JSONC never appears inside a string the way it can in TOML.
+/// literals. A char-level state machine keeps escapes, quotes, and multibyte
+/// text intact.
 fn strip_jsonc(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let mut index = 0usize;
-    let mut in_string = false;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if in_string {
-            out.push(byte as char);
-            if byte == b'\\' && index + 1 < bytes.len() {
-                // Keep the escaped byte verbatim so \" does not end the string.
-                out.push(bytes[index + 1] as char);
-                index += 2;
-                continue;
-            }
-            if byte == b'"' {
-                in_string = false;
-            }
-            index += 1;
-            continue;
-        }
-        match byte {
-            b'"' => {
-                in_string = true;
-                out.push('"');
-                index += 1;
-            }
-            b'/' if bytes.get(index + 1) == Some(&b'/') => {
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
-            }
-            b'/' if bytes.get(index + 1) == Some(&b'*') => {
-                index += 2;
-                while index + 1 < bytes.len()
-                    && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-                {
-                    index += 1;
-                }
-                index = (index + 2).min(bytes.len());
-                out.push(' ');
-            }
-            _ => {
-                out.push(byte as char);
-                index += 1;
-            }
-        }
-    }
-    // Byte-by-byte push on UTF-8 would split multibyte characters; `as char`
-    // maps every byte to the same Unicode scalar only for ASCII. Rebuild from
-    // the original text using the ASCII-safe slice boundary instead.
-    if !out.chars().all(|c| c.is_ascii() || c == '\u{fffd}') || text.is_ascii() {
-        if !text.is_ascii() {
-            return strip_jsonc_unicode(text);
-        }
-    }
-    out
-}
-
-/// Unicode-safe JSONC strip: same state machine, but pushing whole `char`s.
-fn strip_jsonc_unicode(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     let mut in_string = false;
@@ -174,49 +118,29 @@ fn strip_jsonc_unicode(text: &str) -> String {
                 }
                 out.push(if closed { ' ' } else { '\n' });
             }
+            ',' => {
+                // Trailing commas: drop the comma when the next non-space
+                // character closes the enclosing object or array.
+                let mut lookahead = chars.clone();
+                let mut closing = None;
+                for peeked in lookahead.by_ref() {
+                    if peeked.is_whitespace() {
+                        continue;
+                    }
+                    closing = Some(peeked);
+                    break;
+                }
+                match closing {
+                    Some('}') | Some(']') => {}
+                    _ => out.push(','),
+                }
+            }
             _ => out.push(ch),
         }
     }
     out
 }
 
-fn line_of(text: &str, err: &serde_json::Error) -> usize {
-    err.line().max(1)
-}
-
-fn column_of(text: &str, err: &serde_json::Error) -> usize {
-    err.column().max(1)
-}
-
-/// Reject repeated object keys at any depth: a config is a reviewed document,
-/// and a duplicated key silently discarding one value is a migration hazard.
-fn reject_duplicate_keys(value: &serde_json::Value) -> Result<()> {
-    fn walk(value: &serde_json::Value, path: &str) -> Result<()> {
-        match value {
-            serde_json::Value::Object(map) => {
-                // serde_json keeps the last of a duplicate pair, so count
-                // source keys by re-serializing is impossible; the parse-time
-                // guard below is the real check. Here we only recurse.
-                for (key, child) in map {
-                    let child_path = if path.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{path}.{key}")
-                    };
-                    walk(child, &child_path)?;
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for (index, item) in items.iter().enumerate() {
-                    walk(item, &format!("{path}[{index}]"))?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    walk(value, "")
-}
 
 /// Import one Chimera configuration (global) plus an optional project
 /// overlay, producing the new TOML bodies. See the module docs for the
@@ -224,7 +148,7 @@ fn reject_duplicate_keys(value: &serde_json::Value) -> Result<()> {
 pub fn import_chimera_config(
     global: Option<&str>,
     project: Option<&str>,
-    source_scope: ImportScope,
+    scope: ImportScope,
 ) -> Result<ImportOutcome> {
     let global_value = match global {
         Some(text) => Some(parse_chimera_jsonc(text, "chimera global config")?),
@@ -234,29 +158,18 @@ pub fn import_chimera_config(
         Some(text) => Some(parse_chimera_jsonc(text, "chimera project config")?),
         None => None,
     };
-    let merged = merge_layers(global_value, project_value)?;
-    let object = match merged {
+    let object = match merge_layers(global_value, project_value)? {
         Some(serde_json::Value::Object(map)) => map,
         Some(_) => bail!("chimera config must be a JSON object"),
         None => serde_json::Map::new(),
     };
-    build_outcome(object, source_scope)
+    build_outcome(object, scope)
 }
 
-/// Which document the imported `config.toml` targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImportScope {
-    /// The user-global config; may carry provider credentials.
-    Global,
-    /// The workspace project config; never carries credentials and may only
-    /// tighten permission posture.
-    Project,
-}
-
-/// Merge the global and project layers with final-value semantics:
-/// - scalars and objects: the project layer wins per key (deep-merged),
-/// - arrays: whichever layer defines the key last wins wholesale — no
-///   concatenation, because there is no merge language at runtime.
+/// Merge the global and project layers with final-value semantics: the
+/// project layer wins per key wholesale (scalars, objects, and arrays alike).
+/// The runtime has no merge language, so the importer computes the final
+/// value here.
 fn merge_layers(
     global: Option<serde_json::Value>,
     project: Option<serde_json::Value>,
@@ -281,7 +194,7 @@ fn merge_layers(
 }
 
 /// Permission action restrictiveness order for the project "only tighten" rule.
-fn permission_rank(action: &str) -> Option<u8> {
+pub fn permission_rank(action: &str) -> Option<u8> {
     match action {
         "allow" => Some(0),
         "ask" => Some(1),
@@ -290,7 +203,19 @@ fn permission_rank(action: &str) -> Option<u8> {
     }
 }
 
-/// Keys the importer explicitly consumes. Everything else — known-but
+/// Whether a project permission layer only tightens the global layer: the
+/// project action must rank at least as restrictive as the global one.
+/// `None` on an unrankable action (the caller fails loud on it).
+pub fn project_permission_only_tightens(global: Option<&str>, project: &str) -> Option<bool> {
+    let global_rank = global.and_then(permission_rank);
+    let project_rank = permission_rank(project)?;
+    Some(match global_rank {
+        Some(global_rank) => project_rank >= global_rank,
+        None => true,
+    })
+}
+
+/// Keys the importer explicitly consumes. Everything else — known-but-
 /// unsupported or entirely unknown — is collected and reported together.
 const HANDLED_TOP_LEVEL_KEYS: &[&str] = &[
     "$schema",
@@ -308,6 +233,17 @@ const HANDLED_TOP_LEVEL_KEYS: &[&str] = &[
     "graph",
 ];
 
+fn collect_unsupported_paths(prefix: &str, value: &serde_json::Value, paths: &mut Vec<String>) {
+    if let Some(object) = value.as_object()
+        && !object.is_empty()
+    {
+        for (key, child) in object {
+            collect_unsupported_paths(&format!("{prefix}.{key}"), child, paths);
+        }
+    } else {
+        paths.push(prefix.to_string());
+    }
+}
 fn build_outcome(
     object: serde_json::Map<String, serde_json::Value>,
     scope: ImportScope,
@@ -320,7 +256,7 @@ fn build_outcome(
 
     for (key, value) in &object {
         if !HANDLED_TOP_LEVEL_KEYS.contains(&key.as_str()) {
-            unsupported.push(key.clone());
+            collect_unsupported_paths(key, value, &mut unsupported);
             continue;
         }
         match key.as_str() {
@@ -367,7 +303,7 @@ fn build_outcome(
 }
 
 /// `model = "provider/model"` → root `provider` plus the provider table's
-/// `model` key, mirroring the Chimera source's own selection precedence.
+/// `model` key, mirroring the Chimera source's selection precedence.
 fn map_model(
     value: &serde_json::Value,
     document: &mut toml_edit::DocumentMut,
@@ -378,10 +314,7 @@ fn map_model(
         return Ok(());
     };
     let Some((provider_id, model_id)) = model.split_once('/') else {
-        bail!(
-            "chimera import: model {:?} must be in provider/model form",
-            codewhale_secrets::redact::redact_secrets(model)
-        );
+        bail!("chimera import: model must be a provider/model pair; the value was omitted");
     };
     let provider_id = provider_id.trim();
     let model_id = model_id.trim();
@@ -424,9 +357,8 @@ fn map_providers(
                         match option_key.as_str() {
                             "baseURL" => {
                                 let Some(base_url) = option_value.as_str() else {
-                                    unsupported.push(format!(
-                                        "provider.{provider_id}.options.baseURL"
-                                    ));
+                                    unsupported
+                                        .push(format!("provider.{provider_id}.options.baseURL"));
                                     continue;
                                 };
                                 table["base_url"] = toml_edit::value(base_url);
@@ -440,16 +372,15 @@ fn map_providers(
                                     );
                                 }
                                 let Some(api_key) = option_value.as_str() else {
-                                    unsupported.push(format!(
-                                        "provider.{provider_id}.options.apiKey"
-                                    ));
+                                    unsupported
+                                        .push(format!("provider.{provider_id}.options.apiKey"));
                                     continue;
                                 };
                                 table["api_key"] = toml_edit::value(api_key);
                             }
-                            other => unsupported.push(format!(
-                                "provider.{provider_id}.options.{other}"
-                            )),
+                            other => {
+                                unsupported.push(format!("provider.{provider_id}.options.{other}"))
+                            }
                         }
                     }
                 }
@@ -461,9 +392,7 @@ fn map_providers(
                     // Per-model capability declarations have no runtime
                     // consumer yet; every entry is reported, never inherited.
                     for model_id in models.keys() {
-                        unsupported.push(format!(
-                            "provider.{provider_id}.models.{model_id}"
-                        ));
+                        unsupported.push(format!("provider.{provider_id}.models.{model_id}"));
                     }
                 }
                 "wire_api" => {
@@ -478,9 +407,9 @@ fn map_providers(
                         "responses" => {
                             table["wire"] = toml_edit::value("responses");
                         }
-                        other => unsupported.push(format!(
-                            "provider.{provider_id}.wire_api.{other}"
-                        )),
+                        other => {
+                            unsupported.push(format!("provider.{provider_id}.wire_api.{other}"))
+                        }
                     }
                 }
                 other => {
@@ -532,21 +461,18 @@ fn map_delegation(
 }
 
 /// Chimera `permission` (action string or per-tool map) → typed
-/// `permissions.toml` rules. Project overlays may only tighten.
+/// `permissions.toml` rules.
 fn map_permission(
     value: &serde_json::Value,
     rules: &mut Vec<ToolAskRule>,
     unsupported: &mut Vec<String>,
 ) -> Result<()> {
-    let normalized = normalize_permission_object(value);
-    for (tool, action) in normalized {
+    for (tool, action) in normalize_permission_object(value) {
         let Some(action) = action.as_str().and_then(permission_rank) else {
             unsupported.push(format!("permission.{tool}"));
             continue;
         };
-        if action.is_none() {
-            continue;
-        }
+
         rules.push(ToolAskRule {
             tool: tool.clone(),
             command: None,
@@ -604,15 +530,14 @@ fn map_mcp(
     };
     for (name, entry) in entries {
         // The legacy `{ "<name>": { "enabled": false } }` disable form.
-        if let Some(enabled) = entry.get("enabled") {
-            if entry.as_object().is_some_and(|map| map.len() == 1) {
-                if let Some(enabled) = enabled.as_bool() {
-                    let mut server = serde_json::Map::new();
-                    server.insert("enabled".into(), enabled.into());
-                    servers.insert(name.clone(), serde_json::Value::Object(server));
-                    continue;
-                }
-            }
+        if let Some(enabled) = entry.get("enabled")
+            && entry.as_object().is_some_and(|map| map.len() == 1)
+            && let Some(enabled) = enabled.as_bool()
+        {
+            let mut server = serde_json::Map::new();
+            server.insert("enabled".into(), enabled.into());
+            servers.insert(name.clone(), serde_json::Value::Object(server));
+            continue;
         }
         let Some(entry) = entry.as_object() else {
             unsupported.push(format!("mcp.{name}"));
@@ -623,9 +548,10 @@ fn map_mcp(
             match field.as_str() {
                 "type" => {}
                 "command" => {
-                    let Some(command) = field_value.as_array().and_then(|parts| {
-                        parts.first().and_then(serde_json::Value::as_str)
-                    }) else {
+                    let Some(command) = field_value
+                        .as_array()
+                        .and_then(|parts| parts.first().and_then(serde_json::Value::as_str))
+                    else {
                         unsupported.push(format!("mcp.{name}.command"));
                         continue;
                     };
@@ -670,9 +596,7 @@ fn map_mcp(
                         if let Some(text) = env_value.as_str() {
                             env.insert(env_key.clone(), text.into());
                         } else {
-                            unsupported.push(format!(
-                                "mcp.{name}.environment.{env_key}"
-                            ));
+                            unsupported.push(format!("mcp.{name}.environment.{env_key}"));
                         }
                     }
                     server.insert("env".into(), serde_json::Value::Object(env));
@@ -692,10 +616,9 @@ fn map_mcp(
                     server.insert("headers".into(), serde_json::Value::Object(headers.clone()));
                 }
                 "timeout" => {
-                    // Chimera timeouts are milliseconds on a struct
-                    // (startup/catalog/execution); the existing schema takes
-                    // per-server second fields, so map the execution timeout
-                    // only when it is a plain number.
+                    // Chimera timeouts are milliseconds (or a startup/
+                    // catalog/execution struct); the existing schema takes
+                    // per-server second fields, so map a plain number only.
                     if let Some(timeout) = field_value.as_u64() {
                         server.insert("execute_timeout".into(), (timeout / 1000).into());
                     } else {
@@ -750,8 +673,7 @@ fn map_tool_output(
                     unsupported.push("tool_output.max_bytes".to_string());
                     continue;
                 };
-                workshop_table(document)["tool_result_max_bytes"] =
-                    toml_edit::value(max as i64);
+                workshop_table(document)["tool_result_max_bytes"] = toml_edit::value(max as i64);
             }
             other => unsupported.push(format!("tool_output.{other}")),
         }
@@ -808,9 +730,7 @@ fn map_memories(
     Ok(())
 }
 
-/// Chimera `browser.headless` → `[browser]` — the W5 landing table. The
-/// runtime strict gate accepts the table so an imported document loads before
-/// the browser slice's consumer arrives.
+/// Chimera `browser.headless` → `[browser]` — the W5 landing table.
 fn map_browser(
     value: &serde_json::Value,
     document: &mut toml_edit::DocumentMut,
@@ -861,8 +781,7 @@ fn map_graph(
                     };
                     items.push(pattern);
                 }
-                graph_table(document)["include_ignored"] =
-                    toml_edit::Item::Value(toml_edit::Value::Array(items));
+                graph_table(document)["include_ignored"] = toml_edit::Value::Array(items).into();
             }
             other => unsupported.push(format!("graph.{other}")),
         }
@@ -876,14 +795,13 @@ fn map_graph(
 pub fn import_codewhale_toml(contents: &str) -> Result<String> {
     // Validate first: a body the current loader cannot read must not gain a
     // version stamp that claims it is the new schema.
-    parse_config_toml_str(contents)
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "codewhale config cannot be imported: invalid TOML at {}; \
-                 file contents were omitted",
-                crate::config_store::config_toml_error_location(contents, &err)
-            )
-        })?;
+    parse_config_toml_str(contents).map_err(|err| {
+        anyhow::anyhow!(
+            "codewhale config cannot be imported: invalid TOML at {}; \
+             file contents were omitted",
+            crate::config_store::config_toml_error_location(contents, &err)
+        )
+    })?;
     let mut document: toml_edit::DocumentMut = contents
         .parse()
         .map_err(|_| anyhow::anyhow!("codewhale config cannot be imported: unparseable TOML"))?;
@@ -897,23 +815,16 @@ fn provider_table_mut<'a>(
     document: &'a mut toml_edit::DocumentMut,
     provider_id: &str,
 ) -> &'a mut toml_edit::Table {
-    let provider_id = normalize_builtin_provider_id(provider_id);
-    document
-        .entry("providers")
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
-        .as_table_mut()
-        .expect("providers entry was inserted as a table")
-        .entry(provider_id)
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+    let provider_id = ProviderKind::parse_config_identity(provider_id)
+        .map(|kind| kind.as_str().to_string())
+        .unwrap_or_else(|| provider_id.to_string());
+    named_table(document, "providers")
+        .entry(&provider_id)
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
         .as_table_mut()
         .expect("provider entry was inserted as a table")
 }
 
-fn normalize_builtin_provider_id(provider_id: &str) -> String {
-    ProviderKind::parse_config_identity(provider_id)
-        .map(|kind| kind.as_str().to_string())
-        .unwrap_or_else(|| provider_id.to_string())
-}
 
 fn subagents_table(document: &mut toml_edit::DocumentMut) -> &mut toml_edit::Table {
     named_table(document, "subagents")
@@ -949,7 +860,7 @@ fn named_table<'a>(
 ) -> &'a mut toml_edit::Table {
     document
         .entry(name)
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
         .as_table_mut()
         .expect("table entry was inserted as a table")
 }
@@ -966,9 +877,7 @@ fn permission_action_for_rank(rank: u8) -> PermissionAction {
     }
 }
 
-fn normalize_permission_object(
-    value: &serde_json::Value,
-) -> BTreeMap<String, serde_json::Value> {
+fn normalize_permission_object(value: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
     match value {
         // The Chimera action shorthand is `"*": action`.
         serde_json::Value::String(action) => {
@@ -984,28 +893,15 @@ fn normalize_permission_object(
     }
 }
 
-/// Render typed `permissions.toml` from the mapped rules. Deny rules are
-/// import-only: a project can only tighten, and deny is the tightest action.
+/// Render typed `permissions.toml` from the mapped rules.
+/// Render typed `permissions.toml` from the mapped rules, reusing the
+/// project's own rule renderer so importer output and the approval card's
+/// writes stay byte-identical.
 fn render_permissions(rules: &[ToolAskRule]) -> String {
     let mut document = toml_edit::DocumentMut::new();
     let mut array = toml_edit::ArrayOfTables::new();
     for rule in rules {
-        let mut table = toml_edit::Table::new();
-        table["tool"] = toml_edit::value(rule.tool.as_str());
-        if let Some(command) = rule.command.as_deref() {
-            table["command"] = toml_edit::value(command);
-        }
-        if rule.command_exact {
-            table["command_exact"] = toml_edit::value(true);
-        }
-        if let Some(path) = rule.path.as_deref() {
-            table["path"] = toml_edit::value(path);
-        }
-        if let Some(workspace) = rule.workspace.as_deref() {
-            table["workspace"] = toml_edit::value(workspace);
-        }
-        table["action"] = toml_edit::value(rule.action.as_str());
-        array.push(table);
+        array.push(crate::permissions::permission_rule_table(rule));
     }
     document.insert("rules", toml_edit::Item::ArrayOfTables(array));
     document.to_string()
@@ -1021,20 +917,6 @@ fn render_mcp_json(servers: &serde_json::Map<String, serde_json::Value>) -> Stri
         .expect("MCP server map is serializable")
 }
 
-/// Whether a project permission layer only tightens the global layer:
-/// per tool (including the `"*"` catch-all), the project action must rank at
-/// least as restrictive as the global one. `None` on an unrankable action.
-pub fn project_permission_only_tightens(
-    global: Option<&str>,
-    project: &str,
-) -> Option<bool> {
-    let global_rank = global.and_then(permission_rank);
-    let project_rank = permission_rank(project)?;
-    Some(match global_rank {
-        Some(global_rank) => project_rank >= global_rank,
-        None => true,
-    })
-}
 
 #[cfg(test)]
 mod tests {
@@ -1066,7 +948,9 @@ mod tests {
             "memories": { "enabled": true },
             "username": "用户",
         }"#;
-        let outcome = outcome_for(text);
+        let value = parse_chimera_jsonc(text, "test.jsonc").expect("JSONC parses");
+        assert_eq!(value["username"], "用户");
+        let outcome = outcome_for(r#"{"memories": { "enabled": true }}"#);
         assert!(outcome.config_toml.contains("schema_version = 1"));
         assert!(outcome.config_toml.contains("[memory]"));
         assert!(outcome.config_toml.contains("enabled = true"));
@@ -1088,7 +972,10 @@ mod tests {
             message.contains("provider.deepseek.backend_semantics"),
             "{message}"
         );
-        assert!(message.contains("3 unknown or unsupported key(s)"), "{message}");
+        assert!(
+            message.contains("3 unknown or unsupported key(s)"),
+            "{message}"
+        );
         assert!(message.contains("Nothing was written"), "{message}");
     }
 
@@ -1143,6 +1030,19 @@ mod tests {
     }
 
     #[test]
+    fn model_without_provider_component_is_refused_without_echoing_it() {
+        let err = import_chimera_config(
+            Some(r#"{"model": "sk-not-a-route"}"#),
+            None,
+            ImportScope::Global,
+        )
+        .expect_err("model must be provider/model");
+        let message = format!("{err:#}");
+        assert!(message.contains("provider/model"), "{message}");
+        assert!(!message.contains("sk-not-a-route"), "{message}");
+    }
+
+    #[test]
     fn project_import_refuses_credentials() {
         let err = import_chimera_config(
             Some(r#"{"provider": { "deepseek": { "options": { "apiKey": "sk-x" } } }}"#),
@@ -1190,7 +1090,7 @@ mod tests {
         );
         assert_eq!(
             project_permission_only_tightens(Some("deny"), "ask"),
-            Some(true)
+            Some(false)
         );
         assert_eq!(project_permission_only_tightens(None, "allow"), Some(true));
         assert_eq!(
@@ -1200,11 +1100,10 @@ mod tests {
     }
 
     #[test]
-    fn project_layer_wins_for_scalars_and_arrays_are_final_values() {
+    fn project_layer_wins_and_arrays_are_final_values() {
         // Arrays compute to the winning layer's value: the project array
         // replaces the global array wholesale; with no project entry the
-        // global value stands. `instructions` is unsupported today, so the
-        // observable final-value surface is `graph.includeIgnored`.
+        // global value stands.
         let outcome = import_chimera_config(
             Some(r#"{"graph": { "includeIgnored": ["vendor/", "target/"] }}"#),
             Some(r#"{"graph": { "includeIgnored": ["dist/"] }}"#),
@@ -1243,15 +1142,15 @@ mod tests {
             }"#,
         );
         let mcp = outcome.mcp_json.expect("mcp was mapped");
-        let value: serde_json::Value =
-            serde_json::from_str(&mcp).expect("mcp.json parses");
+        let value: serde_json::Value = serde_json::from_str(&mcp).expect("mcp.json parses");
         assert_eq!(value["servers"]["context7"]["command"], "npx");
-        assert_eq!(
-            value["servers"]["context7"]["args"][1],
-            "-y"
-        );
+        assert_eq!(value["servers"]["context7"]["args"][0], "-y");
+        assert_eq!(value["servers"]["context7"]["args"][1], "@context7/mcp");
         assert_eq!(value["servers"]["context7"]["env"]["API_TOKEN"], "x");
-        assert_eq!(value["servers"]["remote-one"]["url"], "https://example.test/mcp");
+        assert_eq!(
+            value["servers"]["remote-one"]["url"],
+            "https://example.test/mcp"
+        );
         assert_eq!(value["servers"]["off"]["enabled"], false);
     }
 
@@ -1268,7 +1167,11 @@ mod tests {
         assert!(outcome.config_toml.contains("[lsp]"));
         assert!(outcome.config_toml.contains("poll_after_edit_ms = 900"));
         assert!(outcome.config_toml.contains("[workshop]"));
-        assert!(outcome.config_toml.contains("tool_result_max_bytes = 65536"));
+        assert!(
+            outcome
+                .config_toml
+                .contains("tool_result_max_bytes = 65536")
+        );
         assert!(outcome.config_toml.contains("[compaction]"));
         assert!(
             outcome
@@ -1314,13 +1217,14 @@ mod tests {
     }
 
     #[test]
-    fn codewhale_toml_import_stamps_schema_version() {
-        let stamped =
-            import_codewhale_toml("provider = \"deepseek\"\n\n[providers.deepseek]\nmodel = \"deepseek-v4-pro\"\n")
-                .expect("legacy TOML imports");
-        assert!(stamped.contains("schema_version = 1"));
-        let parsed = crate::parse_config_toml(&stamped)
-            .expect("stamped TOML still parses");
+    fn codewhale_toml_import_stamps_schema_version_and_keeps_comments() {
+        let stamped = import_codewhale_toml(
+            "# my route\nprovider = \"deepseek\"\n\n[providers.deepseek]\nmodel = \"deepseek-v4-pro\"\n",
+        )
+        .expect("legacy TOML imports");
+        assert!(stamped.contains("# my route"), "{stamped}");
+        assert!(stamped.contains("schema_version = 1"), "{stamped}");
+        let parsed = crate::parse_config_toml(&stamped).expect("stamped TOML still parses");
         assert_eq!(parsed.provider, ProviderKind::Deepseek);
     }
 
@@ -1334,6 +1238,88 @@ mod tests {
     fn oversized_input_is_refused() {
         let big = format!("{{\"x\": \"{}\"}}", "a".repeat(MAX_IMPORT_INPUT_BYTES));
         let err = parse_chimera_jsonc(&big, "big.json").expect_err("size cap");
-        assert!(format!("{err:#}").contains("bytes; the limit is"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("bytes; the limit is"),
+            "{err:#}"
+        );
+    }
+
+    // ── strict-gate and reload/CAS behavior (RFC §13.1, §13.3) ───────────
+
+    #[test]
+    fn versioned_document_rejects_unknown_root_keys() {
+        let err = crate::parse_config_toml(
+            "schema_version = 1\nprovider = \"deepseek\"\nmystery_key = true\n",
+        )
+        .expect_err("unknown root key on a versioned document must fail");
+        let message = err.message().to_string();
+        assert!(message.contains("unknown key(s): mystery_key"), "{message}");
+    }
+
+    #[test]
+    fn versioned_document_rejects_future_schema_versions() {
+        let err =
+            crate::parse_config_toml("schema_version = 2\n").expect_err("future version fails");
+        let message = err.message().to_string();
+        assert!(message.contains("newer than this build"), "{message}");
+    }
+
+    #[test]
+    fn unversioned_documents_keep_the_tolerant_extras_path() {
+        // Historic files have no `schema_version`; their unknown keys land in
+        // `extras` so `config doctor` can still report them without failing
+        // the load. This is the compatibility floor the strict gate adds on.
+        let parsed = crate::parse_config_toml("provider = \"deepseek\"\nmystery = 1\n")
+            .expect("unversioned documents stay tolerant");
+        assert!(parsed.extras.contains_key("mystery"));
+    }
+
+    #[test]
+    fn strict_gate_key_list_is_redacted() {
+        let err = crate::parse_config_toml("schema_version = 1\nsk-leaked-secret-name = 1\n")
+            .expect_err("unknown root key must fail");
+        assert!(!err.message().contains("sk-leaked"), "{}", err.message());
+    }
+
+    #[test]
+    fn cas_conflict_and_failed_reload_keep_the_old_config() {
+        // The fd-lock + CAS write is `replace_config_document_if_unchanged`;
+        // reload is `ConfigStore::reload`, which re-runs the strict gate. A
+        // reload whose new document fails the gate keeps the old one, and a
+        // concurrent change keeps a save from overwriting it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "provider = \"deepseek\"\n").expect("seed config");
+
+        let mut store = crate::ConfigStore::load(Some(path.clone())).expect("initial load");
+        assert_eq!(store.config.provider, ProviderKind::Deepseek);
+
+        // CAS: a concurrent writer changed the file after our load.
+        std::fs::write(&path, "provider = \"moonshot\"\n").expect("concurrent change");
+        let save_err = store.save().expect_err("CAS conflict must fail");
+        assert!(
+            format!("{save_err:#}").contains("changed after it was loaded"),
+            "{save_err:#}"
+        );
+
+        // Reload after the concurrent change succeeds and picks it up.
+        store.reload().expect("reload after conflict succeeds");
+        assert_eq!(store.config.provider, ProviderKind::Moonshot);
+
+        // A reload whose document fails the strict gate is refused; the
+        // store keeps the previously loaded configuration.
+        std::fs::write(&path, "schema_version = 1\nbogus_key = 1\n").expect("strict failure");
+        let reload_err = store
+            .reload()
+            .expect_err("strict gate must fail the reload");
+        assert!(
+            format!("{reload_err:#}").contains("failed to parse config"),
+            "{reload_err:#}"
+        );
+        assert_eq!(store.config.provider, ProviderKind::Moonshot);
+        assert_eq!(
+            store.config.schema_version, None,
+            "the refused reload leaves the old in-memory config untouched"
+        );
     }
 }
