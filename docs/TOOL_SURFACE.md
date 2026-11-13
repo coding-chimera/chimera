@@ -236,6 +236,35 @@ neither forked context nor a cache can become a discovery allowlist. A child can
 still search every tool its own authority permits, including Web search/fetch
 for read-only research roles.
 
+### Progressive disclosure reveals (phase 2)
+
+A `tool_search` hit **reveals** the deferred tool instead of adding its schema
+to the request tool array. The result lists each match under
+`revealed_tool_references` with a compact signature like
+`(path: string, offset?: integer)`, and one runtime guidance message follows
+the search in session history. The tool array — and therefore the pinned
+prompt prefix — stays byte-identical across reveals.
+
+The model calls a revealed tool **by name**. The call goes through the normal
+turn-loop path: deny/allow lists, preparation, hooks, approval, repository
+law, and sandbox gates all re-run at call time. A reveal grants no
+permission; a malformed first call still gets the schema-hydration result
+with expected fields, and an evicted reveal gets an explicit unavailable
+notice pointing back at `tool_search`.
+
+Reveals are session-history records, so they survive save, resume, and
+restart with no separate store, and two sessions never share a revealed set.
+The off-array set is bounded to the newest 16 unpromoted reveals; older
+reveals are evicted from the set (their history record remains) and must be
+re-revealed.
+
+At a compaction boundary, revealed tools whose reveal record sits at or
+before the newest compaction checkpoint are **promoted**: their schema joins
+the tool array at the next request, re-pinning the prefix under a declared
+`change:tool_surface` (the compaction itself separately records
+`reset:compaction`; see [CACHE.md](CACHE.md)). A name that no longer exists
+as a deferred tool in the live catalog is never resurrected by promotion.
+
 ## Inspect the model-client request tool payload
 
 Run `/tools` after a model turn to inspect a bounded projection of the exact

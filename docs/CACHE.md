@@ -34,6 +34,20 @@ Concretely:
 - Every miss is **attributable**. `PrefixStabilityManager` (`prefix_cache.rs`)
   records each change with a reason and reports it through `/cache stats`.
 
+### Provider prompt profiles (one BASE + one static overlay)
+
+Provider/model specialization is a **static, compile-time overlay** appended
+after the shared constitution segments (`BASE_PROMPT` + Language + Output),
+selected purely from the resolved route family at composition time. It is not
+a second base prompt: `BASE_PROMPT` stays the sole identity and priority
+authority, unknown routes append nothing (byte-identical to a profile-less
+prefix), and the overlay text carries no model ids, context-window, or pricing
+facts. The profile is fixed when the session's header is composed — session
+construction (`initial`) and declared header changes only (`/model` re-pins
+under `change:model`), never mid-tool-loop. Volatile graph, reveal, swarm,
+claim, or scope-drift facts never enter the overlay: they ride the append-only
+`<context_update>` / runtime-event history described above.
+
 ## What counts as a declared header change
 
 These re-pin the prefix under a logged `change:<what>` reason. A changed
@@ -47,6 +61,7 @@ make that cost small or prove a provider cache miss:
 | Mode change (agent/plan/operate/yolo) | `change:mode` |
 | Goal set / pause / resume / clear / status | `change:goal` |
 | Mid-turn tool-surface change (deferred-tool admission/eviction, tool-search activation, runtime MCP tool arrival) | `change:tool_surface` |
+| Compaction-promoted tool reveal (revealed deferred tools whose reveal record sits at or before the newest compaction checkpoint joining the tool array) | `change:tool_surface` |
 | Session sync / restore (SyncSession) | `resume` |
 | Session construction | `initial` |
 
@@ -61,6 +76,33 @@ Anything else that changes the header bytes with **no** declared reason is
 becoming the new baseline), and `/cache stats` shows a `WARNING`. After the
 mid-loop-refresh removal, drift should stay at zero in normal operation; a
 non-zero drift count is a real bug to investigate.
+
+## Progressive tool disclosure (phase-2 reveals)
+
+`tool_search` reveals deferred tools without touching the request tool array.
+A reveal is a session-history record: one runtime user message per revealed
+name, plus a guidance message carrying the tool's compact signature. Because
+the reveal rides the append-only history, the header (system + tools) keeps
+its pinned bytes across every reveal — the model calls the revealed tool by
+name and the normal call path re-runs every permission gate.
+
+The reveal set is rebuilt from history, so a resume restores it without extra
+persisted state. It is bounded: the newest 16 unpromoted reveals stay
+callable off-array; older ones are evicted from the set (the history record
+remains) and a call to them returns an explicit unavailable notice pointing
+back at `tool_search`.
+
+At a compaction boundary the two effects are recorded separately:
+
+- the history tail reset is logged as `reset:compaction` (pin untouched);
+- revealed tools whose reveal record sits at or before the newest compaction
+  checkpoint are **promoted** into the tool array at the next request,
+  re-pinning the prefix under a logged `change:tool_surface`.
+
+Promotion never widens permission: a promoted name must still exist as a
+deferred tool in the live catalog, and each call still passes the full gate
+stack. A reveal recorded after the boundary stays off-array until the next
+compaction.
 
 ## Attribution vs. the old behavior
 

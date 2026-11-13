@@ -31,6 +31,18 @@
 - 每一次未命中都**说得清来由**。`PrefixStabilityManager`（`prefix_cache.rs`）
   会记录每次变更和原因，并通过 `/cache stats` 报告出来。
 
+### 提供商提示词 profile（一个 BASE + 一个静态 overlay）
+
+提供商/模型特化是一个**静态、编译期的 overlay**，追加在共享宪法段落
+（`BASE_PROMPT` + 语言 + 输出）之后，只在组装时按解析出的路由家族选择。
+它不是第二个 base prompt：`BASE_PROMPT` 仍是唯一的身份与优先级权威；
+未知路由不追加任何内容（字节与无 profile 的前缀完全一致）；overlay 文本
+不携带模型 id、上下文窗口或价格等模型事实。profile 在会话头部组装时固定
+——只在会话构建（`initial`）和已声明的头部变更（`/model` 走
+`change:model` 重新固定）时生效，绝不在工具循环中途改变。易变的图、
+reveal、swarm、claim、scope-drift 事实永远不进 overlay：它们走上文描述的
+只追加式 `<context_update>` / 运行时事件历史。
+
 ## 哪些算已声明的头部变更
 
 下面这些操作会带着有日志的 `change:<what>` 原因重新固定前缀。工具头部的改变
@@ -43,6 +55,7 @@
 | 模式切换（agent/plan/operate/yolo） | `change:mode` |
 | 目标设置 / 暂停 / 恢复 / 清除 / 状态 | `change:goal` |
 | 回合中途的工具表面变更（延迟工具的加入/移除、工具搜索激活、运行时 MCP 工具抵达） | `change:tool_surface` |
+| compaction 边界提升的工具 reveal（reveal 记录位于最新 compaction 检查点之前/之上的已揭示延迟工具加入工具数组） | `change:tool_surface` |
 | 会话同步 / 恢复（SyncSession） | `resume` |
 | 会话构建 | `initial` |
 
@@ -55,6 +68,28 @@
 会继续算作未命中，而不是悄悄变成新基线；`/cache stats` 里也会出现一条 `WARNING`。
 去掉循环中途刷新之后，正常运行时漂移应保持为零；漂移计数不为零，
 就是需要排查的真实缺陷。
+
+
+## 渐进式工具披露（phase-2 reveal）
+
+`tool_search` 揭示（reveal）延迟工具时**不**改写请求工具数组。一次 reveal 是
+一条会话历史记录：每个被揭示的名称一条 runtime user 消息，外加一条携带该
+工具紧凑签名（如 `(path: string, offset?: integer)`）的指引消息。reveal 走
+只追加的历史通道，因此 header（system + tools）在每次 reveal 前后保持字节
+不变——模型按名调用被揭示的工具，常规调用路径会重新执行全部权限门。
+
+reveal 集合从历史重建，因此 resume 无需额外持久化状态即可恢复。集合有界：
+最新的 16 个未提升 reveal 保持 off-array 可调用；更早的从集合中逐出（历史
+记录保留），对它们的调用返回明确的不可用提示并指回 `tool_search`。
+
+在 compaction 边界，两个效果分开记录：
+
+- 历史尾部重置记录为 `reset:compaction`（固定前缀不动）；
+- reveal 记录位于最新 compaction 检查点之前（含）的工具在下一个请求被
+  **提升**进工具数组，前缀在已声明的 `change:tool_surface` 下重新固定。
+
+提升不扩大权限：被提升的名称必须仍以延迟工具存在于当前目录，且每次调用
+仍通过完整门栈。边界之后记录的 reveal 保持 off-array 直到下一次 compaction。
 
 ## 归因与旧做法对比
 
