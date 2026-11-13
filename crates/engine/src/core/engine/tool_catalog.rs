@@ -10,7 +10,7 @@ use codewhale_tools::names::{
     LEGACY_TOOL_SEARCH_BM25_NAME, LEGACY_TOOL_SEARCH_REGEX_NAME, TOOL_SEARCH_NAME,
     is_tool_search_tool,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -54,6 +54,171 @@ pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // to be true.
     "load_skill",
 ];
+/// Maximum deferred tools one conversation keeps in the off-array revealed
+/// set. A reveal beyond this bound evicts the oldest unpromoted reveal with
+/// a notice; the call still executes through the normal gate stack because
+/// the catalog, not the revealed set, is the execution authority.
+pub const TOOL_REVEAL_MAX_NAMES: usize = 16;
+/// Provenance block closing a `tool_reveal` runtime message. Detection is
+/// structural — a typed payload plus this block — so user text quoting the
+/// payload stays a user message.
+const TOOL_REVEAL_PROVENANCE: &str = "<!-- codewhale.tool-reveal.v1 -->";
+
+/// One recorded tool reveal, rebuilt from session history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolReveal {
+    pub name: String,
+    /// Wall-clock milliseconds recorded when the reveal landed. Compaction
+    /// promotion compares this against the compaction boundary.
+    pub revealed_at_ms: u64,
+}
+
+/// Chimera phase-2 reveal contract: `tool_search` records a reveal as a
+/// runtime session message and returns a compact signature. The request tool
+/// array stays byte-identical; the model calls the revealed tool by name and
+/// the turn loop's existing deferred-call branch executes it with every
+/// permission gate re-run. At a compaction boundary, reveals recorded at or
+/// before that boundary are promoted into the tool array under a declared
+/// `change:tool_surface`.
+#[derive(Debug, Clone, Default)]
+pub struct ToolRevealProjection {
+    /// Newest last, capped at [`TOOL_REVEAL_MAX_NAMES`].
+    unpromoted: Vec<ToolReveal>,
+}
+
+impl ToolRevealProjection {
+    /// Rebuild the revealed set from the session history: reveal messages
+    /// after the newest compaction checkpoint, newest last, capped at the
+    /// off-array bound. The cap evicts the oldest unpromoted reveal; history
+    /// keeps the full record, so the rebuild is a pure projection and resume
+    /// restores the set without extra persisted state.
+    pub fn from_history(messages: &[codewhale_models::Message]) -> Self {
+        let boundary = latest_compaction_boundary(messages);
+        let mut unpromoted = Vec::new();
+        for (index, message) in messages.iter().enumerate() {
+            if (index as isize) <= boundary {
+                continue;
+            }
+            if let Some(reveal) = tool_reveal_of(message) {
+                retain_newest_reveal(&mut unpromoted, reveal);
+            }
+        }
+        let overflow = unpromoted.len().saturating_sub(TOOL_REVEAL_MAX_NAMES);
+        if overflow > 0 {
+            unpromoted.drain(..overflow);
+        }
+        Self { unpromoted }
+    }
+
+    /// Revealed names still off the request tool array, oldest first.
+    pub fn unpromoted(&self) -> &[ToolReveal] {
+        &self.unpromoted
+    }
+
+    pub fn is_revealed(&self, name: &str) -> bool {
+        self.unpromoted.iter().any(|reveal| reveal.name == name)
+    }
+}
+
+fn retain_newest_reveal(list: &mut Vec<ToolReveal>, reveal: ToolReveal) {
+    list.retain(|existing| existing.name != reveal.name);
+    list.push(reveal);
+}
+
+/// Message index of the newest compaction checkpoint. Reveals at or before
+/// this boundary are promoted; `-1` (none) keeps every reveal unpromoted.
+fn latest_compaction_boundary(messages: &[codewhale_models::Message]) -> isize {
+    messages
+        .iter()
+        .rposition(codewhale_models::turn_classify::is_wire_compaction_checkpoint_message)
+        .map_or(-1, |index| index as isize)
+}
+
+fn tool_reveal_of(message: &codewhale_models::Message) -> Option<ToolReveal> {
+    if message.role != codewhale_models::Role::User {
+        return None;
+    }
+    let [codewhale_models::ContentBlock::Text { text, .. }, codewhale_models::ContentBlock::Text { text: provenance, .. }] =
+        message.content.as_slice()
+    else {
+        return None;
+    };
+    if provenance != TOOL_REVEAL_PROVENANCE {
+        return None;
+    }
+    let payload: Value = serde_json::from_str(text).ok()?;
+    if payload.get("type").and_then(Value::as_str) != Some("tool_reveal") {
+        return None;
+    }
+    Some(ToolReveal {
+        name: payload.get("tool")?.as_str()?.to_string(),
+        revealed_at_ms: payload.get("revealed_at_ms")?.as_u64()?,
+    })
+}
+
+/// Whether a history message records one tool reveal. Structural: the typed
+/// JSON payload plus the provenance block, so quoted text never counts.
+pub fn is_tool_reveal_message(message: &codewhale_models::Message) -> bool {
+    tool_reveal_of(message).is_some()
+}
+
+/// The runtime message one recorded reveal appends to session history. The
+/// reveal rides the append-only history channel — never the frozen prefix —
+/// so the header bytes stay pinned across reveals.
+pub(super) fn tool_reveal_message(reveal: &ToolReveal) -> codewhale_models::Message {
+    let payload = json!({
+        "type": "tool_reveal",
+        "tool": reveal.name,
+        "revealed_at_ms": reveal.revealed_at_ms,
+    });
+    codewhale_models::Message {
+        role: codewhale_models::Role::User,
+        content: vec![
+            codewhale_models::ContentBlock::Text {
+                text: payload.to_string(),
+                cache_control: None,
+            },
+            codewhale_models::ContentBlock::Text {
+                text: TOOL_REVEAL_PROVENANCE.to_string(),
+                cache_control: None,
+            },
+        ],
+    }
+}
+
+/// Compaction promotion: revealed tools whose reveal message sits at or
+/// before the newest compaction checkpoint join the request tool array.
+/// Pure derivation over history, so the array view and the reveal record can
+/// never disagree. Names absent from the live catalog are dropped silently —
+/// a disconnected MCP server or a mode switch must not resurrect a tool.
+pub fn promoted_reveal_names(
+    messages: &[codewhale_models::Message],
+    catalog: &[Tool],
+) -> HashSet<String> {
+    let boundary = latest_compaction_boundary(messages);
+    if boundary < 0 {
+        return HashSet::new();
+    }
+    // A re-reveal after an earlier one supersedes it: the newest reveal
+    // position decides promotion, so resolve each name to its last reveal.
+    let mut last_position: HashMap<String, usize> = HashMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        if let Some(reveal) = tool_reveal_of(message) {
+            last_position.insert(reveal.name, index);
+        }
+    }
+    let mut promoted: HashSet<String> = last_position
+        .into_iter()
+        .filter(|(_, position)| (*position as isize) <= boundary)
+        .map(|(name, _)| name)
+        .collect();
+    promoted.retain(|name| {
+        catalog
+            .iter()
+            .any(|tool| &tool.name == name && tool.defer_loading.unwrap_or(false))
+    });
+    promoted
+}
 
 const CORE_ACTION_TOOL_FALLBACKS: &[CoreActionToolFallback] = &[
     CoreActionToolFallback {
@@ -1608,7 +1773,7 @@ fn execute_tool_search_inner(
     )?)
     .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
     .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
-    let mut discovered = if match_kind == "regex" {
+    let discovered = if match_kind == "regex" {
         discover_tools_with_regex(catalog, query, max_results)?
     } else {
         discover_tools_with_bm25_like(catalog, query, max_results)
@@ -1620,6 +1785,11 @@ fn execute_tool_search_inner(
         unavailable_core_action_tools_with_bm25_like(catalog, query, remaining_results)
     };
 
+    // Phase-2 reveal: discovered deferred tools are recorded and callable by
+    // name, but never inserted into the request tool array. `active_tools`
+    // stays byte-identical, so the pinned prefix survives every reveal.
+    // Permission checks still apply to each by-name call.
+    let _ = active_tools;
     let mut cache_rejected = Vec::new();
     let mut cache_held = Vec::new();
     let mut evicted = Vec::new();
@@ -1632,25 +1802,28 @@ fn execute_tool_search_inner(
             "soft_name_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
             "soft_wire_byte_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES,
             "exceeds_soft_target": delta.exceeds_soft_target,
-            "authority": "Current deferred toolbox; admitted tools supersede earlier eviction or unavailable notices for the same name. Permission checks still apply to every call.",
+            "authority": "Current deferred toolbox measurement; reveal supersedes earlier eviction or unavailable notices for the same name. Permission checks still apply to every call.",
         }));
-        remove_evicted_cache_activations(catalog, active_tools, delta.evicted.iter().cloned());
-        evicted = delta
-            .evicted
-            .into_iter()
-            .filter(|name| !active_tools.contains(name))
-            .collect();
         cache_rejected = delta.rejected;
         cache_held = delta.held;
-        discovered = delta.admitted;
-    }
-    for name in &discovered {
-        active_tools.insert(name.clone());
+        evicted = delta.evicted;
     }
 
     let references = discovered
         .iter()
-        .map(|name| json!({"type": "tool_reference", "tool_name": name}))
+        .map(|name| {
+            let signature = catalog
+                .iter()
+                .find(|tool| &tool.name == name)
+                .map(|tool| compact_signature(&tool.input_schema))
+                .unwrap_or_default();
+            json!({
+                "type": "revealed_tool_reference",
+                "tool_name": name,
+                "signature": signature,
+                "callable": "by_name_off_array",
+            })
+        })
         .collect::<Vec<_>>();
     let mut unavailable_references = unavailable
         .iter()
@@ -1666,22 +1839,23 @@ fn execute_tool_search_inner(
         json!({
             "type": "unavailable_tool_reference",
             "tool_name": name,
-            "reason": "The provider cannot offer this tool schema, or its added wire schema exceeds 16KiB. It was not loaded. Use a smaller matching tool or a compatible route."
+            "reason": "The provider cannot offer this tool schema, or its added wire schema exceeds 16KiB. It was not revealed. Use a smaller matching tool or a compatible route."
         })
     }));
     unavailable_references.extend(cache_held.iter().map(|name| {
         json!({
             "type": "unavailable_tool_reference",
             "tool_name": name,
-            "reason": "Not loaded in this batch: recently used tools fill the soft toolbox target (8 deferred tools, 16KiB of added wire schemas). Call tool_search with tool_search_input to load this match on its own; recently used tools can exceed these soft targets.",
+            "reason": "Not revealed in this batch: the off-array revealed set or wire-byte targets are full. Call tool_search with tool_search_input to reveal this match on its own.",
             "tool_search_input": readmission_search_input(name),
         })
     }));
 
     let mut payload = json!({
         "type": "tool_search_tool_search_result",
-        "tool_references": references,
+        "revealed_tool_references": references,
         "unavailable_tool_references": unavailable_references.clone(),
+        "authority": "Revealed tools are NOT in the request tool list. Call them directly by name with arguments matching the signature; permission checks still apply. They join the tool list automatically at the next compaction.",
     });
     let mut metadata = json!({
         "tool_references": discovered,
@@ -1711,6 +1885,112 @@ fn execute_tool_search_inner(
         success: true,
         metadata: Some(metadata),
     })
+}
+
+/// Deferred names a successful `tool_search` revealed, read from the tool
+/// result metadata. The turn loop appends one reveal record per name to the
+/// session history; reveal ordering follows this list's search-priority
+/// order.
+pub fn revealed_names_from_search_result(result: &ToolResult) -> Vec<String> {
+    result
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("tool_references"))
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// The runtime-context guidance message that follows one tool search: the
+/// revealed names with compact signatures, delivered as an appended
+/// user-role message so the frozen prefix never moves. Bounded to the
+/// revealed names of this search.
+pub(super) fn revealed_tools_guidance(
+    revealed: &[ToolReveal],
+    catalog: &[Tool],
+) -> Option<String> {
+    if revealed.is_empty() {
+        return None;
+    }
+    let mut lines = vec![
+        "## Revealed Deferred Tools".to_string(),
+        String::new(),
+        "These tools were revealed for this session via `tool_search`. They are NOT in your tool list, but you can call them directly by name with arguments matching the signature below — revealed calls are executed through the normal path. They join the tool list automatically at the next compaction.".to_string(),
+        String::new(),
+    ];
+    let mut any = false;
+    for reveal in revealed {
+        let Some(tool) = catalog.iter().find(|tool| tool.name == reveal.name) else {
+            continue;
+        };
+        let signature = compact_signature(&tool.input_schema);
+        lines.push(format!(
+            "- `{}`{} — {}",
+            reveal.name, signature, tool.description
+        ));
+        any = true;
+    }
+    any.then(|| lines.join("\n"))
+}
+
+/// Compact formal-parameter list rendered from a tool's JSON schema, e.g.
+/// `(filePath: string, line?: integer)`. The revealed-tools guidance carries
+/// this per name so the model can call a revealed tool by name with plausible
+/// arguments while its full schema stays off the wire. Schema order is kept;
+/// only optionality and a coarse type are shown. Long schemas are capped.
+pub fn compact_signature(schema: &Value) -> String {
+    const MAX_SIGNATURE_PARAMS: usize = 8;
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return String::new();
+    };
+    let required: HashSet<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+        })
+        .map(|items| items.into_iter().collect())
+        .unwrap_or_default();
+    if properties.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&String> = properties.keys().collect();
+    let mut parts: Vec<String> = names
+        .iter()
+        .take(MAX_SIGNATURE_PARAMS)
+        .map(|name| {
+            let optional = if required.contains(name.as_str()) { "" } else { "?" };
+            match short_signature_type(&properties[*name]) {
+                Some(kind) => format!("{name}{optional}: {kind}"),
+                None => format!("{name}{optional}"),
+            }
+        })
+        .collect();
+    if names.len() > MAX_SIGNATURE_PARAMS {
+        parts.push("…".to_string());
+    }
+    format!("({})", parts.join(", "))
+}
+
+fn short_signature_type(property: &Value) -> Option<String> {
+    if let Some(kind) = property.get("type").and_then(Value::as_str) {
+        return Some(kind.to_string());
+    }
+    if let Some(any_of) = property.get("anyOf").and_then(Value::as_array)
+        && let Some(first) = any_of
+            .iter()
+            .filter_map(short_signature_type)
+            .find(|kind| kind != "null")
+    {
+        return Some(first);
+    }
+    if property.get("enum").is_some() {
+        return Some("enum".to_string());
+    }
+    None
 }
 
 fn readmission_search_input(name: &str) -> Value {

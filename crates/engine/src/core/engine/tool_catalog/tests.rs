@@ -623,3 +623,355 @@ fn strict_mode_marks_compatible_tools_strict() {
     assert_eq!(tools[0].input_schema["required"], json!([]));
     assert!(tools[0].input_schema.get("additionalProperties").is_none());
 }
+
+// --- Chimera phase-2 progressive disclosure ---------------------------------
+
+use super::{
+    TOOL_REVEAL_MAX_NAMES, ToolReveal, ToolRevealProjection, compact_signature,
+    is_tool_reveal_message, promoted_reveal_names, revealed_names_from_search_result,
+    revealed_tools_guidance, tool_reveal_message,
+};
+use codewhale_models::{ContentBlock, Message, Role, SystemPrompt};
+use codewhale_core::prefix_cache::PrefixFingerprint;
+
+fn deferred_catalog_tool(name: &str, defer: bool) -> Tool {
+    Tool {
+        tool_type: None,
+        name: name.to_string(),
+        description: format!("{name} deferred tool"),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "offset": {"type": "integer"}
+            },
+            "required": ["path"]
+        }),
+        allowed_callers: None,
+        defer_loading: Some(defer),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }
+}
+
+fn user_text(text: &str) -> Message {
+    Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+    }
+}
+
+fn catalog_tools_fingerprint(catalog: &[Tool], active: &HashSet<String>) -> Option<String> {
+    crate::core::engine::tool_catalog::active_tools_for_request(catalog, active, false).map(
+        |tools: Vec<Tool>| {
+            let mut cache = codewhale_core::prefix_cache::ToolCatalogCache::new();
+            PrefixFingerprint::compute_with_tool_cache("", Some(&tools), &mut cache)
+                .tools_sha256
+        },
+    )
+}
+
+fn search(query: &str, catalog: &[Tool], active: &mut HashSet<String>) -> crate::tools::spec::ToolResult {
+    let mut cache = ToolActivationCache::default();
+    execute_tool_search_with_cache(
+        codewhale_tools::names::TOOL_SEARCH_NAME,
+        &json!({"query": query, "max_results": 4}),
+        catalog,
+        active,
+        &mut cache,
+    )
+    .expect("tool search should succeed")
+}
+
+/// Reveal must not change the request tool array: the header hash over the
+/// active tool projection is byte-identical before and after a search.
+#[test]
+fn reveal_keeps_header_tool_hash_stable() {
+    let catalog = vec![
+        deferred_catalog_tool("read", false),
+        deferred_catalog_tool("bash", false),
+        deferred_catalog_tool("web_fetch", true),
+        deferred_catalog_tool("context_archive_search", true),
+    ];
+    let mut active = initial_active_tools(&catalog);
+    let before = catalog_tools_fingerprint(&catalog, &active);
+
+    let result = search("web", &catalog, &mut active);
+
+    let after = catalog_tools_fingerprint(&catalog, &active);
+    assert_eq!(before, after, "reveal must not move the pinned tool prefix");
+    assert!(!active.contains("web_fetch"));
+    let revealed = revealed_names_from_search_result(&result);
+    assert_eq!(revealed, vec!["web_fetch".to_string()]);
+}
+
+/// A revealed call executes by name: the projection reports it as revealed
+/// and unpromoted, so the turn loop executes it off the array.
+#[test]
+fn revealed_tool_is_callable_by_name_off_array() {
+    let catalog = vec![deferred_catalog_tool("web_fetch", true)];
+    let mut active = initial_active_tools(&catalog);
+    let result = search("web_fetch", &catalog, &mut active);
+    let reveal = ToolReveal {
+        name: "web_fetch".to_string(),
+        revealed_at_ms: 1_000,
+    };
+
+    let mut history = vec![user_text("find docs"), tool_reveal_message(&reveal)];
+    let projection = ToolRevealProjection::from_history(&history);
+    assert!(projection.is_revealed("web_fetch"));
+    assert_eq!(projection.unpromoted().len(), 1);
+    // The search result still names the tool for the model.
+    let revealed = revealed_names_from_search_result(&result);
+    assert_eq!(revealed, vec!["web_fetch".to_string()]);
+    // Guidance renders the signature the model calls with.
+    let guidance = revealed_tools_guidance(&[reveal], &catalog).expect("guidance renders");
+    assert!(guidance.contains("- `web_fetch`(path: string, offset?: integer)`"));
+    history.push(user_text("next"));
+    assert!(ToolRevealProjection::from_history(&history).is_revealed("web_fetch"));
+}
+
+/// Reveal does not grant permission: the guidance is informational and the
+/// revealed set carries no allow/deny decision — gates re-run per call.
+#[test]
+fn reveal_records_carry_no_permission_widening() {
+    let catalog = vec![deferred_catalog_tool("web_fetch", true)];
+    let mut active = initial_active_tools(&catalog);
+    let result = search("web_fetch", &catalog, &mut active);
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&result.content).expect("payload is JSON");
+    assert!(
+        payload["authority"]
+            .as_str()
+            .expect("authority present")
+            .contains("permission checks still apply")
+    );
+    // No revealed name was inserted into the active set, so no execution
+    // surface was widened by the reveal itself.
+    assert!(!active.contains("web_fetch"));
+}
+
+/// Session isolation: two sessions with different histories project
+/// independent reveal sets.
+#[test]
+fn reveal_projection_is_session_scoped() {
+    let left = vec![
+        user_text("a"),
+        tool_reveal_message(&ToolReveal {
+            name: "web_fetch".to_string(),
+            revealed_at_ms: 1,
+        }),
+    ];
+    let right = vec![
+        user_text("b"),
+        tool_reveal_message(&ToolReveal {
+            name: "context_archive_search".to_string(),
+            revealed_at_ms: 2,
+        }),
+    ];
+    let left_projection = ToolRevealProjection::from_history(&left);
+    let right_projection = ToolRevealProjection::from_history(&right);
+    assert!(left_projection.is_revealed("web_fetch"));
+    assert!(!left_projection.is_revealed("context_archive_search"));
+    assert!(right_projection.is_revealed("context_archive_search"));
+    assert!(!right_projection.is_revealed("web_fetch"));
+}
+
+/// The reveal record is rebuildable from session history: a resume that
+/// replays the messages restores the identical revealed set.
+#[test]
+fn reveal_history_rebuilds_after_restore() {
+    let reveal = ToolReveal {
+        name: "web_fetch".to_string(),
+        revealed_at_ms: 5_000,
+    };
+    let history = vec![
+        user_text("start"),
+        tool_reveal_message(&reveal),
+        user_text("call it"),
+    ];
+    let first = ToolRevealProjection::from_history(&history);
+    // Simulate a save/restore round trip: the same messages project the
+    // same set without extra persisted state.
+    let restored = ToolRevealProjection::from_history(&history);
+    assert_eq!(first.unpromoted(), restored.unpromoted());
+
+    let message = tool_reveal_message(&reveal);
+    assert!(is_tool_reveal_message(&message));
+    // A user message that merely quotes the payload is not a reveal.
+    let mut quoted = user_text("the engine wrote {\"type\":\"tool_reveal\"}");
+    quoted.role = Role::User;
+    assert!(!is_tool_reveal_message(&quoted));
+}
+
+/// Compaction promotion: reveals at or before the newest compaction
+/// checkpoint are promoted; reveals after it stay off the array.
+#[test]
+fn compaction_promotes_reveals_at_or_before_the_boundary() {
+    let catalog = vec![
+        deferred_catalog_tool("web_fetch", true),
+        deferred_catalog_tool("context_archive_search", true),
+        deferred_catalog_tool("read", false),
+    ];
+    let checkpoint = crate::compaction::compaction_checkpoint_message(&SystemPrompt::Text(
+        "Codewhale handoff note. Earlier turns of this session were summarized.\n\nsummary"
+            .to_string(),
+    ));
+    let history = vec![
+        user_text("turn 1"),
+        tool_reveal_message(&ToolReveal {
+            name: "web_fetch".to_string(),
+            revealed_at_ms: 1_000,
+        }),
+        checkpoint,
+        tool_reveal_message(&ToolReveal {
+            name: "context_archive_search".to_string(),
+            revealed_at_ms: 2_000,
+        }),
+    ];
+    let promoted = promoted_reveal_names(&history, &catalog);
+    assert!(promoted.contains("web_fetch"), "reveal before compaction promotes");
+    assert!(
+        !promoted.contains("context_archive_search"),
+        "reveal after compaction stays off-array"
+    );
+    let projection = ToolRevealProjection::from_history(&history);
+    assert!(!projection.is_revealed("web_fetch"), "promoted tool left the off-array set");
+    assert!(projection.is_revealed("context_archive_search"));
+}
+
+/// Promotion requires the tool to still exist as deferred in the live
+/// catalog: a disconnected MCP tool must not be resurrected by an old reveal.
+#[test]
+fn promotion_drops_names_missing_from_the_live_catalog() {
+    let checkpoint = crate::compaction::compaction_checkpoint_message(&SystemPrompt::Text(
+        "Codewhale handoff note. Earlier turns of this session were summarized.\n\nsummary"
+            .to_string(),
+    ));
+    let history = vec![
+        tool_reveal_message(&ToolReveal {
+            name: "mcp_gone_tool".to_string(),
+            revealed_at_ms: 1,
+        }),
+        checkpoint,
+    ];
+    let catalog = vec![deferred_catalog_tool("web_fetch", true)];
+    assert!(promoted_reveal_names(&history, &catalog).is_empty());
+}
+
+/// Off-array eviction is bounded: only the newest TOOL_REVEAL_MAX_NAMES
+/// reveals stay in the off-array set, oldest first evicted.
+#[test]
+fn off_array_reveal_set_is_bounded() {
+    let mut history = Vec::new();
+    for index in 0..(TOOL_REVEAL_MAX_NAMES + 4) {
+        history.push(tool_reveal_message(&ToolReveal {
+            name: format!("tool_{index}"),
+            revealed_at_ms: index as u64,
+        }));
+    }
+    let projection = ToolRevealProjection::from_history(&history);
+    assert_eq!(projection.unpromoted().len(), TOOL_REVEAL_MAX_NAMES);
+    // The oldest four were evicted.
+    for index in 0..4 {
+        assert!(!projection.is_revealed(&format!("tool_{index}")));
+    }
+    // The newest TOOL_REVEAL_MAX_NAMES remain.
+    for index in 4..(TOOL_REVEAL_MAX_NAMES + 4) {
+        assert!(projection.is_revealed(&format!("tool_{index}")));
+    }
+}
+
+/// A re-reveal supersedes the older record: the newest position decides.
+#[test]
+fn re_reveal_after_checkpoint_unpromotes_the_tool() {
+    let catalog = vec![deferred_catalog_tool("web_fetch", true)];
+    let checkpoint = crate::compaction::compaction_checkpoint_message(&SystemPrompt::Text(
+        "Codewhale handoff note. Earlier turns of this session were summarized.\n\nsummary"
+            .to_string(),
+    ));
+    let history = vec![
+        tool_reveal_message(&ToolReveal {
+            name: "web_fetch".to_string(),
+            revealed_at_ms: 1,
+        }),
+        checkpoint,
+        tool_reveal_message(&ToolReveal {
+            name: "web_fetch".to_string(),
+            revealed_at_ms: 9,
+        }),
+    ];
+    assert!(promoted_reveal_names(&history, &catalog).is_empty());
+    assert!(ToolRevealProjection::from_history(&history).is_revealed("web_fetch"));
+}
+
+/// compact_signature renders required/optional params with coarse types and
+/// caps long parameter lists.
+#[test]
+fn compact_signature_renders_optional_and_capped() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "offset": {"type": "integer"},
+            "limit": {"type": "integer"}
+        },
+        "required": ["path"]
+    });
+    assert_eq!(
+        compact_signature(&schema),
+        "(path: string, offset?: integer, limit?: integer)"
+    );
+    let mut properties = serde_json::Map::new();
+    for index in 0..12 {
+        properties.insert(format!("field_{index}"), json!({"type": "string"}));
+    }
+    let long = json!({"type": "object", "properties": properties});
+    let signature = compact_signature(&long);
+    assert!(signature.ends_with(", …)"));
+    assert_eq!(signature.matches("field_").count(), 8);
+    assert_eq!(compact_signature(&json!({"type": "object"})), "");
+}
+
+/// The plan-phase filter contract: a revealed name is excluded from the
+/// admission list, so the deferred activation path never puts its schema on
+/// the wire; the call itself executes by name through the existing gate
+/// stack.
+#[test]
+fn revealed_names_are_excluded_from_activation_admission() {
+    let catalog = vec![
+        deferred_catalog_tool("read", false),
+        deferred_catalog_tool("web_fetch", true),
+        deferred_catalog_tool("workflow", true),
+    ];
+    let mut active = initial_active_tools(&catalog);
+    // The model searched and web_fetch was revealed.
+    let history = vec![
+        user_text("start"),
+        tool_reveal_message(&ToolReveal {
+            name: "web_fetch".to_string(),
+            revealed_at_ms: 1_000,
+        }),
+    ];
+    let projection = ToolRevealProjection::from_history(&history);
+    let deferred_tools_hydrated_in_order = vec![
+        "web_fetch".to_string(),
+        "workflow".to_string(),
+    ];
+    let admitting: Vec<String> = deferred_tools_hydrated_in_order
+        .iter()
+        .filter(|name| !projection.is_revealed(name))
+        .cloned()
+        .collect();
+    assert_eq!(admitting, vec!["workflow".to_string()]);
+    // The revealed tool stays off the request tool array even after the
+    // unrevealed sibling is admitted.
+    active.extend(admitting);
+    assert!(active.contains("workflow"));
+    assert!(!active.contains("web_fetch"));
+}

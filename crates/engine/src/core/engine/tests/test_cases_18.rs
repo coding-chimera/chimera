@@ -1322,7 +1322,19 @@ readline.createInterface({ input: process.stdin }).on('line', async line => {
     )
     .expect("real search");
     assert!(result.success);
-    assert!(active.contains("mcp_slow_ready"));
+    // Phase-2 reveal: the discovered tool is revealed by name, not activated
+    // into the request tool array.
+    assert!(!active.contains("mcp_slow_ready"));
+    assert!(
+        result
+            .metadata
+            .as_ref()
+            .unwrap()["tool_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "mcp_slow_ready")
+    );
     engine.wait_for_mcp_boot().await;
     fixture_manager.shutdown().await;
 }
