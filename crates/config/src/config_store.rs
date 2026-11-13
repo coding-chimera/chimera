@@ -67,6 +67,26 @@ pub(crate) fn parse_config_toml_canonical(
 ) -> Result<(ConfigToml, legacy_root::LegacyRootMigration), toml::de::Error> {
     let (text, receipt) = legacy_root::canonicalize_text(contents)?;
     let config = toml::from_str::<ConfigToml>(&text)?;
+    // A document that names a `schema_version` opts into the strict regime
+    // (RFC 13.1): every root key must be a typed field. Unknown keys fail
+    // loud so a versioned file cannot silently drop a setting the runtime
+    // never reads. Unversioned files keep the tolerant `extras` flattening,
+    // and `config doctor` still reports their unread keys.
+    if let Some(version) = config.schema_version {
+        if version != crate::importer::IMPORTED_SCHEMA_VERSION {
+            return Err(serde::de::Error::custom(format!(
+                "schema_version {version} is newer than this build understands ({}); update codewhale and reload",
+                crate::importer::IMPORTED_SCHEMA_VERSION
+            )));
+        }
+        let unknown: Vec<&str> = config.extras.keys().map(String::as_str).collect();
+        if !unknown.is_empty() {
+            let listed = codewhale_secrets::redact::redact_secrets(&unknown.join(", "));
+            return Err(serde::de::Error::custom(format!(
+                "schema_version = {version} requires every root key to be known; unknown key(s): {listed}"
+            )));
+        }
+    }
     Ok((config, receipt))
 }
 

@@ -10,6 +10,7 @@ pub mod device_code;
 pub mod extension_host;
 pub mod external_credentials;
 pub mod hooks;
+pub mod importer;
 pub mod instruction_budget;
 pub mod legacy_root;
 pub mod local_reasoning;
@@ -52,6 +53,7 @@ pub use external_credentials::{
     ExternalCredentialReadGrant, ExternalCredentialSource, default_dsh_credentials_path,
     external_credential_consent_status, quote_os_path, resolve_external_credential_path,
 };
+pub use importer::IMPORTED_SCHEMA_VERSION;
 pub use model_reference::{Modality, ModelReferenceCard, ModelReferenceDatabase};
 pub use opencode_go::{opencode_go_endpoint_key, opencode_go_model_id, opencode_go_models};
 pub(crate) use provider_defaults::*;
