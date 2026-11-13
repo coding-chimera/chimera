@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    Actor, EvidenceItem, EvidenceSource, OracleRecord, OracleStatus, OracleVerificationKind,
-    Obligation, ObligationActor, ObligationIgnoreActor, ObligationResolveActor, ObligationSource,
-    ObligationStatus, OracleLinkWindow, LIMIT_DEFAULT, LIMIT_MAX,
+    Actor, EvidenceItem, EvidenceSource, LIMIT_DEFAULT, LIMIT_MAX, Obligation, ObligationActor,
+    ObligationIgnoreActor, ObligationResolveActor, ObligationSource, ObligationStatus,
+    OracleLinkWindow, OracleRecord, OracleStatus, OracleVerificationKind,
 };
 
 /// Directory name (under the project root) holding the evidence database.
@@ -359,12 +359,13 @@ impl EvidenceStore {
     /// Counts of obligations per status.
     pub fn obligation_counts(&self) -> Result<ObligationCounts> {
         let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(
-            "SELECT status, COUNT(*) FROM obligation GROUP BY status",
-        )?;
+        let mut statement =
+            conn.prepare_cached("SELECT status, COUNT(*) FROM obligation GROUP BY status")?;
         let mut counts = ObligationCounts::default();
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         for (status, count) in rows {
             let count = u64::try_from(count).unwrap_or(0);
@@ -601,7 +602,10 @@ impl EvidenceStore {
     /// index (e.g. all known codegraph node ids / file paths). When `None`
     /// no marks change; callers that cannot read the graph pass `None` and
     /// obligations keep their current lifecycle.
-    pub fn refresh_stale_obligations(&self, current_targets: Option<&std::collections::HashSet<String>>) -> Result<u64> {
+    pub fn refresh_stale_obligations(
+        &self,
+        current_targets: Option<&std::collections::HashSet<String>>,
+    ) -> Result<u64> {
         let now = now_iso();
         let mut conn = self.conn()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -764,7 +768,10 @@ impl EvidenceStore {
             "#,
         )?;
         let rows = statement
-            .query_map(params![session_id, finished_at, limit as i64], row_payload::<MutationRecord>)?
+            .query_map(
+                params![session_id, finished_at, limit as i64],
+                row_payload::<MutationRecord>,
+            )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -873,10 +880,7 @@ impl EvidenceStore {
                     finished_before: None,
                     limit: Some(limit),
                 })?;
-                Ok(records
-                    .into_iter()
-                    .map(EvidenceItem::Oracle)
-                    .collect())
+                Ok(records.into_iter().map(EvidenceItem::Oracle).collect())
             }
         }
     }
@@ -910,7 +914,10 @@ impl EvidenceStore {
         };
         if obligations_path.is_file() {
             let text = fs::read_to_string(&obligations_path).with_context(|| {
-                format!("failed to read legacy obligations {}", obligations_path.display())
+                format!(
+                    "failed to read legacy obligations {}",
+                    obligations_path.display()
+                )
             })?;
             let imported = self.import_legacy_obligations(&text)?;
             report.obligations_imported = imported.0;
@@ -918,7 +925,10 @@ impl EvidenceStore {
         }
         if oracles_path.is_file() {
             let text = fs::read_to_string(&oracles_path).with_context(|| {
-                format!("failed to read legacy oracle results {}", oracles_path.display())
+                format!(
+                    "failed to read legacy oracle results {}",
+                    oracles_path.display()
+                )
             })?;
             let imported = self.import_legacy_oracles(&text)?;
             report.oracles_imported = imported.0;
@@ -985,7 +995,7 @@ impl EvidenceStore {
                     return Err(anyhow::anyhow!(
                         "legacy oracle-results.jsonl line {} is not a valid record: {error}",
                         line_no + 1
-                    ))
+                    ));
                 }
             };
             let exists: bool = conn
@@ -1073,9 +1083,7 @@ fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn row_payload<T: for<'de> Deserialize<'de>>(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<T> {
+fn row_payload<T: for<'de> Deserialize<'de>>(row: &rusqlite::Row<'_>) -> rusqlite::Result<T> {
     let payload: String = row.get(0)?;
     serde_json::from_str(&payload).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
@@ -1083,9 +1091,12 @@ fn row_payload<T: for<'de> Deserialize<'de>>(
 }
 
 fn counts_on(tx: &rusqlite::Transaction<'_>) -> Result<ObligationCounts> {
-    let mut statement = tx.prepare_cached("SELECT status, COUNT(*) FROM obligation GROUP BY status")?;
+    let mut statement =
+        tx.prepare_cached("SELECT status, COUNT(*) FROM obligation GROUP BY status")?;
     let rows = statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut counts = ObligationCounts::default();
     for (status, count) in rows {
@@ -1254,11 +1265,8 @@ fn oracle_from_seed(seed: OracleSeed, now: &str) -> OracleRecord {
         }
         format!("oracle_{}", &hex[..16])
     };
-    let verification = OracleRecord::infer_verification(
-        &seed.kind,
-        &seed.payload,
-        seed.verification_kind,
-    );
+    let verification =
+        OracleRecord::infer_verification(&seed.kind, &seed.payload, seed.verification_kind);
     let trusted = seed.trusted.unwrap_or(verification.trusted);
     OracleRecord {
         schema_version: 1,

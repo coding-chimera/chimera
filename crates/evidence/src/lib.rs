@@ -28,8 +28,8 @@ pub mod store;
 pub mod types;
 
 pub use display::{
-    DISPLAY_OUTPUT_MAX_CHARS, EvidenceItemDisplay, ObligationDisplay, OracleDisplay, compact_oracle_payload,
-    display_item, display_items,
+    DISPLAY_OUTPUT_MAX_CHARS, EvidenceItemDisplay, ObligationDisplay, OracleDisplay,
+    compact_oracle_payload, display_item, display_items,
 };
 pub use store::{
     EVIDENCE_DB_FILE, EVIDENCE_DIR, EvidenceStore, ImportReport, LEGACY_OBLIGATIONS_FILE,

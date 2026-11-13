@@ -334,7 +334,7 @@ fn classify_shell_command(command: Option<&str>) -> OracleVerificationKind {
             match sub {
                 "lint" | "eslint" | "ruff" | "clippy" => return OracleVerificationKind::Lint,
                 "typecheck" | "tsc" | "mypy" | "pyright" | "check" => {
-                    return OracleVerificationKind::Typecheck
+                    return OracleVerificationKind::Typecheck;
                 }
                 "test" | "vitest" | "jest" | "mocha" => return OracleVerificationKind::Test,
                 "build" => return OracleVerificationKind::Build,

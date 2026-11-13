@@ -78,7 +78,10 @@ fn sync_creates_pending_obligations_with_deterministic_ids() {
     let store = store_at(&dir);
 
     let outcome = store
-        .sync_obligations(&[seed("src/a.rs#fn_main", "unverified call"), seed("src/b.rs", "stale types")])
+        .sync_obligations(&[
+            seed("src/a.rs#fn_main", "unverified call"),
+            seed("src/b.rs", "stale types"),
+        ])
         .expect("sync");
     assert_eq!(outcome.created, 2);
     assert_eq!(outcome.updated, 0);
@@ -89,9 +92,21 @@ fn sync_creates_pending_obligations_with_deterministic_ids() {
         .list_obligations(&ObligationQuery::default())
         .expect("list");
     assert_eq!(items.len(), 2);
-    assert!(items.iter().all(|item| item.status == ObligationStatus::Pending));
+    assert!(
+        items
+            .iter()
+            .all(|item| item.status == ObligationStatus::Pending)
+    );
     assert!(items.iter().all(|item| item.id.starts_with("obl_")));
-    assert_eq!(items[0].id, items[1].id.len().checked_sub(0).map(|_| items[0].id.clone()).unwrap());
+    assert_eq!(
+        items[0].id,
+        items[1]
+            .id
+            .len()
+            .checked_sub(0)
+            .map(|_| items[0].id.clone())
+            .unwrap()
+    );
     // Deterministic: the same seed produces the same id.
     let again = store
         .sync_obligations(&[seed("src/a.rs#fn_main", "unverified call")])
@@ -115,13 +130,17 @@ fn claim_resolve_ignore_transition_states_and_owner_checks() {
         .id;
 
     // Claim by the first worker.
-    let transition = store.claim_obligation(&id, &actor("session-1")).expect("claim");
+    let transition = store
+        .claim_obligation(&id, &actor("session-1"))
+        .expect("claim");
     assert_eq!(transition.obligation.status, ObligationStatus::Claimed);
     assert_eq!(transition.counts.claimed, 1);
     assert_eq!(transition.counts.pending, 0);
 
     // Idempotent re-claim by the same owner.
-    let again = store.claim_obligation(&id, &actor("session-1")).expect("re-claim");
+    let again = store
+        .claim_obligation(&id, &actor("session-1"))
+        .expect("re-claim");
     assert_eq!(again.obligation.status, ObligationStatus::Claimed);
     assert_eq!(again.counts.claimed, 1);
 
@@ -146,7 +165,11 @@ fn claim_resolve_ignore_transition_states_and_owner_checks() {
         .expect("resolve");
     assert_eq!(resolved.obligation.status, ObligationStatus::Resolved);
     assert_eq!(
-        resolved.obligation.resolved_by.as_ref().and_then(|r| r.note.clone()),
+        resolved
+            .obligation
+            .resolved_by
+            .as_ref()
+            .and_then(|r| r.note.clone()),
         Some("fixed in commit abc".to_string())
     );
     assert_eq!(resolved.counts.resolved, 1);
@@ -154,7 +177,9 @@ fn claim_resolve_ignore_transition_states_and_owner_checks() {
 
     // Terminal states refuse further transitions.
     for error in [
-        store.claim_obligation(&id, &actor("session-1")).expect_err("claim resolved"),
+        store
+            .claim_obligation(&id, &actor("session-1"))
+            .expect_err("claim resolved"),
         store
             .resolve_obligation(&id, &actor("session-1"), None)
             .expect_err("resolve resolved"),
@@ -167,7 +192,9 @@ fn claim_resolve_ignore_transition_states_and_owner_checks() {
 fn ignore_requires_reason_and_owner() {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
-    store.sync_obligations(&[seed("src/c.rs", "noise")]).expect("sync");
+    store
+        .sync_obligations(&[seed("src/c.rs", "noise")])
+        .expect("sync");
     let id = store
         .list_obligations(&ObligationQuery::default())
         .expect("list")
@@ -180,7 +207,12 @@ fn ignore_requires_reason_and_owner() {
     assert!(error.to_string().contains("requires a reason"), "{error}");
 
     let ignored = store
-        .ignore_obligation(&id, &actor("session-1"), "out of scope", Some("user said skip"))
+        .ignore_obligation(
+            &id,
+            &actor("session-1"),
+            "out of scope",
+            Some("user said skip"),
+        )
         .expect("ignore");
     assert_eq!(ignored.obligation.status, ObligationStatus::Ignored);
     let ignore = ignored.obligation.ignored_by.expect("ignore record");
@@ -189,7 +221,9 @@ fn ignore_requires_reason_and_owner() {
     assert_eq!(ignored.counts.ignored, 1);
 
     // A claimed obligation cannot be ignored by a foreign actor.
-    store.sync_obligations(&[seed("src/d.rs", "claimed noise")]).expect("sync");
+    store
+        .sync_obligations(&[seed("src/d.rs", "claimed noise")])
+        .expect("sync");
     let claimed_id = store
         .list_obligations(&ObligationQuery {
             status: Some(ObligationStatus::Pending),
@@ -200,11 +234,16 @@ fn ignore_requires_reason_and_owner() {
         .find(|item| item.target == "src/d.rs")
         .expect("second obligation")
         .id;
-    store.claim_obligation(&claimed_id, &actor("session-1")).expect("claim");
+    store
+        .claim_obligation(&claimed_id, &actor("session-1"))
+        .expect("claim");
     let error = store
         .ignore_obligation(&claimed_id, &other_actor("session-2"), "why not", None)
         .expect_err("foreign ignore");
-    assert!(error.to_string().contains("claimed by session-1"), "{error}");
+    assert!(
+        error.to_string().contains("claimed by session-1"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -212,7 +251,9 @@ fn unknown_obligation_errors_are_explicit() {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
     for error in [
-        store.claim_obligation("obl_missing", &actor("s")).expect_err("claim unknown"),
+        store
+            .claim_obligation("obl_missing", &actor("s"))
+            .expect_err("claim unknown"),
         store
             .resolve_obligation("obl_missing", &actor("s"), None)
             .expect_err("resolve unknown"),
@@ -220,7 +261,10 @@ fn unknown_obligation_errors_are_explicit() {
             .ignore_obligation("obl_missing", &actor("s"), "r", None)
             .expect_err("ignore unknown"),
     ] {
-        assert!(error.to_string().contains("unknown Chimera obligation"), "{error}");
+        assert!(
+            error.to_string().contains("unknown Chimera obligation"),
+            "{error}"
+        );
     }
 }
 
@@ -229,13 +273,26 @@ fn pending_and_stale_obligations_can_be_resolved_without_a_claim() {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
     store
-        .sync_obligations(&[seed("src/e.rs", "orphan"), seed("src/f.rs", "will go stale")])
+        .sync_obligations(&[
+            seed("src/e.rs", "orphan"),
+            seed("src/f.rs", "will go stale"),
+        ])
         .expect("sync");
     let pending = store
         .list_obligations(&ObligationQuery::default())
         .expect("list");
-    let orphan = pending.iter().find(|item| item.target == "src/e.rs").unwrap().id.clone();
-    let staling = pending.iter().find(|item| item.target == "src/f.rs").unwrap().id.clone();
+    let orphan = pending
+        .iter()
+        .find(|item| item.target == "src/e.rs")
+        .unwrap()
+        .id
+        .clone();
+    let staling = pending
+        .iter()
+        .find(|item| item.target == "src/f.rs")
+        .unwrap()
+        .id
+        .clone();
 
     // Resolve an unclaimed obligation directly.
     let resolved = store
@@ -251,9 +308,14 @@ fn pending_and_stale_obligations_can_be_resolved_without_a_claim() {
         store.obligation(&staling).unwrap().unwrap().status,
         ObligationStatus::Stale
     );
-    let claimed = store.claim_obligation(&staling, &actor("session-2")).expect("claim stale");
+    let claimed = store
+        .claim_obligation(&staling, &actor("session-2"))
+        .expect("claim stale");
     assert_eq!(claimed.obligation.status, ObligationStatus::Claimed);
-    assert!(claimed.obligation.stale_reason.is_none(), "claiming clears the stale reason");
+    assert!(
+        claimed.obligation.stale_reason.is_none(),
+        "claiming clears the stale reason"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -271,10 +333,27 @@ fn stale_refresh_marks_and_revives_without_touching_terminal_states() {
             seed("src/resolved-gone.rs", "three"),
         ])
         .expect("sync");
-    let items = store.list_obligations(&ObligationQuery::default()).expect("list");
-    let live = items.iter().find(|i| i.target == "src/live.rs").unwrap().id.clone();
-    let gone = items.iter().find(|i| i.target == "src/gone.rs").unwrap().id.clone();
-    let resolved_gone = items.iter().find(|i| i.target == "src/resolved-gone.rs").unwrap().id.clone();
+    let items = store
+        .list_obligations(&ObligationQuery::default())
+        .expect("list");
+    let live = items
+        .iter()
+        .find(|i| i.target == "src/live.rs")
+        .unwrap()
+        .id
+        .clone();
+    let gone = items
+        .iter()
+        .find(|i| i.target == "src/gone.rs")
+        .unwrap()
+        .id
+        .clone();
+    let resolved_gone = items
+        .iter()
+        .find(|i| i.target == "src/resolved-gone.rs")
+        .unwrap()
+        .id
+        .clone();
     store
         .resolve_obligation(&resolved_gone, &actor("s"), None)
         .expect("resolve");
@@ -318,10 +397,19 @@ fn stale_refresh_marks_and_revives_without_touching_terminal_states() {
         ObligationStatus::Pending,
         "unowned stale obligation revives to pending"
     );
-    assert!(store.obligation(&gone).unwrap().unwrap().stale_reason.is_none());
+    assert!(
+        store
+            .obligation(&gone)
+            .unwrap()
+            .unwrap()
+            .stale_reason
+            .is_none()
+    );
 
     // A claimed obligation that goes stale and revives stays claimed.
-    store.claim_obligation(&gone, &actor("session-1")).expect("claim");
+    store
+        .claim_obligation(&gone, &actor("session-1"))
+        .expect("claim");
     store
         .refresh_stale_obligations(Some(&targets(&["src/live.rs"])))
         .expect("stale again");
@@ -392,19 +480,29 @@ fn record_oracle_stores_full_output_and_links_preceding_mutations() {
         .expect("stored output");
     assert_eq!(stored_output, long_output);
     assert!(
-        stored.payload.get("shell").unwrap().get("outputTruncatedForDisplay").is_none(),
+        stored
+            .payload
+            .get("shell")
+            .unwrap()
+            .get("outputTruncatedForDisplay")
+            .is_none(),
         "storage never carries the display truncation marker"
     );
 
     // The link window resolved the same-session preceding mutations only.
     assert_eq!(stored.linked_changes.len(), 5);
-    assert!(stored
-        .linked_changes
-        .iter()
-        .all(|change| change.tool_id.starts_with("mut-") && change.tool_id != "mut-foreign"));
+    assert!(
+        stored
+            .linked_changes
+            .iter()
+            .all(|change| change.tool_id.starts_with("mut-") && change.tool_id != "mut-foreign")
+    );
     assert_eq!(stored.linked_changes[0].tool_id, "mut-0");
     assert_eq!(stored.linked_changes[4].tool_id, "mut-4");
-    assert_eq!(stored.linked_changes[0].change_id.as_deref(), Some("change-1"));
+    assert_eq!(
+        stored.linked_changes[0].change_id.as_deref(),
+        Some("change-1")
+    );
 
     // Verification is inferred from the command.
     assert_eq!(stored.verification_kind, OracleVerificationKind::Test);
@@ -419,7 +517,10 @@ fn record_oracle_stores_full_output_and_links_preceding_mutations() {
         .expect("display output");
     assert!(shown.chars().count() < long_output.chars().count());
     assert_eq!(
-        compacted.get("shell").unwrap().get("outputTruncatedForDisplay"),
+        compacted
+            .get("shell")
+            .unwrap()
+            .get("outputTruncatedForDisplay"),
         Some(&json!(true))
     );
     // Full evidence still retrievable by id.
@@ -434,7 +535,9 @@ fn recording_the_same_oracle_twice_is_idempotent() {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
     // Same (now, payload) → same id: re-recording replaces, not duplicates.
-    let first = store.record_oracle(oracle_seed(OracleStatus::Unknown, "output")).expect("first");
+    let first = store
+        .record_oracle(oracle_seed(OracleStatus::Unknown, "output"))
+        .expect("first");
     let oracles = store
         .list_oracles(&crate::OracleQuery {
             include_passing: true,
@@ -570,7 +673,9 @@ fn all_seven_swarm_sources_materialize_with_correct_filters() {
             .id
             .clone()
     };
-    store.claim_obligation(&id_of("src/claimed.rs"), &actor("s")).unwrap();
+    store
+        .claim_obligation(&id_of("src/claimed.rs"), &actor("s"))
+        .unwrap();
     store
         .resolve_obligation(&id_of("src/resolved.rs"), &actor("s"), None)
         .unwrap();
@@ -617,12 +722,24 @@ fn all_seven_swarm_sources_materialize_with_correct_filters() {
             .collect()
     };
 
-    assert_eq!(obligations(EvidenceSource::PendingObligations), vec!["src/pending.rs"]);
-    assert_eq!(obligations(EvidenceSource::ClaimedObligations), vec!["src/claimed.rs"]);
-    assert_eq!(obligations(EvidenceSource::StaleObligations), vec!["src/stale.rs"]);
+    assert_eq!(
+        obligations(EvidenceSource::PendingObligations),
+        vec!["src/pending.rs"]
+    );
+    assert_eq!(
+        obligations(EvidenceSource::ClaimedObligations),
+        vec!["src/claimed.rs"]
+    );
+    assert_eq!(
+        obligations(EvidenceSource::StaleObligations),
+        vec!["src/stale.rs"]
+    );
     let mut active = obligations(EvidenceSource::ActiveObligations);
     active.sort();
-    assert_eq!(active, vec!["src/claimed.rs", "src/pending.rs", "src/stale.rs"]);
+    assert_eq!(
+        active,
+        vec!["src/claimed.rs", "src/pending.rs", "src/stale.rs"]
+    );
 
     let oracle_status = |source: EvidenceSource| -> Vec<String> {
         store
@@ -636,7 +753,10 @@ fn all_seven_swarm_sources_materialize_with_correct_filters() {
             .collect()
     };
     assert_eq!(oracle_status(EvidenceSource::FailingOracles), vec!["fail"]);
-    assert_eq!(oracle_status(EvidenceSource::UnknownOracles), vec!["unknown"]);
+    assert_eq!(
+        oracle_status(EvidenceSource::UnknownOracles),
+        vec!["unknown"]
+    );
     let mut both = oracle_status(EvidenceSource::FailingOrUnknownOracles);
     both.sort();
     assert_eq!(both, vec!["fail", "unknown"]);
@@ -712,10 +832,25 @@ fn limits_default_to_20_and_cap_at_100() {
     );
 
     // Swarm sources share the same clamping.
-    assert_eq!(store.swarm_source(EvidenceSource::PendingObligations, None).unwrap().len(), 20);
-    assert_eq!(store.swarm_source(EvidenceSource::PendingObligations, Some(999)).unwrap().len(), 100);
     assert_eq!(
-        store.swarm_source(EvidenceSource::ActiveObligations, Some(5)).unwrap().len(),
+        store
+            .swarm_source(EvidenceSource::PendingObligations, None)
+            .unwrap()
+            .len(),
+        20
+    );
+    assert_eq!(
+        store
+            .swarm_source(EvidenceSource::PendingObligations, Some(999))
+            .unwrap()
+            .len(),
+        100
+    );
+    assert_eq!(
+        store
+            .swarm_source(EvidenceSource::ActiveObligations, Some(5))
+            .unwrap()
+            .len(),
         5
     );
 }
@@ -812,7 +947,12 @@ fn legacy_obligations_and_oracles_import_once_read_only() {
     // The legacy files were only read, never rewritten.
     let after = fs::read_to_string(legacy_dir.join("obligations.json")).unwrap();
     assert_eq!(before, after);
-    assert!(dir.path().join(".chimera").join("oracle-results.jsonl").is_file());
+    assert!(
+        dir.path()
+            .join(".chimera")
+            .join("oracle-results.jsonl")
+            .is_file()
+    );
 }
 
 #[test]
@@ -840,7 +980,11 @@ fn legacy_import_errors_are_explicit() {
     let dir2 = TempDir::new().unwrap();
     let legacy_dir2 = dir2.path().join(".chimera");
     fs::create_dir_all(&legacy_dir2).unwrap();
-    fs::write(legacy_dir2.join("oracle-results.jsonl"), "{valid-ish}\n{also not json}\n").unwrap();
+    fs::write(
+        legacy_dir2.join("oracle-results.jsonl"),
+        "{valid-ish}\n{also not json}\n",
+    )
+    .unwrap();
     let store2 = EvidenceStore::open(dir2.path()).unwrap();
     let error = store2.import_legacy().expect_err("broken oracles");
     assert!(error.to_string().contains("line 1"), "{error}");
@@ -857,20 +1001,33 @@ fn projects_are_isolated_on_disk() {
     let store_a = store_at(&dir_a);
     let store_b = store_at(&dir_b);
 
-    store_a.sync_obligations(&[seed("src/only-a.rs", "a")]).expect("sync a");
+    store_a
+        .sync_obligations(&[seed("src/only-a.rs", "a")])
+        .expect("sync a");
     store_a
         .record_oracle(oracle_seed(OracleStatus::Fail, "failure in a"))
         .expect("oracle a");
 
     assert_eq!(
-        store_a.list_obligations(&ObligationQuery::default()).unwrap().len(),
+        store_a
+            .list_obligations(&ObligationQuery::default())
+            .unwrap()
+            .len(),
         1
     );
     assert_eq!(
-        store_b.list_obligations(&ObligationQuery::default()).unwrap().len(),
+        store_b
+            .list_obligations(&ObligationQuery::default())
+            .unwrap()
+            .len(),
         0
     );
-    assert!(store_b.swarm_source(EvidenceSource::FailingOracles, None).unwrap().is_empty());
+    assert!(
+        store_b
+            .swarm_source(EvidenceSource::FailingOracles, None)
+            .unwrap()
+            .is_empty()
+    );
     // Different databases on disk.
     assert_ne!(store_a.db_path(), store_b.db_path());
     assert!(store_a.db_path().starts_with(dir_a.path()));
@@ -882,19 +1039,30 @@ fn state_survives_restart() {
     let root = dir.path().to_path_buf();
     {
         let store = EvidenceStore::open(&root).expect("open");
-        store.sync_obligations(&[seed("src/restart.rs", "restart")]).expect("sync");
-        let id = store.list_obligations(&ObligationQuery::default()).unwrap()[0].id.clone();
-        store.claim_obligation(&id, &actor("session-1")).expect("claim");
+        store
+            .sync_obligations(&[seed("src/restart.rs", "restart")])
+            .expect("sync");
+        let id = store.list_obligations(&ObligationQuery::default()).unwrap()[0]
+            .id
+            .clone();
+        store
+            .claim_obligation(&id, &actor("session-1"))
+            .expect("claim");
         store
             .record_oracle(oracle_seed(OracleStatus::Unknown, "unknown after restart"))
             .expect("oracle");
     }
     // Simulated process restart: a fresh store handle over the same files.
     let store = EvidenceStore::open(&root).expect("reopen");
-    let items = store.list_obligations(&ObligationQuery::default()).expect("list");
+    let items = store
+        .list_obligations(&ObligationQuery::default())
+        .expect("list");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].status, ObligationStatus::Claimed);
-    assert_eq!(items[0].claimed_by.as_ref().unwrap().actor.session_id, "session-1");
+    assert_eq!(
+        items[0].claimed_by.as_ref().unwrap().actor.session_id,
+        "session-1"
+    );
     let unknowns = store
         .swarm_source(EvidenceSource::UnknownOracles, None)
         .expect("oracles");
@@ -908,7 +1076,9 @@ fn schema_version_is_stamped_and_reopen_is_idempotent() {
     let store = EvidenceStore::open(&root).expect("open");
     drop(store);
     let conn = rusqlite::Connection::open(root.join(".chimera").join("evidence.db")).unwrap();
-    let version: i64 = conn.query_row("PRAGMA user_version;", [], |row| row.get(0)).unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version;", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(version, 1);
 }
 
@@ -923,10 +1093,12 @@ fn query_on_fresh_store_reports_empty_not_error() {
     assert_eq!(store.obligation_counts().unwrap().active, 0);
     assert!(store.obligation("obl_missing").unwrap().is_none());
     assert!(store.oracle("oracle_missing").unwrap().is_none());
-    assert!(store
-        .list_oracles(&crate::OracleQuery::default())
-        .unwrap()
-        .is_empty());
+    assert!(
+        store
+            .list_oracles(&crate::OracleQuery::default())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -943,12 +1115,20 @@ fn sync_with_no_seeds_is_a_no_op() {
 fn evidence_items_carry_stable_references() {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
-    store.sync_obligations(&[seed("src/ref.rs", "ref")]).unwrap();
+    store
+        .sync_obligations(&[seed("src/ref.rs", "ref")])
+        .unwrap();
     let items = store
         .swarm_source(EvidenceSource::PendingObligations, None)
         .unwrap();
-    assert_eq!(items[0].reference(), format!("obligation:{}", match &items[0] {
-        EvidenceItem::Obligation(item) => item.id.clone(),
-        EvidenceItem::Oracle(_) => unreachable!(),
-    }));
+    assert_eq!(
+        items[0].reference(),
+        format!(
+            "obligation:{}",
+            match &items[0] {
+                EvidenceItem::Obligation(item) => item.id.clone(),
+                EvidenceItem::Oracle(_) => unreachable!(),
+            }
+        )
+    );
 }

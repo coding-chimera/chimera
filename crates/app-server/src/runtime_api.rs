@@ -255,9 +255,17 @@ pub struct RuntimeApiState {
 }
 
 // This is a cache bound inside the existing owner, matching the daemon's
-// maximum of 64 live frontend connections. Scopes remain retained until owner
-// retirement; opening another listener never creates a parallel cache.
+// maximum of 64 live frontend connections. Opening another listener never
+// creates a parallel cache. Idle scopes retire once request-level recycling
+// runs; the home scope and every leased/pinned scope stay.
 const MAX_RUNTIME_WORKSPACE_SCOPES: usize = 64;
+
+/// How long a request-scoped workspace stays admitted after its last
+/// request before idle recycling may retire it. Long enough that a client
+/// that pauses between calls does not re-boot the workspace's engine on
+/// every request; short enough that one long-lived server does not hold 64
+/// scopes forever.
+const DEFAULT_SCOPE_IDLE_TTL: Duration = Duration::from_secs(15 * 60);
 
 struct RuntimeWorkspaceScope {
     lexical: PathBuf,
@@ -274,6 +282,96 @@ struct RuntimeWorkspaceScope {
     /// (`workspace_lease`). Watch-only observers never reach scope admission.
     /// Underscored because it is held for its `Drop` side effect, never read.
     _drive_lease: Option<codewhale_runtime::workspace_lease::SharedWorkspaceDriveLease>,
+    /// Request-lifetime activity: leases held by in-flight requests and SSE
+    /// streams, short restart-jitter pins, and the last moment a request
+    /// touched this scope (presence). Idle recycling consults these; a scope
+    /// with a live lease or pin, or touched inside the idle TTL, is never
+    /// reclaimed.
+    activity: Arc<ScopeActivity>,
+}
+
+/// Request-lifetime activity state on one workspace scope.
+#[derive(Default)]
+struct ScopeActivity {
+    leases: std::sync::atomic::AtomicUsize,
+    pins: std::sync::atomic::AtomicUsize,
+    last_presence_ms: std::sync::atomic::AtomicU64,
+}
+
+fn presence_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+impl ScopeActivity {
+    fn touch(&self) {
+        self.last_presence_ms
+            .store(presence_now_ms(), std::sync::atomic::Ordering::Release);
+    }
+
+    fn hold_lease(self: &Arc<Self>) -> ScopeLeaseGuard {
+        self.leases
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.touch();
+        ScopeLeaseGuard {
+            activity: self.clone(),
+        }
+    }
+
+    fn pin(self: &Arc<Self>) -> ScopePin {
+        self.pins.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.touch();
+        ScopePin {
+            activity: self.clone(),
+        }
+    }
+
+    fn idle_for(&self) -> Duration {
+        let last = self
+            .last_presence_ms
+            .load(std::sync::atomic::Ordering::Acquire);
+        let now = presence_now_ms();
+        Duration::from_millis(now.saturating_sub(last))
+    }
+
+    fn is_protected(&self, idle_ttl: Duration) -> bool {
+        self.leases.load(std::sync::atomic::Ordering::Acquire) > 0
+            || self.pins.load(std::sync::atomic::Ordering::Acquire) > 0
+            || self.idle_for() < idle_ttl
+    }
+}
+
+/// A request-lifetime lease on one workspace scope, released on drop. SSE
+/// streams hold it for their whole lifetime, which keeps a live scope from
+/// being recycled out from under an open stream.
+struct ScopeLeaseGuard {
+    activity: Arc<ScopeActivity>,
+}
+
+impl Drop for ScopeLeaseGuard {
+    fn drop(&mut self) {
+        self.activity
+            .leases
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.activity.touch();
+    }
+}
+
+/// A short-lived pin held for a recycled scope's jitter window, so a client
+/// reconnecting right after a restart does not make the owner boot that
+/// workspace's engine again immediately. Dropping releases the pin.
+struct ScopePin {
+    activity: Arc<ScopeActivity>,
+}
+
+impl Drop for ScopePin {
+    fn drop(&mut self) {
+        self.activity
+            .pins
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.activity.touch();
+    }
 }
 
 impl RuntimeWorkspaceScope {
@@ -322,6 +420,30 @@ struct RuntimeWorkspaceScopes {
     owner: SharedRuntimeThreadManager,
     workers: SharedSubAgentManager,
     cleanup_runtime: tokio::runtime::Handle,
+    /// The lexical path this owner started with. Its scope is never
+    /// recycled: it is the owner's own project and every unscoped request
+    /// resolves to it.
+    home: PathBuf,
+    /// Idle scope recycling: a scope idle past `idle_ttl` with no live lease
+    /// or pin is retired; a process RSS above `rss_soft_limit` retires idle
+    /// scopes first (Linux reads /proc; elsewhere RSS is unavailable and only
+    /// the idle TTL and the scope count bound apply).
+    recycling: ScopeRecycling,
+}
+
+#[derive(Clone)]
+struct ScopeRecycling {
+    idle_ttl: Duration,
+    rss_soft_limit: Option<u64>,
+}
+
+impl Default for ScopeRecycling {
+    fn default() -> Self {
+        Self {
+            idle_ttl: DEFAULT_SCOPE_IDLE_TTL,
+            rss_soft_limit: None,
+        }
+    }
 }
 
 /// A legible refusal when the workspace drive lease is held elsewhere: it
@@ -373,12 +495,23 @@ impl std::error::Error for WorkspaceDriveLeaseRefusal {}
 
 impl RuntimeWorkspaceScopes {
     fn new(owner: SharedRuntimeThreadManager, workers: SharedSubAgentManager) -> Arc<Self> {
+        Self::with_recycling(owner, workers, ScopeRecycling::default())
+    }
+
+    fn with_recycling(
+        owner: SharedRuntimeThreadManager,
+        workers: SharedSubAgentManager,
+        recycling: ScopeRecycling,
+    ) -> Arc<Self> {
+        let home = owner.workspace().to_path_buf();
         Arc::new(Self {
             scopes: parking_lot::Mutex::new(BTreeMap::new()),
             mcp_generation: std::sync::atomic::AtomicU64::new(0),
             owner,
             workers,
             cleanup_runtime: tokio::runtime::Handle::current(),
+            home,
+            recycling,
         })
     }
 
@@ -470,12 +603,152 @@ impl RuntimeWorkspaceScopes {
                 owner: owner.owner.clone(),
                 cleanup_runtime: owner.cleanup_runtime.clone(),
                 _drive_lease: drive_lease,
+                activity: Arc::new(ScopeActivity::default()),
             });
+            scope.activity.touch();
             scopes.insert(lexical, scope.clone());
             Ok(scope)
         })
         .await
     }
+
+    /// The scope for a request that carries no explicit workspace selection.
+    fn home_scope(self: &Arc<Self>) -> Option<Arc<RuntimeWorkspaceScope>> {
+        let scopes = self.scopes.lock();
+        scopes.get(&self.home).cloned()
+    }
+
+    /// Hold a request-lifetime lease on the admitted scope for `lexical`.
+    fn lease_scope(self: &Arc<Self>, lexical: &FsPath) -> Result<RequestProjectLease> {
+        let scopes = self.scopes.lock();
+        let Some(scope) = scopes.get(lexical) else {
+            return Err(anyhow!("workspace scope was retired mid-request"));
+        };
+        let _lease = scope.activity.hold_lease();
+        Ok(RequestProjectLease {
+            scope: scope.clone(),
+            _lease,
+        })
+    }
+
+    /// Retire idle request-scoped scopes. A scope is reclaimable only when
+    /// it is not the home scope, has no live request lease, no pin, and has
+    /// been idle past the idle TTL. When process RSS is over the soft limit
+    /// (read where /proc exists), the reclaim age is waived for scopes that
+    /// have no lease or pin at all, so a single oversized process still
+    /// sheds idle workspaces before new admissions are refused.
+    ///
+    /// Retiring removes the scope from the map so its engine state, MCP
+    /// pool, and LSP managers drop with it (see `RuntimeWorkspaceScope::drop`),
+    /// and releases the workspace drive lease for a foreign process to take.
+    /// Every retiree leaves a short pin behind so a client reconnecting
+    /// through a restart does not immediately re-admit (and re-boot) the
+    /// same workspace: jitter protection.
+    fn retire_idle_scopes(self: &Arc<Self>) -> Vec<PathBuf> {
+        let recycling = self.recycling.clone();
+        let candidates: Vec<Arc<RuntimeWorkspaceScope>> = {
+            let scopes = self.scopes.lock();
+            scopes
+                .values()
+                .filter(|scope| scope.lexical != self.home)
+                .cloned()
+                .collect()
+        };
+        let mut retired = Vec::new();
+        for scope in candidates {
+            let protected = scope.activity.is_protected(recycling.idle_ttl);
+            let over_limit = recycling
+                .rss_soft_limit
+                .is_some_and(|limit| rss_bytes().is_some_and(|rss| rss > limit));
+            let reclaimable = match (protected, over_limit) {
+                (false, _) => true,
+                (true, true) => {
+                    // Over the RSS limit, waive only the idle TTL part of
+                    // protection: a lease or pin still wins.
+                    scope
+                        .activity
+                        .leases
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        == 0
+                        && scope
+                            .activity
+                            .pins
+                            .load(std::sync::atomic::Ordering::Acquire)
+                            == 0
+                }
+                (true, false) => false,
+            };
+            if !reclaimable {
+                continue;
+            }
+            let lexical = scope.lexical.clone();
+            {
+                let mut scopes = self.scopes.lock();
+                if scopes
+                    .get(&lexical)
+                    .is_none_or(|current| !Arc::ptr_eq(current, &scope))
+                {
+                    continue;
+                }
+                scopes.remove(&lexical);
+            }
+            let pin = scope.activity.pin();
+            let cleanup = self.cleanup_runtime.clone();
+            // The pin lives exactly the jitter window; the scope itself is
+            // dropped after the window so in-flight clones finish first.
+            let scope_for_drop = scope.clone();
+            cleanup.spawn(async move {
+                let _pin = pin;
+                let _scope = scope_for_drop;
+                tokio::time::sleep(SCOPE_RECYCLE_JITTER_WINDOW).await;
+            });
+            tracing::info!(
+                workspace = %lexical.display(),
+                "retired idle Runtime workspace scope"
+            );
+            retired.push(lexical);
+        }
+        retired
+    }
+
+    /// Reconcile dangling pins: pins whose owning jitter task died (a
+    /// runtime shutdown raced the spawn) are counted down so a later idle
+    /// pass is not blocked by a pin nobody will release. Presence older
+    /// than the TTL with a pin count that exceeds the number of live
+    /// jitter holders cannot happen structurally (each pin is held by the
+    /// same task that owns the scope), so this pass only asserts the
+    /// invariant cheaply by touching scopes whose pins are all gone.
+    fn reconcile_pins(self: &Arc<Self>) {
+        let scopes = self.scopes.lock();
+        for scope in scopes.values() {
+            let pins = scope
+                .activity
+                .pins
+                .load(std::sync::atomic::Ordering::Acquire);
+            if pins == 0 {
+                scope.activity.touch();
+            }
+        }
+    }
+}
+
+/// How long a recycled scope stays pinned so a reconnecting client does not
+/// immediately re-admit the same workspace (restart jitter).
+const SCOPE_RECYCLE_JITTER_WINDOW: Duration = Duration::from_secs(30);
+
+/// Process RSS in bytes, where the platform exposes it (Linux). `None`
+/// elsewhere: recycling then relies on idle TTL and scope count only.
+#[cfg(target_os = "linux")]
+fn rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rss_bytes() -> Option<u64> {
+    None
 }
 
 async fn require_workspace_scope(
@@ -489,12 +762,145 @@ async fn require_workspace_scope(
     next.run(request).await
 }
 
-/// How the Runtime API server stops on purpose.
+/// One request's resolved project: which workspace this request runs in, and
+/// the lease that keeps that workspace's scope admitted for the whole
+/// request (SSE handlers hold it for the stream's lifetime). Extracted by
+/// handlers as `Extension<Arc<RequestProjectLease>>`; the middleware always
+/// inserts one, so a missing extension is a server error, never a default.
+pub(super) struct RequestProjectLease {
+    scope: Arc<RuntimeWorkspaceScope>,
+    /// Held for its `Drop` side effect: releases the request lease and
+    /// refreshes presence.
+    _lease: ScopeLeaseGuard,
+}
+
+impl RequestProjectLease {
+    pub(super) fn workspace(&self) -> &FsPath {
+        &self.scope.lexical
+    }
+}
+
+/// The workspace selection a request carries: an explicit header or query
+/// parameter. `None` means the request did not select one.
+const WORKSPACE_HEADER: &str = "x-codewhale-workspace";
+
+fn request_workspace_selection(request: &Request) -> Option<String> {
+    let header = request
+        .headers()
+        .get(WORKSPACE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if header.is_some() {
+        return header.map(str::to_string);
+    }
+    request
+        .uri()
+        .query()
+        .and_then(|query| {
+            query.split('&').find_map(|pair| {
+                let (key, value) = pair.split_once('=')?;
+                (key == "workspace").then(|| percent_decode_query_component(value))
+            })
+        })
+        .flatten()
+        .filter(|value| !value.is_empty())
+}
+
+/// Percent-decode one `application/x-www-form-urlencoded` component.
+/// `+` stays a literal `+` (workspaces do not carry form-encoded spaces);
+/// invalid escapes decode to `None` so a malformed selector is ignored
+/// rather than silently naming a wrong directory.
+fn percent_decode_query_component(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                let hex = bytes.get(index + 1..index + 3)?;
+                let high = (hex[0] as char).to_digit(16)?;
+                let low = (hex[1] as char).to_digit(16)?;
+                decoded.push((high * 16 + low) as u8);
+                index += 3;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// Map a request-level project admission failure onto the wire.
+fn map_project_admission_err(error: anyhow::Error) -> ApiError {
+    if let Some(refusal) = error.downcast_ref::<WorkspaceDriveLeaseRefusal>() {
+        return ApiError::conflict(refusal.to_string())
+            .with_code("workspace_drive_lease_contended");
+    }
+    let message = error.to_string();
+    if message.contains("scope limit reached") {
+        return ApiError::too_many_requests(format!(
+            "{message} (limit {MAX_RUNTIME_WORKSPACE_SCOPES})"
+        ))
+        .with_code("workspace_scope_limit");
+    }
+    ApiError::bad_request(message)
+}
+
+/// Resolve this request's project and bind a request-lifetime lease.
 ///
-/// `requested` fires once the server decides to stop: the listener stops
-/// accepting, idle connections close, and every open thread event stream sends
-/// `stream.end {reason: "runtime_shutdown"}` and finishes. `stopped` fires once
-/// `serve_runtime_api` has drained every connection.
+/// Resolution order:
+/// 1. An explicit workspace selection (header or query) must name a
+///    directory the request may drive; it is admitted as a scope exactly
+///    like a listener selection, so the cross-process drive lease still
+///    decides single-driver exclusivity.
+/// 2. Without a selection, the project is whatever the request's thread or
+///    session belongs to. Thread-scoped routes resolve per-thread in their
+///    handlers; this middleware only carries the explicit selection,
+///    because a JSON body cannot be read here without consuming it.
+/// 3. With neither, the request runs in the server's default project.
+async fn resolve_request_project(
+    State(state): State<RuntimeApiState>,
+    mut request: Request,
+    next: middleware::Next,
+) -> Response {
+    let selection = request_workspace_selection(&request);
+    let resolved = match selection {
+        Some(selected) if selected == state.workspace => {
+            state.workspace_scopes.lease_scope(&state.workspace)
+        }
+        Some(selected) => state
+            .workspace_scopes
+            .admit(selected.into())
+            .await
+            .and_then(|scope| {
+                let _lease = scope.activity.hold_lease();
+                Ok(RequestProjectLease { scope, _lease })
+            }),
+        None => state
+            .workspace_scopes
+            .home_scope()
+            .map(|scope| {
+                let _lease = scope.activity.hold_lease();
+                RequestProjectLease { scope, _lease }
+            })
+            .ok_or_else(|| {
+                anyhow!("default workspace scope is unavailable; the server is starting up")
+            }),
+    };
+    match resolved {
+        Ok(project) => {
+            request
+                .extensions_mut()
+                .insert(std::sync::Arc::new(project));
+            next.run(request).await
+        }
+        Err(error) => map_project_admission_err(error).into_response(),
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct RuntimeServerShutdown {
     requested: CancellationToken,
@@ -2443,6 +2849,25 @@ pub async fn run_http_server(
         #[cfg(test)]
         compat_stream_test_hook: None,
     };
+    // Idle scope recycling: retire request-scoped workspaces that no client
+    // has touched past the idle TTL and that hold no live request lease or
+    // pin, and reconcile dangling pins, on a slow cadence. The task ends
+    // with the server's own shutdown token.
+    let recycle_scopes = state.workspace_scopes.clone();
+    let recycle_shutdown = state.shutdown.requested.clone();
+    tokio::spawn(async move {
+        let mut sweep = tokio::time::interval(Duration::from_secs(60));
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = recycle_shutdown.cancelled() => return,
+                _ = sweep.tick() => {
+                    let _ = recycle_scopes.reconcile_pins();
+                    recycle_scopes.retire_idle_scopes();
+                }
+            }
+        }
+    });
     #[cfg(any(unix, windows))]
     let (owner_endpoint, control_state) = bind_captured_runtime_frontends(
         &state,
@@ -3579,6 +4004,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .merge(memory_lens::routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
+            resolve_request_project,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
             require_workspace_scope,
         ))
         .route_layer(middleware::from_fn_with_state(
@@ -3884,13 +4313,16 @@ fn runtime_request_model(config: &Config, requested: Option<&str>) -> Result<Str
 
 async fn create_task(
     State(state): State<RuntimeApiState>,
+    axum::extract::Extension(project): axum::extract::Extension<
+        std::sync::Arc<RequestProjectLease>,
+    >,
     Json(mut req): Json<NewTaskRequest>,
 ) -> Result<(StatusCode, Json<TaskRecord>), ApiError> {
     if req.prompt.trim().is_empty() {
         return Err(ApiError::bad_request("prompt is required"));
     }
     if req.workspace.is_none() {
-        req.workspace = Some(state.workspace.clone());
+        req.workspace = Some(project.workspace().to_path_buf());
     }
     refresh_local_default_catalog(
         &state,
@@ -3912,10 +4344,13 @@ async fn create_task(
 
 async fn create_thread(
     State(state): State<RuntimeApiState>,
+    axum::extract::Extension(project): axum::extract::Extension<
+        std::sync::Arc<RequestProjectLease>,
+    >,
     Json(mut req): Json<CreateThreadRequest>,
 ) -> Result<(StatusCode, Json<ThreadRecord>), ApiError> {
     if req.workspace.is_none() {
-        req.workspace = Some(state.workspace.clone());
+        req.workspace = Some(project.workspace().to_path_buf());
     }
     if req.mode.as_ref().is_none_or(|m| m.trim().is_empty()) {
         req.mode = Some("agent".to_string());
@@ -10956,11 +11391,15 @@ async fn open_thread_event_frames(
     id: String,
     query: ThreadEventsQuery,
 ) -> Result<crate::RuntimeOwnerEventStream, ApiError> {
-    let _ = state
+    let thread = state
         .runtime_threads
         .get_thread(&id)
         .await
         .map_err(map_thread_err)?;
+    // The stream holds a request lease on its thread's project for the
+    // stream's whole lifetime: an open event stream is activity, so idle
+    // recycling cannot retire the workspace's scope out from under it.
+    let _stream_lease = sse_project_lease(&state, &thread.workspace).await?;
 
     // Subscribe before reading durable history. An event emitted while replay
     // is loaded is then present in both places (and deduped below) or queued
@@ -10989,7 +11428,76 @@ async fn open_thread_event_frames(
         query.progress,
         state.shutdown.requested.clone(),
     );
+    // The lease is moved into the stream so it is released exactly when the
+    // last frame is produced (the client disconnects or the stream ends).
+    let stream = scope_leased_stream(stream, _stream_lease);
     Ok(Box::pin(stream))
+}
+
+/// Hold an SSE stream's project lease for the stream's lifetime. The lease
+/// is admitted for the thread's workspace exactly like a request: the home
+/// project needs no new admission, and any other workspace joins the same
+/// cross-process drive lease rules.
+async fn sse_project_lease(
+    state: &RuntimeApiState,
+    workspace: &FsPath,
+) -> Result<StreamProjectLease, ApiError> {
+    if workspace == &state.workspace {
+        let scope = state
+            .workspace_scopes
+            .home_scope()
+            .ok_or_else(|| ApiError::internal("default workspace scope is unavailable"))?;
+        let _lease = scope.activity.hold_lease();
+        return Ok(StreamProjectLease { scope, _lease });
+    }
+    let scope = state
+        .workspace_scopes
+        .admit(workspace.to_path_buf())
+        .await
+        .map_err(map_project_admission_err)?;
+    let _lease = scope.activity.hold_lease();
+    Ok(StreamProjectLease { scope, _lease })
+}
+
+/// The scope lease one open SSE stream holds. Kept alive by the stream
+/// itself (see [`scope_leased_stream`]).
+struct StreamProjectLease {
+    #[allow(dead_code)]
+    scope: Arc<RuntimeWorkspaceScope>,
+    /// Held for its `Drop` side effect: releases the stream's project lease.
+    _lease: ScopeLeaseGuard,
+}
+
+/// Wrap an owner event stream so the given project lease is held until the
+/// stream is fully consumed or dropped.
+fn scope_leased_stream(
+    stream: impl futures_util::Stream<Item = crate::RuntimeOwnerEventFrame> + Send + 'static,
+    lease: StreamProjectLease,
+) -> impl futures_util::Stream<Item = crate::RuntimeOwnerEventFrame> + Send + 'static {
+    // The inner stream is pinned in a box so the wrapper can stay `Unpin`
+    // and poll it without unsafe pin projection.
+    let inner: std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = crate::RuntimeOwnerEventFrame> + Send>,
+    > = Box::pin(stream);
+    struct Leased {
+        inner: std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = crate::RuntimeOwnerEventFrame> + Send>,
+        >,
+        _lease: StreamProjectLease,
+    }
+    impl futures_util::Stream for Leased {
+        type Item = crate::RuntimeOwnerEventFrame;
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.inner.as_mut().poll_next(cx)
+        }
+    }
+    Leased {
+        inner,
+        _lease: lease,
+    }
 }
 
 fn thread_event_as_sse(frame: crate::RuntimeOwnerEventFrame) -> SseEvent {
@@ -11259,6 +11767,9 @@ fn replay_live_thread_events(
 
 async fn stream_turn(
     State(state): State<RuntimeApiState>,
+    axum::extract::Extension(project): axum::extract::Extension<
+        std::sync::Arc<RequestProjectLease>,
+    >,
     Json(req): Json<StreamTurnRequest>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>>, ApiError> {
     if req.prompt.trim().is_empty() {
@@ -11286,7 +11797,7 @@ async fn stream_turn(
     let workspace = req
         .workspace
         .clone()
-        .unwrap_or_else(|| state.workspace.clone());
+        .unwrap_or_else(|| project.workspace().to_path_buf());
     let mode = req.mode.clone().unwrap_or_else(|| "agent".to_string());
     let permission_posture = req.permission_posture.clone();
     let allow_shell = req.allow_shell.unwrap_or(state.config.read().allow_shell());
@@ -15022,6 +15533,14 @@ impl ApiError {
     fn bad_gateway(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
             message: message.into(),
             code: None,
         }

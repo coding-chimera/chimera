@@ -159,45 +159,6 @@ fn presence_is_independent_of_validity_so_management_can_refuse_a_bad_key() {
     assert!(err.to_string().contains("codewhale login"), "{err}");
 }
 
-// -- base URL -------------------------------------------------------------
-
-#[test]
-fn base_url_precedence_is_flag_then_machine_env_then_device_env_then_default() {
-    assert_eq!(
-        resolve_api_base(
-            Some("https://flag.example/"),
-            Some("https://machine.example"),
-            Some("https://device.example"),
-            DEFAULT_BASE_FOR_TEST,
-        ),
-        "https://flag.example"
-    );
-    assert_eq!(
-        resolve_api_base(
-            None,
-            Some("https://machine.example/"),
-            Some("https://device.example"),
-            DEFAULT_BASE_FOR_TEST,
-        ),
-        "https://machine.example"
-    );
-    assert_eq!(
-        resolve_api_base(
-            None,
-            None,
-            Some("https://device.example"),
-            DEFAULT_BASE_FOR_TEST
-        ),
-        "https://device.example"
-    );
-    assert_eq!(
-        resolve_api_base(None, Some("   "), None, DEFAULT_BASE_FOR_TEST),
-        DEFAULT_BASE_FOR_TEST
-    );
-}
-
-const DEFAULT_BASE_FOR_TEST: &str = "https://api.codewhale.net";
-
 #[test]
 fn plaintext_to_a_remote_host_is_a_hard_error_and_loopback_is_allowed() {
     // A warning in CI is a line nobody reads, so this must fail closed.

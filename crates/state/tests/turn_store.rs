@@ -93,7 +93,13 @@ fn schema_v8_tables_exist() {
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("version");
     assert_eq!(version, 8);
-    for table in ["turn_boots", "turn_leases", "turn_pending", "turn_terminal", "turn_events"] {
+    for table in [
+        "turn_boots",
+        "turn_leases",
+        "turn_pending",
+        "turn_terminal",
+        "turn_events",
+    ] {
         let exists: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
@@ -138,11 +144,18 @@ fn existing_v7_store_opens_and_gains_turn_tables() {
     drop(store);
     {
         let conn = rusqlite::Connection::open(&path).expect("reopen");
-        for table in ["turn_boots", "turn_leases", "turn_pending", "turn_terminal", "turn_events"] {
+        for table in [
+            "turn_boots",
+            "turn_leases",
+            "turn_pending",
+            "turn_terminal",
+            "turn_events",
+        ] {
             conn.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
                 .expect("drop");
         }
-        conn.execute_batch("PRAGMA user_version = 7;").expect("reset");
+        conn.execute_batch("PRAGMA user_version = 7;")
+            .expect("reset");
     }
     let store = StateStore::open(Some(path)).expect("reopen");
     assert!(store.turn_live_boot_count().unwrap() >= 0);
@@ -164,15 +177,22 @@ fn admit_then_commit_then_replay() {
     );
     // While pending, an identical retry by the same boot replays pending.
     assert!(matches!(
-        store.admit_turn("s1", "rk-1", "do the thing", &boot("a")).unwrap(),
+        store
+            .admit_turn("s1", "rk-1", "do the thing", &boot("a"))
+            .unwrap(),
         TurnAdmit::Replay { outcome: None }
     ));
     store
         .commit_turn_terminal("s1", "rk-1", &terminal("turn-1", "completed"), &boot("a"))
         .unwrap();
     // After commit, the retry replays the terminal record.
-    match store.admit_turn("s1", "rk-1", "do the thing", &boot("a")).unwrap() {
-        TurnAdmit::Replay { outcome: Some(record) } => {
+    match store
+        .admit_turn("s1", "rk-1", "do the thing", &boot("a"))
+        .unwrap()
+    {
+        TurnAdmit::Replay {
+            outcome: Some(record),
+        } => {
             assert_eq!(record.turn_id, "turn-1");
             assert_eq!(record.outcome, "completed");
             assert_eq!(record.usage.input_tokens, 100);
@@ -196,7 +216,10 @@ fn same_key_different_body_is_a_conflict_never_a_replacement() {
     store
         .admit_turn("s1", "rk-1", "first body", &boot("a"))
         .unwrap();
-    match store.admit_turn("s1", "rk-1", "second body", &boot("a")).unwrap() {
+    match store
+        .admit_turn("s1", "rk-1", "second body", &boot("a"))
+        .unwrap()
+    {
         TurnAdmit::KeyConflict { request_key } => assert_eq!(request_key, "rk-1"),
         other => panic!("expected conflict, got {other:?}"),
     }
@@ -210,12 +233,16 @@ fn same_key_different_body_is_a_conflict_never_a_replacement() {
         .unwrap();
     // Conflict persists after the terminal.
     assert!(matches!(
-        store.admit_turn("s1", "rk-1", "second body", &boot("a")).unwrap(),
+        store
+            .admit_turn("s1", "rk-1", "second body", &boot("a"))
+            .unwrap(),
         TurnAdmit::KeyConflict { .. }
     ));
     // Same body after terminal replays.
     assert!(matches!(
-        store.admit_turn("s1", "rk-1", "first body", &boot("a")).unwrap(),
+        store
+            .admit_turn("s1", "rk-1", "first body", &boot("a"))
+            .unwrap(),
         TurnAdmit::Replay { outcome: Some(_) }
     ));
 }
@@ -225,9 +252,7 @@ fn terminal_conflict_after_commit_is_refused_for_different_facts() {
     let store = open("terminal-conflict");
     store.turn_register_boot(&registry("a")).unwrap();
     store.upsert_thread(&thread_metadata("s1")).unwrap();
-    store
-        .admit_turn("s1", "rk-1", "body", &boot("a"))
-        .unwrap();
+    store.admit_turn("s1", "rk-1", "body", &boot("a")).unwrap();
     let first = store
         .commit_turn_terminal("s1", "rk-1", &terminal("turn-1", "completed"), &boot("a"))
         .unwrap();
@@ -272,7 +297,9 @@ fn second_session_admits_while_first_is_pending() {
     store.upsert_thread(&thread_metadata("s2")).unwrap();
     store.admit_turn("s1", "rk-1", "body", &boot("a")).unwrap();
     assert_eq!(
-        store.admit_turn("s2", "rk-2", "other body", &boot("a")).unwrap(),
+        store
+            .admit_turn("s2", "rk-2", "other body", &boot("a"))
+            .unwrap(),
         TurnAdmit::Admitted
     );
     assert!(store.get_turn_lease("s1").unwrap().is_some());
@@ -299,7 +326,10 @@ fn ttl_expiry_releases_the_lease() {
     }
     // Expired lease: admission by another registered boot succeeds.
     store.turn_register_boot(&registry("b")).unwrap();
-    match store.admit_turn("s1", "rk-2", "new body", &boot("b")).unwrap() {
+    match store
+        .admit_turn("s1", "rk-2", "new body", &boot("b"))
+        .unwrap()
+    {
         TurnAdmit::Admitted => {}
         // The old pending row (rk-1) is still there and belongs to a live
         // boot, so admission contends on it rather than the lease.
@@ -368,7 +398,9 @@ fn dead_boot_lease_is_released_by_sweep() {
     let store = open("dead-boot-sweep");
     store.turn_register_boot(&registry("dead")).unwrap();
     store.upsert_thread(&thread_metadata("s1")).unwrap();
-    store.admit_turn("s1", "rk-1", "body", &boot("dead")).unwrap();
+    store
+        .admit_turn("s1", "rk-1", "body", &boot("dead"))
+        .unwrap();
     // Simulate the dead boot vanishing: remove its registry row.
     {
         let conn = rusqlite::Connection::open(store.db_path()).unwrap();
@@ -385,9 +417,10 @@ fn dead_boot_lease_is_released_by_sweep() {
     assert_eq!(pending.request_key, "rk-1");
     // Sweeping twice is idempotent: no duplicate actions.
     let again = store.sweep_turn_state().unwrap();
-    assert!(!again
-        .iter()
-        .any(|a| matches!(a, codewhale_state::TurnRecoveryAction::DeadLeaseReleased { .. })));
+    assert!(!again.iter().any(|a| matches!(
+        a,
+        codewhale_state::TurnRecoveryAction::DeadLeaseReleased { .. }
+    )));
 }
 
 #[test]
@@ -395,26 +428,34 @@ fn sweep_reports_pending_terminal_with_unknown_side_effects() {
     let store = open("sweep-pending");
     store.turn_register_boot(&registry("gone")).unwrap();
     store.upsert_thread(&thread_metadata("s1")).unwrap();
-    store.admit_turn("s1", "rk-1", "body", &boot("gone")).unwrap();
+    store
+        .admit_turn("s1", "rk-1", "body", &boot("gone"))
+        .unwrap();
     {
         let conn = rusqlite::Connection::open(store.db_path()).unwrap();
         conn.execute("DELETE FROM turn_boots WHERE boot = 'boot-gone'", [])
             .unwrap();
     }
     let actions = store.sweep_turn_state().unwrap();
-    let found = actions
-        .iter()
-        .any(|a| matches!(
+    let found = actions.iter().any(|a| {
+        matches!(
             a,
             codewhale_state::TurnRecoveryAction::PendingTerminal {
                 request_key,
                 side_effect_state: SideEffectState::Unknown
             } if request_key == "rk-1"
-        ));
-    assert!(found, "expected a pending terminal with unknown side effects, got {actions:?}");
+        )
+    });
+    assert!(
+        found,
+        "expected a pending terminal with unknown side effects, got {actions:?}"
+    );
     // The request key is retained: a retry replays instead of reminting.
     store.turn_register_boot(&registry("new")).unwrap();
-    match store.admit_turn("s1", "rk-1", "body", &boot("new")).unwrap() {
+    match store
+        .admit_turn("s1", "rk-1", "body", &boot("new"))
+        .unwrap()
+    {
         TurnAdmit::Admitted => {} // takeover of the dead holder's row
         other => panic!("dead-holder takeover expected, got {other:?}"),
     }
@@ -429,7 +470,9 @@ fn registered_side_effect_survives_dead_boot_takeover() {
     let store = open("side-effect-carry");
     store.turn_register_boot(&registry("gone")).unwrap();
     store.upsert_thread(&thread_metadata("s1")).unwrap();
-    store.admit_turn("s1", "rk-1", "body", &boot("gone")).unwrap();
+    store
+        .admit_turn("s1", "rk-1", "body", &boot("gone"))
+        .unwrap();
     store
         .turn_note_side_effect("s1", "rk-1", SideEffectState::Committed)
         .unwrap();
@@ -440,7 +483,9 @@ fn registered_side_effect_survives_dead_boot_takeover() {
     }
     store.sweep_turn_state().unwrap();
     store.turn_register_boot(&registry("new")).unwrap();
-    store.admit_turn("s1", "rk-1", "body", &boot("new")).unwrap();
+    store
+        .admit_turn("s1", "rk-1", "body", &boot("new"))
+        .unwrap();
     let pending = store.get_turn_pending("s1").unwrap().unwrap();
     assert_eq!(pending.side_effect_state, SideEffectState::Committed);
 }
@@ -450,7 +495,9 @@ fn boot_and_recover_is_the_startup_convergence() {
     let store = open("boot-recover");
     store.turn_register_boot(&registry("gone")).unwrap();
     store.upsert_thread(&thread_metadata("s1")).unwrap();
-    store.admit_turn("s1", "rk-1", "body", &boot("gone")).unwrap();
+    store
+        .admit_turn("s1", "rk-1", "body", &boot("gone"))
+        .unwrap();
     {
         let conn = rusqlite::Connection::open(store.db_path()).unwrap();
         conn.execute("DELETE FROM turn_boots WHERE boot = 'boot-gone'", [])
@@ -458,19 +505,22 @@ fn boot_and_recover_is_the_startup_convergence() {
     }
     // Startup of a fresh runtime: register + sweep in one call.
     let actions = store.turn_boot_and_recover(&registry("fresh")).unwrap();
-    assert!(actions
-        .iter()
-        .any(|a| matches!(a, codewhale_state::TurnRecoveryAction::DeadLeaseReleased { .. })));
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        codewhale_state::TurnRecoveryAction::DeadLeaseReleased { .. }
+    )));
     assert!(store.turn_live_boot_count().unwrap() >= 1);
     // Idempotent: the second run on an unchanged db answers Settled-ish
     // (no dead releases) and the same pending report.
     let again = store.turn_boot_and_recover(&registry("fresh")).unwrap();
-    assert!(!again
-        .iter()
-        .any(|a| matches!(a, codewhale_state::TurnRecoveryAction::DeadLeaseReleased { .. })));
-    assert!(again
-        .iter()
-        .any(|a| matches!(a, codewhale_state::TurnRecoveryAction::PendingTerminal { .. })));
+    assert!(!again.iter().any(|a| matches!(
+        a,
+        codewhale_state::TurnRecoveryAction::DeadLeaseReleased { .. }
+    )));
+    assert!(again.iter().any(|a| matches!(
+        a,
+        codewhale_state::TurnRecoveryAction::PendingTerminal { .. }
+    )));
 }
 
 // ---------------------------------------------------------------- events
@@ -481,19 +531,25 @@ fn events_are_deduped_and_payload_is_retained() {
     let first = serde_json::json!({"seq": 1, "text": "hello"});
     assert!(store.record_turn_event("s1", "ev-1", &first).unwrap());
     // Second delivery of the same key is a no-op.
-    assert!(!store
-        .record_turn_event("s1", "ev-1", &serde_json::json!({"seq": 2}))
-        .unwrap());
+    assert!(
+        !store
+            .record_turn_event("s1", "ev-1", &serde_json::json!({"seq": 2}))
+            .unwrap()
+    );
     // The first payload is retained, not overwritten.
     assert_eq!(store.get_turn_event("s1", "ev-1").unwrap().unwrap(), first);
     // Distinct keys are distinct events.
-    assert!(store
-        .record_turn_event("s1", "ev-2", &serde_json::json!({"seq": 2}))
-        .unwrap());
+    assert!(
+        store
+            .record_turn_event("s1", "ev-2", &serde_json::json!({"seq": 2}))
+            .unwrap()
+    );
     // Distinct sessions are independent.
-    assert!(store
-        .record_turn_event("s2", "ev-1", &serde_json::json!({"other": true}))
-        .unwrap());
+    assert!(
+        store
+            .record_turn_event("s2", "ev-1", &serde_json::json!({"other": true}))
+            .unwrap()
+    );
 }
 
 // ---------------------------------------------------------- abandon/wait
@@ -547,8 +603,7 @@ fn terminal_commit_group_is_atomic_under_injected_failure() {
     assert!(format!("{err:#}").contains("fixture terminal failure"));
     {
         let conn = rusqlite::Connection::open(store.db_path()).unwrap();
-        conn.execute_batch("DROP TRIGGER refuse_terminal;")
-            .unwrap();
+        conn.execute_batch("DROP TRIGGER refuse_terminal;").unwrap();
     }
     assert!(store.get_turn_pending("s1").unwrap().is_some());
     assert!(store.get_turn_lease("s1").unwrap().is_some());
@@ -610,7 +665,9 @@ fn distinct_keys_concurrent_admission_yields_one_winner() {
             let store = Arc::clone(&store);
             let key = format!("rk-{i}");
             thread::spawn(move || {
-                store.admit_turn("s1", &key, "bodies vary", &boot("a")).unwrap()
+                store
+                    .admit_turn("s1", &key, "bodies vary", &boot("a"))
+                    .unwrap()
             })
         })
         .collect();
@@ -705,9 +762,11 @@ fn invalid_outcomes_ids_and_empty_bodies_are_refused() {
         .unwrap_err();
     assert!(err.to_string().contains("invalid turn outcome"));
     assert!(store.admit_turn("s1", "rk-2", "", &boot("a")).is_err());
-    assert!(store
-        .admit_turn("s1", &"x".repeat(200), "body", &boot("a"))
-        .is_err());
+    assert!(
+        store
+            .admit_turn("s1", &"x".repeat(200), "body", &boot("a"))
+            .is_err()
+    );
     assert!(store.admit_turn("s2", "rk", "body", &boot("a")).is_ok());
 }
 
@@ -728,7 +787,9 @@ fn sigkilled_holder_is_recovered_by_a_later_process() {
         let store = StateStore::open(Some(path.clone())).expect("open parent store");
         store.turn_register_boot(&registry("holder")).unwrap();
         store.upsert_thread(&thread_metadata("s1")).unwrap();
-        store.admit_turn("s1", "rk-1", "body", &boot("holder")).unwrap();
+        store
+            .admit_turn("s1", "rk-1", "body", &boot("holder"))
+            .unwrap();
         // The holder's runtime saw a tool side effect before dying.
         store
             .turn_note_side_effect("s1", "rk-1", SideEffectState::Committed)
@@ -759,11 +820,8 @@ fn sigkilled_holder_is_recovered_by_a_later_process() {
             // The child's boot is what a later sweep must discover dead. We
             // prove it by deleting only the child's own boot row, which is
             // exactly the state a dead process leaves behind over time.
-            conn.execute(
-                "DELETE FROM turn_boots WHERE boot = 'boot-holder'",
-                [],
-            )
-            .unwrap();
+            conn.execute("DELETE FROM turn_boots WHERE boot = 'boot-holder'", [])
+                .unwrap();
             let child_boots: i64 = conn
                 .query_row("SELECT count(*) FROM turn_boots", [], |r| r.get(0))
                 .unwrap();
@@ -780,11 +838,14 @@ fn sigkilled_holder_is_recovered_by_a_later_process() {
         // A *later process* opens the same database and converges.
         let later = StateStore::open(Some(path.clone())).expect("open later store");
         let actions = later.sweep_turn_state().unwrap();
-        assert!(actions.iter().any(|a| matches!(
-            a,
-            codewhale_state::TurnRecoveryAction::DeadLeaseReleased { owner }
-                if owner.boot == "boot-holder"
-        )), "dead lease must be released, got {actions:?}");
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                codewhale_state::TurnRecoveryAction::DeadLeaseReleased { owner }
+                    if owner.boot == "boot-holder"
+            )),
+            "dead lease must be released, got {actions:?}"
+        );
         assert!(later.get_turn_lease("s1").unwrap().is_none());
         // The pending row and its recorded posture survived the crash.
         let pending = later.get_turn_pending("s1").unwrap().unwrap();
@@ -794,7 +855,10 @@ fn sigkilled_holder_is_recovered_by_a_later_process() {
         // takes over the dead holder's row and proceeds (the recovery path
         // a blocked tool waiter takes after its host died).
         later.turn_register_boot(&registry("rescuer")).unwrap();
-        match later.admit_turn("s1", "rk-1", "body", &boot("rescuer")).unwrap() {
+        match later
+            .admit_turn("s1", "rk-1", "body", &boot("rescuer"))
+            .unwrap()
+        {
             TurnAdmit::Admitted => {}
             other => panic!("expected takeover admission, got {other:?}"),
         }

@@ -21,9 +21,8 @@ use codewhale_secrets::Secrets;
 use codewhale_secrets::account::{
     ACCOUNT_API_BASE_ENV as CLOUD_API_BASE_ENV, AccountAuthBundle as AuthBundle,
     AccountSessionSnapshot, AccountSessionStore, AccountUser as CloudUser,
-    DEFAULT_ACCOUNT_API_BASE as DEFAULT_API_BASE, StoredAccountAuth as StoredCloudAuth,
-    normalize_account_profile as normalized_profile, secure_account_session_secrets,
-    validate_account_auth_bundle as validate_auth_bundle,
+    StoredAccountAuth as StoredCloudAuth, normalize_account_profile as normalized_profile,
+    secure_account_session_secrets, validate_account_auth_bundle as validate_auth_bundle,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -3115,12 +3114,7 @@ enum KeyReadMode {
 
 pub fn run(args: CloudArgs, profile: Option<&str>, config: &mut ConfigStore) -> Result<()> {
     let machine = machine::MachineKeyEnv::from_process_env();
-    let requested_base = machine::resolve_api_base(
-        args.api_base.as_deref(),
-        std::env::var(machine::MACHINE_API_BASE_ENV).ok().as_deref(),
-        std::env::var(CLOUD_API_BASE_ENV).ok().as_deref(),
-        DEFAULT_API_BASE,
-    );
+    let requested_base = account_api_base(args.api_base.as_deref())?;
     if machine.is_present() {
         // A machine token is a bearer credential with no replay protection.
         // Refuse cleartext to a remote host before a transport exists, so
@@ -3462,12 +3456,7 @@ pub fn machine_review_provider() -> Result<Option<ProviderKind>> {
     let Some(key) = machine.resolve()? else {
         return Ok(None);
     };
-    let requested_base = machine::resolve_api_base(
-        None,
-        std::env::var(machine::MACHINE_API_BASE_ENV).ok().as_deref(),
-        std::env::var(CLOUD_API_BASE_ENV).ok().as_deref(),
-        DEFAULT_API_BASE,
-    );
+    let requested_base = account_api_base(None)?;
     machine::require_secure_base(&requested_base)?;
     let api_base = validate_api_base(&requested_base)?;
     let transport = ReqwestTransport::new(api_base.url)?;

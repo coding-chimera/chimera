@@ -56,20 +56,13 @@ pub enum TurnAdmit {
     /// The `request_key` was already used with this exact prompt body; the
     /// recorded terminal outcome (or `None` while it is still pending) is
     /// replayed and no new work is started.
-    Replay {
-        outcome: Option<TurnTerminalRecord>,
-    },
+    Replay { outcome: Option<TurnTerminalRecord> },
     /// Another live turn holds the lease. The holder is named for a legible
     /// refusal.
-    Contended {
-        owner: TurnOwner,
-        expires_at: i64,
-    },
+    Contended { owner: TurnOwner, expires_at: i64 },
     /// The `request_key` was already used with a *different* body. The
     /// recorded holder is retained; the caller must not remint the key.
-    KeyConflict {
-        request_key: String,
-    },
+    KeyConflict { request_key: String },
 }
 
 /// Side-effect knowledge for a turn at commit time.
@@ -180,9 +173,7 @@ impl StateStore {
     /// Number of boots currently recorded as live.
     pub fn turn_live_boot_count(&self) -> Result<i64> {
         let conn = self.conn()?;
-        Ok(conn.query_row("SELECT count(*) FROM turn_boots", [], |row| {
-            row.get(0)
-        })?)
+        Ok(conn.query_row("SELECT count(*) FROM turn_boots", [], |row| row.get(0))?)
     }
 
     /// Register this boot, sweep dead boots and take over dead leases.
@@ -190,7 +181,10 @@ impl StateStore {
     /// This is the startup path: after it returns, every remaining lease is
     /// either live or already released. Idempotent — running it twice on an
     /// unchanged database produces the same answer and the same final state.
-    pub fn turn_boot_and_recover(&self, registry: &TurnBootRegistry) -> Result<Vec<TurnRecoveryAction>> {
+    pub fn turn_boot_and_recover(
+        &self,
+        registry: &TurnBootRegistry,
+    ) -> Result<Vec<TurnRecoveryAction>> {
         self.turn_register_boot(registry)?;
         self.sweep_turn_state()
     }
@@ -499,12 +493,7 @@ fn lease_holder(
         .query_row(
             "SELECT boot, expires_at FROM turn_leases WHERE session = ?1",
             params![session],
-            |row| {
-                Ok((
-                    TurnOwner { boot: row.get(0)? },
-                    row.get::<_, i64>(1)?,
-                ))
-            },
+            |row| Ok((TurnOwner { boot: row.get(0)? }, row.get::<_, i64>(1)?)),
         )
         .optional()?;
     let Some((owner, expires_at)) = row else {
@@ -517,12 +506,11 @@ fn lease_holder(
 /// A boot is live when it is registered. An unknown boot on a live-TTL lease
 /// is conservatively live: admission never steals what it cannot prove dead.
 fn boot_is_live(conn: &Connection, boot: &str) -> Result<bool> {
-    Ok(conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM turn_boots WHERE boot = ?1)",
-            params![boot],
-            |row| row.get::<_, i64>(0),
-        )? != 0)
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turn_boots WHERE boot = ?1)",
+        params![boot],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
 }
 
 /// The one-transaction admission decision.
@@ -690,8 +678,8 @@ fn commit_turn_on(
         );
         return Ok(saved);
     }
-    let pending = read_pending_on(tx, session)?
-        .filter(|pending| pending.request_key == request_key);
+    let pending =
+        read_pending_on(tx, session)?.filter(|pending| pending.request_key == request_key);
     let digest = match &pending {
         Some(pending) => pending.prompt_digest.clone(),
         None => {
@@ -702,12 +690,11 @@ fn commit_turn_on(
             sha256_hex(record.turn_id.as_bytes())
         }
     };
-    let holds_lease = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM turn_leases WHERE session = ?1 AND boot = ?2)",
-            params![session, owner.boot],
-            |row| row.get::<_, i64>(0),
-        )? != 0;
+    let holds_lease = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turn_leases WHERE session = ?1 AND boot = ?2)",
+        params![session, owner.boot],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
     anyhow::ensure!(
         holds_lease,
         "turn {request_key} cannot commit without holding the session lease"
@@ -825,9 +812,8 @@ fn idle_thread_on(tx: &Connection, session: &str, now: i64) -> Result<()> {
 /// Release every lease whose holder is not in the boot registry (dead).
 /// Returns the released owners.
 fn take_over_dead_leases(tx: &Connection, now: i64) -> Result<Vec<TurnOwner>> {
-    let mut stmt = tx.prepare(
-        "SELECT boot FROM turn_leases WHERE boot NOT IN (SELECT boot FROM turn_boots)",
-    )?;
+    let mut stmt =
+        tx.prepare("SELECT boot FROM turn_leases WHERE boot NOT IN (SELECT boot FROM turn_boots)")?;
     let dead: Vec<String> = {
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
@@ -843,10 +829,7 @@ fn take_over_dead_leases(tx: &Connection, now: i64) -> Result<Vec<TurnOwner>> {
         params![now],
     )
     .context("failed to release expired turn leases")?;
-    let released: Vec<TurnOwner> = dead
-        .into_iter()
-        .map(|boot| TurnOwner { boot })
-        .collect();
+    let released: Vec<TurnOwner> = dead.into_iter().map(|boot| TurnOwner { boot }).collect();
     for owner in &released {
         tx.execute(
             "DELETE FROM turn_leases WHERE boot = ?1",
@@ -873,9 +856,7 @@ fn read_recovery_actions(tx: &Connection, now: i64) -> Result<Vec<TurnRecoveryAc
             match request_key {
                 Some(request_key) => out.push(TurnRecoveryAction::PendingTerminal {
                     request_key,
-                    side_effect_state: side_effect_state_from(
-                        &row.get::<_, Option<String>>(3)?,
-                    ),
+                    side_effect_state: side_effect_state_from(&row.get::<_, Option<String>>(3)?),
                 }),
                 None => out.push(TurnRecoveryAction::LeaseLive {
                     owner: TurnOwner { boot },
@@ -916,17 +897,21 @@ fn side_effect_state_str(state: SideEffectState) -> &'static str {
 fn side_effect_state_from(value: &Option<String>) -> SideEffectState {
     // Fail closed: a pending row without a recorded posture is exactly the
     // "cannot prove" case `unknown` exists for.
-    value.as_deref().map_or(SideEffectState::Unknown, |v| match v {
-        "clean" => SideEffectState::Clean,
-        "committed" => SideEffectState::Committed,
-        _ => SideEffectState::Unknown,
-    })
+    value
+        .as_deref()
+        .map_or(SideEffectState::Unknown, |v| match v {
+            "clean" => SideEffectState::Clean,
+            "committed" => SideEffectState::Committed,
+            _ => SideEffectState::Unknown,
+        })
 }
 
 fn normalize_outcome(outcome: &str) -> Result<String> {
     match outcome {
         "completed" | "interrupted" | "failed" => Ok(outcome.to_string()),
-        _ => anyhow::bail!("invalid turn outcome {outcome:?}; expected completed, interrupted or failed"),
+        _ => anyhow::bail!(
+            "invalid turn outcome {outcome:?}; expected completed, interrupted or failed"
+        ),
     }
 }
 

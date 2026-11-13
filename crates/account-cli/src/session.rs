@@ -7,14 +7,38 @@ use codewhale_secrets::account::{AccountDeviceAccess, AccountSessionState, Runti
 
 use super::*;
 
+fn configured_account_api_base(
+    flag: Option<&str>,
+    machine_base: Option<&str>,
+    device_base: Option<&str>,
+) -> Option<String> {
+    [flag, machine_base, device_base]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(|value| value.trim_end_matches('/').to_string())
+}
+
+fn resolve_account_api_base(
+    flag: Option<&str>,
+    machine_base: Option<&str>,
+    device_base: Option<&str>,
+) -> Result<String> {
+    let requested_base = configured_account_api_base(flag, machine_base, device_base).ok_or_else(|| {
+        anyhow::anyhow!(
+            "account services are unavailable: set CODEWHALE_CLOUD_API_BASE or --api-base to your own account endpoint"
+        )
+    })?;
+    Ok(validate_api_base(&requested_base)?.display)
+}
+
 pub fn account_api_base(api_base: Option<&str>) -> Result<String> {
-    let requested_base = machine::resolve_api_base(
+    resolve_account_api_base(
         api_base,
         std::env::var(machine::MACHINE_API_BASE_ENV).ok().as_deref(),
         std::env::var(CLOUD_API_BASE_ENV).ok().as_deref(),
-        DEFAULT_API_BASE,
-    );
-    Ok(validate_api_base(&requested_base)?.display)
+    )
 }
 
 #[derive(Clone, Serialize)]
@@ -684,5 +708,44 @@ impl Drop for AccountLogin {
             self.cancelled.cancel();
         }
         self.revoke_pending();
+    }
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn missing_account_endpoint_is_an_actionable_error() {
+        let error = resolve_account_api_base(None, None, None).expect_err("endpoint required");
+        let text = error.to_string();
+        assert!(text.contains("account services are unavailable"));
+        assert!(text.contains("CODEWHALE_CLOUD_API_BASE"));
+        assert!(text.contains("--api-base"));
+    }
+
+    #[test]
+    fn explicit_endpoint_precedence_and_normalization_are_preserved() {
+        let base = resolve_account_api_base(
+            Some("https://flag.example/"),
+            Some("https://machine.example"),
+            Some("https://device.example"),
+        )
+        .expect("explicit endpoint");
+        assert_eq!(base, "https://flag.example");
+        let base = resolve_account_api_base(None, Some("https://machine.example/"), None)
+            .expect("environment endpoint");
+        assert_eq!(base, "https://machine.example");
+    }
+
+    #[test]
+    fn blank_endpoint_does_not_fall_back_to_the_first_party_service() {
+        let error = resolve_account_api_base(None, Some("   "), Some(""))
+            .expect_err("blank values are not endpoints");
+        assert!(
+            error
+                .to_string()
+                .contains("account services are unavailable")
+        );
     }
 }

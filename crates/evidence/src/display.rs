@@ -157,18 +157,12 @@ pub fn compact_oracle_payload(payload: &Value) -> Value {
     let Value::Object(shell_map) = shell else {
         return payload.clone();
     };
-    let truncated: String = output
-        .chars()
-        .take(DISPLAY_OUTPUT_MAX_CHARS)
-        .collect();
+    let truncated: String = output.chars().take(DISPLAY_OUTPUT_MAX_CHARS).collect();
     let mut next = Map::new();
     for (key, value) in shell_map.iter() {
         if key == "output" {
             next.insert("output".into(), Value::String(truncated.clone()));
-            next.insert(
-                "outputTruncatedForDisplay".into(),
-                Value::Bool(true),
-            );
+            next.insert("outputTruncatedForDisplay".into(), Value::Bool(true));
             next.insert(
                 "outputOriginalChars".into(),
                 Value::from(output.chars().count()),
@@ -213,9 +207,21 @@ mod tests {
             &Value::from(2_500_usize)
         );
         // The original payload is untouched: full evidence is retained.
-        assert_eq!(payload.get("shell").unwrap().get("output").unwrap().as_str().unwrap(), &output);
         assert_eq!(
-            payload.get("shell").unwrap().get("outputTruncatedForDisplay"),
+            payload
+                .get("shell")
+                .unwrap()
+                .get("output")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            &output
+        );
+        assert_eq!(
+            payload
+                .get("shell")
+                .unwrap()
+                .get("outputTruncatedForDisplay"),
             None
         );
     }
