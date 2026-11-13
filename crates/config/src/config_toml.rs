@@ -15,6 +15,13 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
+    /// Explicit config schema version (RFC 13.1). Absent on every historic
+    /// document; a versioned document is subject to the strict unknown-root-
+    /// key gate in `parse_config_toml_str`, while unversioned documents keep
+    /// the tolerant `extras` behavior so old files keep loading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u64>,
+
     // There is no top-level `api_key` or `base_url`: every parse moves the
     // legacy root keys into `[providers.<name>]` first (`legacy_root`, #6394).
     /// Optional extra HTTP headers forwarded to model API requests.
@@ -121,6 +128,18 @@ pub struct ConfigToml {
     /// [`WorkflowConfigToml::default`].
     #[serde(default)]
     pub workflow: Option<WorkflowConfigToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workshop: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<toml::Value>,
     /// Model-bound credential redaction policy (`[redaction]`). When absent,
     /// masking is enabled — the shipped security default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
