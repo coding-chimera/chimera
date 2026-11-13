@@ -8,6 +8,7 @@ members = [
     "crates/build-support",
     "crates/cli",
     "crates/cloud-facts",
+    "crates/codegraph",
     "crates/command-contract",
     "crates/commands",
     "crates/config",
