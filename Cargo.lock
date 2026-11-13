@@ -1025,6 +1025,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-browser"
+version = "0.10.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "codewhale-build-support"
 version = "0.10.3"
 dependencies = [
@@ -1217,6 +1235,7 @@ dependencies = [
  "codewhale-agent",
  "codewhale-agent-contract",
  "codewhale-app-server-protocol",
+ "codewhale-browser",
  "codewhale-build-support",
  "codewhale-command-contract",
  "codewhale-commands",

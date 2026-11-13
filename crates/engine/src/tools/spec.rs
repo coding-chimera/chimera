@@ -125,6 +125,10 @@ pub struct RuntimeToolServices {
     /// disables persistence so unit tests never touch the real state dir;
     /// production wiring points it at `<codewhale home>/media-originals`.
     pub media_originals_dir: Option<PathBuf>,
+    /// Process-shared browser driver manager for the browser tool family.
+    /// `None` (tests and contexts that never install a browser host) makes
+    /// browser tools fail closed with "not attached".
+    pub browser_manager: Option<std::sync::Arc<codewhale_browser::manager::BrowserManager>>,
 }
 
 impl Default for RuntimeToolServices {
@@ -145,6 +149,7 @@ impl Default for RuntimeToolServices {
             handle_store: new_shared_handle_store(),
             rlm_sessions: new_shared_rlm_session_store(),
             media_originals_dir: None,
+            browser_manager: None,
         }
     }
 }
@@ -170,6 +175,7 @@ impl std::fmt::Debug for RuntimeToolServices {
             .field("handle_store", &true)
             .field("rlm_sessions", &true)
             .field("media_originals_dir", &self.media_originals_dir)
+            .field("browser_manager", &self.browser_manager.is_some())
             .finish()
     }
 }

@@ -66,6 +66,8 @@ pub enum Feature {
     GithubHost,
     /// Captured review presentation; Core retains provider, evidence and publication.
     ReviewHost,
+    /// Enable the Rust CDP browser tool family (deferred behind tool_search).
+    BrowserTools,
 }
 
 impl fmt::Display for Stage {
@@ -318,6 +320,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::ExtensionHost,
         key: "extension_host",
         stage: Stage::Experimental,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::BrowserTools,
+        key: "browser_tools",
+        stage: Stage::Beta,
         default_enabled: false,
     },
 ];

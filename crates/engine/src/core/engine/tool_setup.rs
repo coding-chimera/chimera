@@ -139,6 +139,12 @@ impl Engine {
             builder = builder.with_web_tools();
         }
 
+        // Rust CDP browser tools: deferred by default, feature-gated like
+        // the web family so a headless/locked-down host can drop them.
+        if self.config.features.enabled(Feature::BrowserTools) {
+            builder = builder.with_browser_tools();
+        }
+
         // Register the `remember` tool only when the user has opted in to
         // user-memory (#489). Without that opt-in the tool would always
         // fail; surfacing it would just waste catalog slots.

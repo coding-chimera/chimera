@@ -1323,6 +1323,21 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(super::apply_patch::ApplyPatchTool))
     }
 
+    /// Include the seven Rust CDP browser tools. All are `defer_loading`
+    /// (reachable through tool_search) and are never offered on read-only
+    /// child surfaces: browser control is a machine-control surface.
+    #[must_use]
+    pub fn with_browser_tools(self) -> Self {
+        use super::browser::BrowserTool;
+        self.with_tool(Arc::new(BrowserTool::open()))
+            .with_tool(Arc::new(BrowserTool::snapshot()))
+            .with_tool(Arc::new(BrowserTool::click()))
+            .with_tool(Arc::new(BrowserTool::type_text()))
+            .with_tool(Arc::new(BrowserTool::screenshot()))
+            .with_tool(Arc::new(BrowserTool::close()))
+            .with_tool(Arc::new(BrowserTool::evaluate()))
+    }
+
     /// Include the `revert_turn` tool. Approval-gated since it mutates
     /// the workspace; the model uses it when the user asks to "undo my
     /// last edit". Backed by the per-workspace snapshot side-repo

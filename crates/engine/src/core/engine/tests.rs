@@ -33,6 +33,20 @@ mod profile_constitution;
 #[path = "tests/child_host.rs"]
 mod child_host;
 
+/// Browser-tool tests reuse the child-host fixture; expose the one builder
+/// instead of duplicating a second engine construction path.
+pub fn engine_child_host_fixture(
+    workspace: &std::path::Path,
+    scope: Option<Vec<String>>,
+) -> (
+    crate::Engine,
+    crate::EngineHandle,
+    std::sync::Arc<crate::tools::subagent::engine::ChildAuthority>,
+    super::TurnRouteContext,
+) {
+    child_host::fixture(workspace, scope)
+}
+
 include!("tests/test_cases_01.rs");
 
 mod compaction;
