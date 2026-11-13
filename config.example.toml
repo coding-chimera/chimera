@@ -22,7 +22,7 @@
 # top-level `api_key` / `base_url` is still read: it belongs to
 # `[providers.deepseek]` (or to the vendor whose official host it names), and
 # `codewhale config migrate` moves it there in the file.
-provider = "deepseek" # deepseek | deepseek-cn | deepseek-anthropic | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | orcarouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | zai | stepfun | minimax | sglang | vllm | ollama | ollama-cloud | huggingface | modelscope | together | qianfan | openai-codex | anthropic | openmodel | deepinfra | sakana | longcat | opencode-go | opencode-zen | meta | xai | mistral | telecomjs | google | edenai | zenmux | csdn | concentrate | modelstudio-token-plan | modelstudio-coding-plan | codewhale
+provider = "deepseek" # deepseek | deepseek-cn | deepseek-anthropic | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | orcarouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | zai | stepfun | minimax | sglang | vllm | ollama | ollama-cloud | huggingface | modelscope | together | qianfan | openai-codex | anthropic | openmodel | deepinfra | sakana | longcat | opencode-go | opencode-zen | meta | xai | mistral | telecomjs | google | edenai | zenmux | csdn | concentrate | modelstudio-token-plan | modelstudio-coding-plan | alibailian | codewhale
 # provider = "deepseek-cn"                       # legacy alias (official host is still https://api.deepseek.com)
 # Optional custom model request headers for OpenAI-compatible gateways.
 # Authorization and Content-Type are managed by the client and cannot be overridden here.
@@ -958,6 +958,16 @@ base_url = "https://api.deepseek.com/beta"
 # # Anthropic-compatible dialect (same key, /apps/anthropic path):
 # # provider = "modelstudio-coding-plan-anthropic"
 # # base_url = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Alibailian relay (explicit relay profile; distinct from official Model Studio)
+# Set provider = "alibailian" and configure the relay's own URL and credentials.
+# Env var aliases: ALIBAILIAN_API_KEY, ALIBAILIAN_BASE_URL
+[providers.alibailian]
+# api_key = "YOUR_ALIBAILIAN_API_KEY"
+# base_url = "https://your-relay.example/v1"
+# model = "qwen3.8-max"
+# http_headers = { x-dashscope-session-cache = "enable" }
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Together AI Provider (https://www.together.ai/)

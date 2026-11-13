@@ -1052,3 +1052,43 @@ surfaces = { tui = "stable" }
 since = "unreleased"
 docs = "docs/CONFIGURATION.md"
 owner = "crates/config/src/provider_toml.rs"
+
+[[feature]]
+id = "progressive-tool-reveal"
+name = "Progressive tool disclosure"
+summary = "tool_search reveals deferred tools by name without changing the tool array; compaction promotes them."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/TOOL_SURFACE.md"
+owner = "crates/engine/src/core/engine/tool_catalog.rs"
+
+[[feature]]
+id = "provider-prompt-profiles"
+name = "Static provider prompt profiles"
+summary = "One BASE prompt plus one compile-time route-family overlay, pinned per session and re-pinned on model changes."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/CACHE.md"
+owner = "crates/engine/src/prompts.rs"
+
+[[feature]]
+id = "alibailian-relay"
+name = "Alibailian relay provider"
+summary = "Explicit Alibailian relay profile with relay-specific structured output, tool choice, hosted search and fallback behavior."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/PROVIDERS.md"
+owner = "crates/engine/src/client/alibailian.rs"
+
+[[feature]]
+id = "multi-project-runtime"
+name = "Multi-project Runtime"
+summary = "One Runtime server resolves and isolates multiple projects with request leases and bounded lifecycle management."
+status = "experimental"
+surfaces = { api = "preview" }
+since = "unreleased"
+docs = "docs/RUNTIME_API.md"
+owner = "crates/app-server/src/runtime_api/workspace.rs"
