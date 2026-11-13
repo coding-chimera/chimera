@@ -31,6 +31,18 @@
 - 每一次未命中都**说得清来由**。`PrefixStabilityManager`（`prefix_cache.rs`）
   会记录每次变更和原因，并通过 `/cache stats` 报告出来。
 
+### 提供商提示词 profile（一个 BASE + 一个静态 overlay）
+
+提供商/模型特化是一个**静态、编译期的 overlay**，追加在共享宪法段落
+（`BASE_PROMPT` + 语言 + 输出）之后，只在组装时按解析出的路由家族选择。
+它不是第二个 base prompt：`BASE_PROMPT` 仍是唯一的身份与优先级权威；
+未知路由不追加任何内容（字节与无 profile 的前缀完全一致）；overlay 文本
+不携带模型 id、上下文窗口或价格等模型事实。profile 在会话头部组装时固定
+——只在会话构建（`initial`）和已声明的头部变更（`/model` 走
+`change:model` 重新固定）时生效，绝不在工具循环中途改变。易变的图、
+reveal、swarm、claim、scope-drift 事实永远不进 overlay：它们走上文描述的
+只追加式 `<context_update>` / 运行时事件历史。
+
 ## 哪些算已声明的头部变更
 
 下面这些操作会带着有日志的 `change:<what>` 原因重新固定前缀。工具头部的改变

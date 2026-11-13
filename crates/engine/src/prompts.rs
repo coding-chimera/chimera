@@ -103,6 +103,78 @@ pub fn resolve_handoff_path(workspace: &Path) -> (PathBuf, &'static str) {
     }
 }
 
+// ── Static provider prompt profile (Chimera W6B) ───────────────────────────
+// One BASE + one explicit static overlay per route family. The overlay is
+// selected when the session's system prompt is composed (session creation,
+// declared header changes — `/model` re-pins under `change:model`), never
+// mid-tool-loop, and unknown routes select no overlay so their prefix bytes
+// are identical to a profile-less route.
+
+/// Which static provider-behavior overlay (if any) a route family adds after
+/// the shared constitution. Selected from the resolved route; carries no
+/// model ids or capability facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProviderPromptProfile {
+    /// No overlay: unknown or unspecified routes keep the shared bytes.
+    #[default]
+    None,
+    /// DeepSeek-class reasoning-first routes.
+    Reasoning,
+    /// Kimi-class instruction-fidelity routes.
+    InstructionFidelity,
+    /// Long-context routes that rebuild evidence instead of trusting stale
+    /// accumulated context.
+    LongContext,
+}
+
+impl ProviderPromptProfile {
+    /// The static overlay bytes, empty for [`ProviderPromptProfile::None`].
+    #[must_use]
+    pub fn overlay(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Reasoning => text::PROVIDER_PROFILE_REASONING,
+            Self::InstructionFidelity => text::PROVIDER_PROFILE_INSTRUCTION_FIDELITY,
+            Self::LongContext => text::PROVIDER_PROFILE_LONG_CONTEXT,
+        }
+    }
+
+    /// Select the overlay for a resolved route family. Model facts (ids,
+    /// windows, pricing, generations) never enter this decision: only the
+    /// coarse family the route resolves to, so an unknown model keeps
+    /// byte-identical prefix bytes with no overlay.
+    #[must_use]
+    pub fn for_model_family(family: codewhale_config::catalog::reviewed::ModelFamily) -> Self {
+        use codewhale_config::catalog::reviewed::ModelFamily;
+        match family {
+            ModelFamily::DeepSeek => Self::Reasoning,
+            ModelFamily::Moonshot => Self::InstructionFidelity,
+            ModelFamily::Anthropic | ModelFamily::Google | ModelFamily::Zai => Self::LongContext,
+            ModelFamily::OpenAi
+            | ModelFamily::OpenAiCodex
+            | ModelFamily::Minimax
+            | ModelFamily::Stepfun
+            | ModelFamily::Qwen
+            | ModelFamily::Arcee
+            | ModelFamily::Together
+            | ModelFamily::XiaomiMimo
+            | ModelFamily::Meta
+            | ModelFamily::Xai
+            | ModelFamily::Mistral
+            | ModelFamily::Other => Self::None,
+        }
+    }
+
+    /// Resolve the profile from a wire model id using the reviewed catalog.
+    #[must_use]
+    pub fn for_model_id(model_id: &str) -> Self {
+        crate::model_profile::model_profile(model_id)
+            .family
+            .map(Self::for_model_family)
+            .unwrap_or_default()
+    }
+}
+
 /// Per-file size cap for the workspace relay artifact (`/relay`, compaction).
 ///
 /// Deliberately separate from the instruction-file ceiling: the relay is a
@@ -543,7 +615,8 @@ fn user_constitution_disabled_by_setup_state() -> bool {
 // byte-stable prefix ordering, prefix privacy #4632).
 pub use text::{
     BASE_PROMPT, COMPACT_TEMPLATE, CORE_EXECUTION_PROFILE_PROMPT, GOAL_CONTINUATION_PROMPT,
-    LANGUAGE_PROMPT, MEMORY_GUIDANCE, OUTPUT_PROMPT,
+    LANGUAGE_PROMPT, MEMORY_GUIDANCE, OUTPUT_PROMPT, PROVIDER_PROFILE_INSTRUCTION_FIDELITY,
+    PROVIDER_PROFILE_LONG_CONTEXT, PROVIDER_PROFILE_REASONING,
 };
 
 // ── Embedder prompt overrides ──
@@ -1074,13 +1147,20 @@ fn compose_default_static_layers_with_context(
 ) -> String {
     // Voice and tone live in the constitutional preamble. Language and output
     // rules are split into their own static segments so the constitution
-    // stays compact.
-    let layers = format!(
+    // stays compact. The provider profile overlay (Chimera W6B) appends after
+    // the shared segments: one BASE + one explicit static overlay, selected
+    // by route family and pinned for the session.
+    let mut layers = format!(
         "{}\n\n{}\n\n{}",
         effective_base_prompt().trim(),
         LANGUAGE_PROMPT.trim(),
         OUTPUT_PROMPT.trim()
     );
+    let profile = ProviderPromptProfile::for_model_id(model_id);
+    if !profile.overlay().is_empty() {
+        layers.push_str("\n\n");
+        layers.push_str(profile.overlay().trim());
+    }
     apply_model_template(&layers, model_id, context_window_override)
 }
 
@@ -3071,6 +3151,12 @@ mod tests {
             ("LANGUAGE_PROMPT", LANGUAGE_PROMPT),
             ("OUTPUT_PROMPT", OUTPUT_PROMPT),
             ("AUTHORITY_RECAP", AUTHORITY_RECAP),
+            ("PROVIDER_PROFILE_REASONING", PROVIDER_PROFILE_REASONING),
+            (
+                "PROVIDER_PROFILE_INSTRUCTION_FIDELITY",
+                PROVIDER_PROFILE_INSTRUCTION_FIDELITY,
+            ),
+            ("PROVIDER_PROFILE_LONG_CONTEXT", PROVIDER_PROFILE_LONG_CONTEXT),
         ];
         let rank_markers = [
             "Tier 1",
@@ -3510,6 +3596,247 @@ mod tests {
             "Don't reach for",
         ] {
             assert!(!BASE_PROMPT.contains(forbidden));
+        }
+    }
+
+    // ── Static provider prompt profile (Chimera W6B) ─────────────────────
+
+    #[test]
+    fn provider_profiles_select_by_route_family_and_unknown_adds_nothing() {
+        // One BASE + an explicit static overlay: known families select
+        // exactly one overlay, unknown models select none, and the BASE
+        // bytes are identical in every case.
+        let unknown = compose_prompt_with_approval_model_and_shell("llama3.3:70b");
+        let reasoning = compose_prompt_with_approval_model_and_shell("deepseek-v4-pro");
+        let fidelity = compose_prompt_with_approval_model_and_shell("moonshotai/kimi-k2.6");
+        let long_ctx = compose_prompt_with_approval_model_and_shell("claude-opus-5");
+
+        for (name, prompt, marker) in [
+            ("deepseek", reasoning, "## Provider Profile (reasoning-first)"),
+            ("kimi", fidelity, "## Provider Profile (instruction-fidelity)"),
+            ("claude", long_ctx, "## Provider Profile (long-context)"),
+        ] {
+            assert!(prompt.contains(marker), "{name} route must carry its profile overlay");
+        }
+        for marker in [
+            "## Provider Profile (reasoning-first)",
+            "## Provider Profile (instruction-fidelity)",
+            "## Provider Profile (long-context)",
+        ] {
+            assert!(
+                !unknown.contains(marker),
+                "unknown model must not gain a profile overlay: {marker:?}"
+            );
+        }
+        // The shared constitution prefix is byte-identical ahead of the
+        // overlay: every route starts with the same BASE + LANGUAGE + OUTPUT
+        // segment.
+        let shared_prefix_len = |prompt: &str| {
+            prompt
+                .find("\n\n## Provider Profile (")
+                .unwrap_or(prompt.len())
+        };
+        let base = shared_prefix_len(&unknown);
+        assert_eq!(shared_prefix_len(&reasoning), base);
+        assert_eq!(shared_prefix_len(&fidelity), base);
+        assert_eq!(shared_prefix_len(&long_ctx), base);
+    }
+
+    #[test]
+    fn provider_profiles_are_model_fact_free() {
+        for overlay in [
+            text::PROVIDER_PROFILE_REASONING,
+            text::PROVIDER_PROFILE_INSTRUCTION_FIDELITY,
+            text::PROVIDER_PROFILE_LONG_CONTEXT,
+        ] {
+            for fact in [
+                "deepseek",
+                "kimi",
+                "claude",
+                "glm",
+                "anthropic",
+                "moonshot",
+                "one-million",
+                "context window of",
+                "$0.14",
+            ] {
+                assert!(
+                    !overlay.to_ascii_lowercase().contains(fact),
+                    "profile overlay must stay model-fact free: {fact:?} in {overlay:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_profile_overlay_sits_after_shared_layers_and_before_core_execution() {
+        // Cache-order contract: the overlay is static prefix content, so it
+        // must precede the host-owned Core Execution layer in the full
+        // assembly and follow the shared constitution segments.
+        let tmp = tempdir().expect("tempdir");
+        let prompt = system_prompt_flat_text(
+            &system_prompt_for_mode_with_context_skills_session_and_approval(
+                tmp.path(),
+                None,
+                None,
+                None,
+                PromptSessionContext {
+                    model_id: "deepseek-v4-pro",
+                    ..PromptSessionContext::default()
+                },
+            ),
+        );
+        let output_at = prompt.find("## Output Formatting").expect("output segment");
+        let profile_at = prompt
+            .find("## Provider Profile (reasoning-first)")
+            .expect("profile overlay present");
+        let core_at = prompt.find("## Core Execution").expect("core execution layer");
+        assert!(
+            output_at < profile_at && profile_at < core_at,
+            "profile overlay must sit between shared segments and Core Execution"
+        );
+    }
+
+    #[test]
+    fn provider_profile_lands_before_volatile_world_state_fragments() {
+        // The overlay contributes only static bytes; dynamic graph/reveal/
+        // swarm/claim content rides append-only history and must never enter
+        // the frozen prefix this test composes.
+        let tmp = tempdir().expect("tempdir");
+        let prompt = system_prompt_for_mode_with_context_skills_session_and_approval(
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                model_id: "deepseek-v4-pro",
+                ..PromptSessionContext::default()
+            },
+        );
+        let SystemPrompt::Blocks(blocks) = prompt else {
+            panic!("expected Blocks");
+        };
+        // Blocks[0] is the cache-stable constitution; the overlay must live
+        // inside it, never in a WorldState fragment.
+        assert!(
+            blocks[0].text.contains("## Provider Profile (reasoning-first)"),
+            "profile overlay must stay inside the frozen constitution block"
+        );
+        for block in blocks.iter().skip(1) {
+            assert!(
+                !block.text.contains("## Provider Profile"),
+                "profile overlay leaked into a volatile block: {:?}",
+                block.text.chars().take(60).collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    fn provider_profile_selection_is_pure_and_stable() {
+        // Route-family selection is deterministic: the same model id must
+        // resolve to the same profile across calls (byte stability for the
+        // pinned prefix), and profile resolution must not consult runtime
+        // state.
+        for model in [
+            "deepseek-v4-pro",
+            "moonshotai/kimi-k2.6",
+            "claude-opus-5",
+            "llama3.3:70b",
+            "codewhale",
+        ] {
+            let first = ProviderPromptProfile::for_model_id(model);
+            let second = ProviderPromptProfile::for_model_id(model);
+            assert_eq!(first, second, "{model} profile resolution must be stable");
+        }
+        assert_eq!(
+            ProviderPromptProfile::for_model_id("llama3.3:70b"),
+            ProviderPromptProfile::None
+        );
+        assert_eq!(
+            ProviderPromptProfile::for_model_id("deepseek-v4-pro"),
+            ProviderPromptProfile::Reasoning
+        );
+        assert_eq!(
+            ProviderPromptProfile::for_model_id("moonshotai/kimi-k2.6"),
+            ProviderPromptProfile::InstructionFidelity
+        );
+    }
+
+    #[test]
+    fn base_prompt_stays_free_of_chimera_pull_tool_mentality() {
+        // The retired pull-style graph tools must not be taught anywhere in
+        // the bundled prompt text; their evidence semantics ride tool
+        // descriptions and pushed results instead.
+        for forbidden in [
+            "chimera_search",
+            "chimera_file_symbols",
+            "chimera_status",
+            "chimera_predesign",
+            "chimera_audit",
+            "chimera_oracle",
+            "chimera_obligations",
+            "chimera_init_graph",
+            "chimera_context",
+            "workbrief",
+        ] {
+            assert!(
+                !BASE_PROMPT.contains(forbidden),
+                "BASE_PROMPT must not teach the retired pull tool: {forbidden:?}"
+            );
+            assert!(
+                !text::CORE_EXECUTION_PROFILE_PROMPT.contains(forbidden),
+                "execution layer must not teach the retired pull tool: {forbidden:?}"
+            );
+            for overlay in [
+                text::PROVIDER_PROFILE_REASONING,
+                text::PROVIDER_PROFILE_INSTRUCTION_FIDELITY,
+                text::PROVIDER_PROFILE_LONG_CONTEXT,
+            ] {
+                assert!(
+                    !overlay.contains(forbidden),
+                    "profile overlay must not teach the retired pull tool: {forbidden:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn migrated_semantics_present_in_constitution() {
+        // Chimera's engineering semantics merged into the existing
+        // constitution sections — kept, merged, deleted: predesign/edit-intent
+        // guidance, scope-drift reconciliation, obligation/oracle closeout,
+        // swarm background completion, and delegation choice.
+        for phrase in [
+            "mutation gate or",
+            "edit-intent claim",
+            "re-read after a release notice",
+            "names files a change reaches that you never edited",
+            "active obligations or failing verification evidence",
+            "background by default",
+            "never poll or block waiting for one",
+            "use `workflow` when steps need",
+            "not evidence you verified",
+        ] {
+            assert!(
+                BASE_PROMPT.contains(phrase),
+                "BASE_PROMPT missing migrated Chimera semantic: {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_overlay_keeps_single_base_authority() {
+        // A profile overlay is guidance, never a second constitution: it must
+        // not restate identity, precedence, or authority.
+        for overlay in [
+            text::PROVIDER_PROFILE_REASONING,
+            text::PROVIDER_PROFILE_INSTRUCTION_FIDELITY,
+            text::PROVIDER_PROFILE_LONG_CONTEXT,
+        ] {
+            assert!(!overlay.contains("You are Codewhale"));
+            assert!(!overlay.contains("### Whose word wins"));
+            assert!(!overlay.contains("Tier"));
+            assert!(!overlay.contains("This ordering is stated"));
         }
     }
 
