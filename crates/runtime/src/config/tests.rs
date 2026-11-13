@@ -241,7 +241,7 @@ model = "held-model"
 fn api_provider_metadata_helpers_follow_config_provider_metadata() {
     let config = Config::default();
     let rows = codewhale_config::descriptors::provider_compatibility();
-    assert_eq!(rows.len(), 53);
+    assert_eq!(rows.len(), 54);
     for row in rows {
         if matches!(row.kind, ProviderKind::Antigravity | ProviderKind::Custom) {
             assert!(config.resolve_provider_selection_identity(row.id).is_err());
@@ -327,7 +327,7 @@ fn retired_antigravity_env_selection_is_refused_with_the_tombstone() {
 #[test]
 fn every_api_provider_variant_resolves_base_url_without_panicking() {
     let rows = codewhale_config::descriptors::provider_compatibility();
-    assert_eq!(rows.len(), 53);
+    assert_eq!(rows.len(), 54);
     for row in rows {
         assert!(!row.base_url.is_empty(), "{} default base is empty", row.id);
     }

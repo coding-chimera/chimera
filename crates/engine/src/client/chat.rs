@@ -36,10 +36,10 @@ use codewhale_models::{
 use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
+use super::alibailian;
 use super::prepared::WireDialect;
 use super::reasoning_effort::apply_reasoning_effort;
 use super::role_placement::{RolePlacement, role_placement};
-use super::alibailian;
 use super::wire::{
     ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK, SSE_BACKPRESSURE_SLEEP_MS,
     SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, bounded_error_text, from_api_tool_name,
@@ -1266,7 +1266,10 @@ pub fn build_chat_wire_body_with_window(
                 .and_then(Value::as_array)
                 .map(Vec::len)
                 .unwrap_or(0),
-            request.tool_choice.as_ref().unwrap_or(&serde_json::Value::Null),
+            request
+                .tool_choice
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
         ) {
             body["tool_choice"] = backstop;
         }
@@ -6685,6 +6688,7 @@ mod image_block_wire_tests {
     use super::{ProviderKind, build_chat_messages, build_chat_wire_body};
     use codewhale_models::Role;
     use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest, Tool};
+    use serde_json::json;
 
     const DATA_URL: &str = "data:image/png;base64,QUJD";
 
@@ -7153,8 +7157,14 @@ mod image_block_wire_tests {
             None,
         )
         .expect("relay wire body");
-        assert_eq!(wire.body["temperature"], 0.7);
-        assert_eq!(wire.body["top_p"], 0.9);
+        // f32 round-trip: compare with tolerance, not exact equality.
+        let temperature = wire.body["temperature"].as_f64().expect("temperature");
+        let top_p = wire.body["top_p"].as_f64().expect("top_p");
+        assert!(
+            (temperature - 0.7).abs() < 1e-6,
+            "temperature {temperature}"
+        );
+        assert!((top_p - 0.9).abs() < 1e-6, "top_p {top_p}");
     }
 
     #[test]
@@ -7166,27 +7176,30 @@ mod image_block_wire_tests {
         request.metadata = Some(json!({
             "response_schema": {"type": "object"}
         }));
-        request.tools = Some(vec![Tool {
-            tool_type: Some("function".to_string()),
-            name: "a".to_string(),
-            description: "a tool".to_string(),
-            input_schema: json!({"type": "object"}),
-            allowed_callers: None,
-            defer_loading: None,
-            input_examples: None,
-            strict: None,
-            cache_control: None,
-        }, Tool {
-            tool_type: Some("function".to_string()),
-            name: "b".to_string(),
-            description: "a tool".to_string(),
-            input_schema: json!({"type": "object"}),
-            allowed_callers: None,
-            defer_loading: None,
-            input_examples: None,
-            strict: None,
-            cache_control: None,
-        }]);
+        request.tools = Some(vec![
+            Tool {
+                tool_type: Some("function".to_string()),
+                name: "a".to_string(),
+                description: "a tool".to_string(),
+                input_schema: json!({"type": "object"}),
+                allowed_callers: None,
+                defer_loading: None,
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            },
+            Tool {
+                tool_type: Some("function".to_string()),
+                name: "b".to_string(),
+                description: "a tool".to_string(),
+                input_schema: json!({"type": "object"}),
+                allowed_callers: None,
+                defer_loading: None,
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            },
+        ]);
         request.tool_choice = Some(json!("required"));
         let wire = build_chat_wire_body(
             &request,

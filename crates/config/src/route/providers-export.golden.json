@@ -3,6 +3,24 @@
   "runtimeVersion": "0.10.3",
   "routes": [
     {
+      "id": "alibailian",
+      "family": "alibailian",
+      "label": "Alibailian Relay",
+      "endpoint": "https://alibailian.invalid/v1",
+      "wire": "chat-completions",
+      "defaultModel": "qwen3.8-max",
+      "envVars": [
+        "ALIBAILIAN_API_KEY"
+      ],
+      "auth": [
+        {
+          "kind": "api-key",
+          "label": "API key"
+        }
+      ],
+      "transport": "chat-completions"
+    },
+    {
       "id": "anthropic",
       "family": "anthropic",
       "label": "Anthropic",

@@ -191,11 +191,22 @@ impl ProviderNativeSearchClient {
                 request,
                 ResponsesSearchDialect::ModelStudio,
             ),
-            ProviderKind::Alibailian => build_responses_search_body(
-                &self.inner.default_model,
-                request,
-                ResponsesSearchDialect::ModelStudio,
-            ),
+            ProviderKind::Alibailian => {
+                // The relay accepts the Model Studio harness-search body
+                // shape but declares the hosted tool itself: reuse the shared
+                // body builder, then replace the bare tool with the relay's
+                // own hosted declaration (no domain filters on this path).
+                let mut body = build_responses_search_body(
+                    &self.inner.default_model,
+                    request,
+                    ResponsesSearchDialect::ModelStudio,
+                );
+                if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+                    tools.clear();
+                    tools.push(super::alibailian::hosted_web_search_declaration());
+                }
+                body
+            }
             ProviderKind::Deepseek => build_responses_search_body(
                 &self.inner.default_model,
                 request,
@@ -218,14 +229,12 @@ impl ProviderNativeSearchClient {
         };
         let url = match self.inner.api_provider {
             ProviderKind::Openai
-                | ProviderKind::Xai
-                | ProviderKind::ModelstudioTokenPlan
-                | ProviderKind::Alibailian => {
-                responses_api_url(
-                    &self.inner.base_url,
-                    codewhale_config::responses_dialect::ResponsesPathPolicy::VersionedResponses,
-                )
-            }
+            | ProviderKind::Xai
+            | ProviderKind::ModelstudioTokenPlan
+            | ProviderKind::Alibailian => responses_api_url(
+                &self.inner.base_url,
+                codewhale_config::responses_dialect::ResponsesPathPolicy::VersionedResponses,
+            ),
             ProviderKind::Deepseek => responses_api_url(
                 &self.inner.base_url,
                 codewhale_config::responses_dialect::bound_responses_path(
@@ -881,10 +890,12 @@ mod tests {
         });
         let parsed = parse_responses_search(&payload);
         assert_eq!(parsed.answer.as_deref(), Some("The answer is 42."));
-        assert!(parsed
-            .citations
-            .iter()
-            .any(|c| c.url == "https://example.com/docs"));
+        assert!(
+            parsed
+                .citations
+                .iter()
+                .any(|c| c.url == "https://example.com/docs")
+        );
     }
 
     #[test]

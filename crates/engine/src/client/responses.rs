@@ -559,7 +559,7 @@ impl CodewhaleClient {
                                         // dropping the item silently so the
                                         // user is not handed an ungrounded
                                         // answer with no explanation.
-                                        "web_search_call" => {
+                                        _ if super::alibailian::is_hosted_web_search_call(item) => {
                                             content_block_counter += 1;
                                             yield Ok(StreamEvent::ContentBlockStart {
                                                 index: content_block_counter - 1,

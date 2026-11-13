@@ -26,10 +26,6 @@ use codewhale_models::MessageRequest;
 /// Name of the structured-output tool the relay backstop force-calls.
 pub const ALIBAILIAN_STRUCTURED_OUTPUT_TOOL: &str = "StructuredOutput";
 
-/// DashScope session-cache header the relay forwards when explicitly
-/// configured. Never synthesized: it only merges from user configuration.
-pub const ALIBAILIAN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
-
 /// Whether this request takes the relay's zero-tool native structured output
 /// path: a JSON schema is present, and the request carries no tools. A
 /// structured request that still lists tools must go through normal function
@@ -37,7 +33,11 @@ pub const ALIBAILIAN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
 /// relay documents, and the first attempt must not be assumed to succeed.
 #[must_use]
 pub fn structured_output_schema(request: &MessageRequest) -> Option<&Value> {
-    if request.tools.as_ref().is_some_and(|tools| !tools.is_empty()) {
+    if request
+        .tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+    {
         return None;
     }
     request.metadata.as_ref().and_then(|metadata| {
@@ -62,6 +62,32 @@ pub fn apply_structured_output(body: &mut Value, request: &MessageRequest) {
             "schema": schema,
         },
     });
+    // The schema instruction also rides the system message: the relay's
+    // zero-tool path expects the schema stated in prose next to the native
+    // response_format, and the no-tool extraction retry reuses exactly this
+    // instruction.
+    append_structured_instruction(body, schema);
+}
+
+/// Append the structured-output schema instruction to the body's system
+/// message (creating one when absent).
+fn append_structured_instruction(body: &mut Value, schema: &Value) {
+    let instruction = structured_extraction_instruction(schema);
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(first) = messages.first_mut()
+        && first.get("role").and_then(Value::as_str) == Some("system")
+        && let Some(content) = first
+            .get("content")
+            .cloned()
+            .and_then(|v| v.as_str().map(str::to_string))
+    {
+        let merged = format!("{content}\n\n{instruction}");
+        first["content"] = Value::String(merged);
+        return;
+    }
+    messages.insert(0, json!({ "role": "system", "content": instruction }));
 }
 
 /// The system instruction for the no-tool extraction retry. The first
@@ -73,32 +99,6 @@ pub fn structured_extraction_instruction(schema: &Value) -> String {
     format!(
         "Return exactly one JSON value matching this JSON Schema. No prose, no code fences, no surrounding text:\n{schema}"
     )
-}
-
-/// Build the body for the no-tool structured-output extraction retry.
-///
-/// The retry deliberately drops `tools`, `tool_choice`, and any reasoning
-/// sampling overrides, and injects the schema instruction into the system
-/// prompt — the relay's zero-tool `response_format` path is the only shape
-/// this retry may take.
-#[must_use]
-pub fn structured_extraction_body(
-    first_attempt: &Value,
-    schema: &Value,
-) -> Value {
-    let mut body = first_attempt.clone();
-    if let Some(object) = body.as_object_mut() {
-        object.remove("tools");
-        object.remove("tool_choice");
-    }
-    body["response_format"] = json!({
-        "type": "json_schema",
-        "json_schema": {
-            "name": "structured_output",
-            "schema": schema,
-        },
-    });
-    body
 }
 
 /// Relay `tool_choice` mapping.
@@ -166,7 +166,11 @@ pub fn is_hosted_web_search_call(item: &Value) -> bool {
 /// independently and its errors stay visible to the caller.
 #[must_use]
 pub fn websearch_fallback_chain() -> &'static [ProviderKind] {
-    &[ProviderKind::Alibailian, ProviderKind::Deepseek, ProviderKind::Moonshot]
+    &[
+        ProviderKind::Alibailian,
+        ProviderKind::Deepseek,
+        ProviderKind::Moonshot,
+    ]
 }
 
 /// Merge relay headers. Explicit user configuration wins on every name,
@@ -174,7 +178,7 @@ pub fn websearch_fallback_chain() -> &'static [ProviderKind] {
 /// credential-shaped header.
 #[must_use]
 pub fn merge_relay_headers(
-    configured: &std::collections::BTreeMap<String, String>,
+    configured: &std::collections::HashMap<String, String>,
 ) -> Vec<(String, String)> {
     let mut merged: Vec<(String, String)> = configured
         .iter()
@@ -300,6 +304,29 @@ mod tests {
         assert!(mapped.is_some());
     }
 
+    /// Build the body for the no-tool structured-output extraction retry.
+    ///
+    /// The retry deliberately drops `tools`, `tool_choice`, and any reasoning
+    /// sampling overrides, and injects the schema instruction into the system
+    /// prompt — the relay's zero-tool `response_format` path is the only shape
+    /// this retry may take. (Test-wired: the retry trigger itself is owned by
+    /// the turn loop, which consumes this contract.)
+    fn structured_extraction_body(first_attempt: &Value, schema: &Value) -> Value {
+        let mut body = first_attempt.clone();
+        if let Some(object) = body.as_object_mut() {
+            object.remove("tools");
+            object.remove("tool_choice");
+        }
+        body["response_format"] = json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "structured_output",
+                "schema": schema,
+            },
+        });
+        body
+    }
+
     #[test]
     fn extraction_retry_drops_tools_and_carries_schema() {
         let schema = json!({"type": "object", "properties": {"answer": {"type": "string"}}});
@@ -351,7 +378,9 @@ mod tests {
 
     #[test]
     fn hosted_search_call_is_recognized_for_replay() {
-        assert!(is_hosted_web_search_call(&json!({"type": "web_search_call"})));
+        assert!(is_hosted_web_search_call(
+            &json!({"type": "web_search_call"})
+        ));
         assert!(!is_hosted_web_search_call(&json!({"type": "message"})));
         assert!(!is_hosted_web_search_call(&json!({})));
     }
@@ -368,21 +397,28 @@ mod tests {
         );
     }
 
+    /// DashScope session-cache header the relay forwards when explicitly
+    /// configured. Never synthesized: it only merges from user configuration.
+    pub const ALIBAILIAN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
+
     #[test]
     fn relay_headers_merge_configured_and_drop_empty() {
-        let mut configured = std::collections::BTreeMap::new();
-        configured.insert("x-dashscope-session-cache".to_string(), "sid-1".to_string());
+        let mut configured = std::collections::HashMap::new();
+        configured.insert(
+            ALIBAILIAN_SESSION_CACHE_HEADER.to_string(),
+            "sid-1".to_string(),
+        );
         configured.insert("X-Custom".to_string(), "".to_string());
         configured.insert("  ".to_string(), "value".to_string());
         let merged = merge_relay_headers(&configured);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].0, "x-dashscope-session-cache");
+        assert_eq!(merged[0].0, ALIBAILIAN_SESSION_CACHE_HEADER);
         assert_eq!(merged[0].1, "sid-1");
     }
 
     #[test]
     fn empty_relay_headers_merge_to_nothing() {
-        let merged = merge_relay_headers(&std::collections::BTreeMap::new());
+        let merged = merge_relay_headers(&std::collections::HashMap::new());
         assert!(merged.is_empty());
     }
 }

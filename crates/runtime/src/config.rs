@@ -3055,6 +3055,15 @@ pub struct ProvidersConfig {
     /// Alibaba Cloud Model Studio — Coding Plan Anthropic-compatible endpoint.
     #[serde(default, alias = "modelstudio-coding-plan-anthropic")]
     pub modelstudio_coding_plan_anthropic: ProviderConfig,
+    /// Alibailian — explicitly named Model Studio relay profile.
+    #[serde(
+        default,
+        alias = "ali-bailian",
+        alias = "ali_bailian",
+        alias = "bailian-relay",
+        alias = "bailian_relay"
+    )]
+    pub alibailian: ProviderConfig,
     /// Arbitrary user-named custom providers (#1519).
     ///
     /// Captures every `[providers.<name>]` table whose key is not one of the
@@ -8144,6 +8153,7 @@ fn first_nonempty_env(names: &[&str]) -> Option<String> {
 /// environment-selected host.
 fn provider_env_base_url_override(provider: ProviderKind) -> Option<String> {
     let names: &[&str] = match provider {
+        ProviderKind::Alibailian => &["ALIBAILIAN_BASE_URL"],
         ProviderKind::NvidiaNim => &["NVIDIA_NIM_BASE_URL", "NIM_BASE_URL", "NVIDIA_BASE_URL"],
         ProviderKind::Openai => &["OPENAI_BASE_URL"],
         ProviderKind::Atlascloud => &["ATLASCLOUD_BASE_URL"],
@@ -10494,6 +10504,7 @@ fn merge_providers(
                 base.modelstudio_coding_plan_anthropic,
                 override_cfg.modelstudio_coding_plan_anthropic,
             ),
+            alibailian: merge_provider_config(base.alibailian, override_cfg.alibailian),
             custom: merge_custom_providers(base.custom, override_cfg.custom),
         }),
     }

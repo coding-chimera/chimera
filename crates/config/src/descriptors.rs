@@ -366,8 +366,8 @@ mod tests {
             .map(|row| row.kind())
             .collect();
         let index = |rows: &[ProviderKind], kind| rows.iter().position(|row| *row == kind).unwrap();
-        assert_eq!(registry.len(), 52);
-        assert_eq!(ProviderKind::ALL.len(), 46);
+        assert_eq!(registry.len(), 53);
+        assert_eq!(ProviderKind::ALL.len(), 47);
         assert!(
             index(&registry, ProviderKind::Modelscope) < index(&registry, ProviderKind::Together)
         );
