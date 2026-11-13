@@ -62,6 +62,32 @@ pub fn apply_structured_output(body: &mut Value, request: &MessageRequest) {
             "schema": schema,
         },
     });
+    // The schema instruction also rides the system message: the relay's
+    // zero-tool path expects the schema stated in prose next to the native
+    // response_format, and the no-tool extraction retry reuses exactly this
+    // instruction.
+    append_structured_instruction(body, schema);
+}
+
+/// Append the structured-output schema instruction to the body's system
+/// message (creating one when absent).
+fn append_structured_instruction(body: &mut Value, schema: &Value) {
+    let instruction = structured_extraction_instruction(schema);
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(first) = messages.first_mut()
+        && first.get("role").and_then(Value::as_str) == Some("system")
+        && let Some(content) = first
+            .get("content")
+            .cloned()
+            .and_then(|v| v.as_str().map(str::to_string))
+    {
+        let merged = format!("{content}\n\n{instruction}");
+        first["content"] = Value::String(merged);
+        return;
+    }
+    messages.insert(0, json!({ "role": "system", "content": instruction }));
 }
 
 /// The system instruction for the no-tool extraction retry. The first
@@ -121,7 +147,6 @@ pub fn structured_extraction_body(first_attempt: &Value, schema: &Value) -> Valu
     });
     body
 }
-
 /// Relay `tool_choice` mapping.
 ///
 /// The relay rejects a forced call (`"required"` or `{"type":"any"}`) with
@@ -199,7 +224,7 @@ pub fn websearch_fallback_chain() -> &'static [ProviderKind] {
 /// credential-shaped header.
 #[must_use]
 pub fn merge_relay_headers(
-    configured: &std::collections::BTreeMap<String, String>,
+    configured: &std::collections::HashMap<String, String>,
 ) -> Vec<(String, String)> {
     let mut merged: Vec<(String, String)> = configured
         .iter()
@@ -446,7 +471,7 @@ mod tests {
 
     #[test]
     fn relay_headers_merge_configured_and_drop_empty() {
-        let mut configured = std::collections::BTreeMap::new();
+        let mut configured = std::collections::HashMap::new();
         configured.insert(
             ALIBAILIAN_SESSION_CACHE_HEADER.to_string(),
             "sid-1".to_string(),
@@ -461,7 +486,7 @@ mod tests {
 
     #[test]
     fn empty_relay_headers_merge_to_nothing() {
-        let merged = merge_relay_headers(&std::collections::BTreeMap::new());
+        let merged = merge_relay_headers(&std::collections::HashMap::new());
         assert!(merged.is_empty());
     }
 }

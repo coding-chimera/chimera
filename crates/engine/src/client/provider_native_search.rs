@@ -191,11 +191,22 @@ impl ProviderNativeSearchClient {
                 request,
                 ResponsesSearchDialect::ModelStudio,
             ),
-            ProviderKind::Alibailian => build_responses_search_body(
-                &self.inner.default_model,
-                request,
-                ResponsesSearchDialect::Alibailian,
-            ),
+            ProviderKind::Alibailian => {
+                // The relay accepts the Model Studio harness-search body
+                // shape but declares the hosted tool itself: reuse the shared
+                // body builder, then replace the bare tool with the relay's
+                // own hosted declaration (no domain filters on this path).
+                let mut body = build_responses_search_body(
+                    &self.inner.default_model,
+                    request,
+                    ResponsesSearchDialect::ModelStudio,
+                );
+                if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+                    tools.clear();
+                    tools.push(super::alibailian::hosted_web_search_declaration());
+                }
+                body
+            }
             ProviderKind::Deepseek => build_responses_search_body(
                 &self.inner.default_model,
                 request,

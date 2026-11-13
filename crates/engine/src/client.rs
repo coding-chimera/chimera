@@ -1914,10 +1914,22 @@ impl CodewhaleClient {
         }
         // A newly reviewed plugin destination must not inherit credentials or
         // routing headers from unrelated, global provider configuration.
-        let http_headers = plugin_provider.as_ref().map_or_else(
+        let mut http_headers = plugin_provider.as_ref().map_or_else(
             || config.http_headers(),
             |entry| entry.http_headers.clone().unwrap_or_default(),
         );
+        // Alibailian relay: merge the provider-scoped header table (including
+        // the explicitly configured DashScope session-cache header) through
+        // the relay's own merge rules — configured values win, empty names and
+        // values drop, credential-shaped names keep their client-side guards.
+        if api_provider == ProviderKind::Alibailian
+            && let Some(entry) = config.provider_config_for(&admitted_identity)
+            && let Some(relay_headers) = entry.http_headers.as_ref()
+        {
+            for (name, value) in alibailian::merge_relay_headers(relay_headers) {
+                http_headers.insert(name, value);
+            }
+        }
         let auth_disabled = auth_mode_disables_api_key(
             config.auth_mode_for_provider(&admitted_identity).as_deref(),
         );

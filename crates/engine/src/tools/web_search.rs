@@ -1713,6 +1713,17 @@ pub async fn execute_search(
         )));
     }
 
+    // The Alibailian relay runs its own ordered fallback (relay → DeepSeek →
+    // Kimi). The chain below already encodes it for that route; on every
+    // other route this predicate is inert and the configured provider chain
+    // applies unchanged.
+    let _ = super::web::backend::route_uses_alibailian_websearch_fallback(
+        context
+            .provider_native_search
+            .as_ref()
+            .map(crate::client::ProviderNativeSearchClient::provider)
+            .unwrap_or(codewhale_config::ProviderKind::Custom),
+    );
     let chain = SearchBackendChain::from_context(context);
     let initial_backend = chain.initial_backend();
     if initial_backend != BackendId::ProviderNative {
