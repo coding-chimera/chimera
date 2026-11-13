@@ -100,6 +100,8 @@ pub mod budget_handback;
 pub mod coord;
 mod delivery;
 pub mod engine;
+pub mod evidence;
+pub mod swarm;
 mod governor;
 mod lifecycle;
 pub mod mailbox;
@@ -2367,6 +2369,9 @@ struct PersistedSubAgentState {
     resume_targets: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     worker_origins: Option<HashMap<String, WorkerOrigin>>,
+    /// Durable completion outbox rows (W2 swarm exactly-once push).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    completion_outbox: Vec<OutboxRow>,
 }
 
 impl Default for PersistedSubAgentState {
@@ -2379,6 +2384,7 @@ impl Default for PersistedSubAgentState {
             coordination: CoordinationLedger::default(),
             resume_targets: HashMap::new(),
             worker_origins: None,
+            completion_outbox: Vec::new(),
         }
     }
 }
@@ -4212,6 +4218,28 @@ pub struct SubAgentManager {
     /// Taken when the task settles.
     rerouted_requests: HashMap<String, ReroutedRequest>,
     member_starts: HashMap<(String, String), (String, String)>,
+    /// Durable per-worker completion outbox (W2 swarm): one row per
+    /// background worker that reached a terminal state, keyed by agent id
+    /// and stamped with the delivery generation. The Engine's in-memory
+    /// `delivered_subagent_completion_ids` set cannot survive a restart, so
+    /// exactly-once push across recovery reads and marks this ledger
+    /// instead: a row is appended when the terminal claim commits, and
+    /// marked delivered when the parent session actually consumes it.
+    completion_outbox: Vec<OutboxRow>,
+}
+
+/// One durable outbox row: a terminal worker whose completion push is
+/// pending or delivered, with the generation that produced it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OutboxRow {
+    pub agent_id: String,
+    pub owner_session_id: String,
+    /// Monotonic generation of the manager that appended the row; a restart
+    /// bumps it, so a re-delivered row can be attributed.
+    pub generation: u64,
+    pub delivered: bool,
+    /// Epoch millis when the terminal result committed.
+    pub committed_at_ms: u64,
 }
 
 /// One child request waiting on a person (approvals C2). The store is the
@@ -4794,6 +4822,7 @@ impl SubAgentManager {
             refused_routes: HashMap::new(),
             rerouted_requests: HashMap::new(),
             member_starts: HashMap::new(),
+            completion_outbox: Vec::new(),
         }
     }
 
@@ -6516,6 +6545,7 @@ impl SubAgentManager {
             coordination: self.coordination.clone(),
             resume_targets: self.resume_targets.clone(),
             worker_origins: (self.worker_origin_schema == 2).then(|| self.worker_origins.clone()),
+            completion_outbox: self.completion_outbox.clone(),
         };
         payload
             .validate_worker_origins()
@@ -6769,6 +6799,10 @@ impl SubAgentManager {
         );
         self.coordination = coordination;
         self.resume_targets = state.resume_targets;
+        // The outbox survives restart: undelivered rows are exactly the ones
+        // a recovered parent session must still see. Marked rows stay
+        // marked so a second recovery cannot re-deliver them.
+        self.completion_outbox = state.completion_outbox;
         for persisted in state.agents {
             let agent = self.restore_persisted_agent(persisted);
             self.agents.insert(agent.id.clone(), agent);
@@ -6959,6 +6993,71 @@ impl SubAgentManager {
             "finalized sub-agent fleet on session close"
         );
         Ok(finalized)
+    }
+
+    /// Append (or refresh) the durable outbox row for a worker whose
+    /// terminal result just committed. Idempotent per agent id: the row's
+    /// delivery flag is preserved so a re-commit cannot resurrect a consumed
+    /// completion.
+    pub fn record_completion_outbox(&mut self, agent_id: &str, owner_session_id: &str) {
+        let committed_at_ms = epoch_millis_now();
+        match self
+            .completion_outbox
+            .iter_mut()
+            .find(|row| row.agent_id == agent_id)
+        {
+            Some(row) => {
+                row.committed_at_ms = committed_at_ms;
+            }
+            None => self.completion_outbox.push(OutboxRow {
+                agent_id: agent_id.to_string(),
+                owner_session_id: owner_session_id.to_string(),
+                generation: self
+                    .persist_sequence
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                delivered: false,
+                committed_at_ms,
+            }),
+        }
+    }
+
+    /// Undelivered outbox rows for one owner session, in commit order. A
+    /// recovered engine drains these before accepting new completions so a
+    /// restart cannot drop or duplicate a background worker push.
+    pub fn pending_completion_outbox_for_session(
+        &self,
+        owner_session_id: &str,
+    ) -> Vec<OutboxRow> {
+        self.completion_outbox
+            .iter()
+            .filter(|row| row.owner_session_id == owner_session_id && !row.delivered)
+            .cloned()
+            .collect()
+    }
+
+    /// Mark rows delivered. Unknown ids are ignored so a racing sweep or a
+    /// foreign session's row cannot be flipped by this call.
+    pub fn mark_completion_outbox_delivered(&mut self, agent_ids: &[String]) {
+        let ids: std::collections::HashSet<&str> =
+            agent_ids.iter().map(String::as_str).collect();
+        for row in &mut self.completion_outbox {
+            if ids.contains(row.agent_id.as_str()) {
+                row.delivered = true;
+            }
+        }
+    }
+
+    /// Retention: drop rows that are delivered or belong to a session whose
+    /// agents and worker records are all gone. Bounded so a long-lived
+    /// process cannot accumulate an unbounded ledger.
+    pub fn prune_completion_outbox(&mut self) {
+        self.completion_outbox.retain(|row| {
+            if row.delivered {
+                return false;
+            }
+            self.agents.contains_key(&row.agent_id)
+                || self.worker_records.contains_key(&row.agent_id)
+        });
     }
 
     fn sorted_worker_records(&self) -> Vec<AgentWorkerRecord> {
@@ -12026,6 +12125,16 @@ impl SubAgentManager {
         drop(agent.unsettled_foreground.take());
         agent.terminal_delivery = None;
         release_resident_leases_for(agent_id);
+        // The durable outbox row is the restart boundary for the completion
+        // push: even if the live mpsc send below is lost to a crash, the
+        // row survives and a recovered session re-delivers exactly once.
+        let owner = self
+            .agents
+            .get(agent_id)
+            .map(|agent| agent.owner_session_id.clone())
+            .unwrap_or_default();
+        self.record_completion_outbox(agent_id, &owner);
+        self.prune_completion_outbox();
         if worker.is_some() {
             self.reconcile_worker_lifecycle(agent_id);
         }
@@ -14650,6 +14759,7 @@ impl AgentTool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentToolAction {
     Start,
+    Swarm,
     Roster,
     Status,
     Peek,
@@ -14682,6 +14792,7 @@ fn parse_agent_tool_action(input: &Value) -> Result<AgentToolAction, ToolError> 
     };
     match action.trim().to_ascii_lowercase().as_str() {
         "" | "start" | "spawn" | "run" => Ok(AgentToolAction::Start),
+        "swarm" | "fanout" | "batch" => Ok(AgentToolAction::Swarm),
         "roster" | "members" | "profiles" => Ok(AgentToolAction::Roster),
         "status" | "list" | "inspect" => Ok(AgentToolAction::Status),
         "peek" | "progress" => Ok(AgentToolAction::Peek),
@@ -14693,7 +14804,7 @@ fn parse_agent_tool_action(input: &Value) -> Result<AgentToolAction, ToolError> 
         "claim" => Ok(AgentToolAction::Claim),
         "release" | "release_claim" => Ok(AgentToolAction::Release),
         other => Err(ToolError::invalid_input(format!(
-            "Invalid agent action '{other}'. Use start, roster, status, peek, message, followup, interrupt, wait, claim, release, or cancel."
+            "Invalid agent action '{other}'. Use start, swarm, roster, status, peek, message, followup, interrupt, wait, claim, release, or cancel."
         ))),
     }
 }
@@ -14815,6 +14926,7 @@ static AGENT_TOOL_DESCRIPTION: std::sync::LazyLock<String> = std::sync::LazyLock
         "Delegate focused work and keep working. Start early; one agent per independent part, same message. ",
         "Start with action=start and prompt; it returns an agent_id immediately and results arrive automatically, so continue other work or end your turn instead of polling. Read-only roles need no extra fields. ",
         "Use multiple starts for independent tasks and `workflow` when steps need order or gates. ",
+        "For many independent items use action=swarm: items plus prompt_template or a preset fans each item out to a fresh worker; prefer background=true for large batches. ",
         "type selects the Fleet role: general (multi-step work with full tools), explore (find and read code, read-only), planner (plan a change with read-only probes), reviewer (grade a diff or design), implement (make a scoped code change), test (run checks and report evidence), advisor (read-only design counsel), or custom (allowed_tools on the parent's posture). ",
         "Roster, profile, model and thinking are optional. ",
         "Workers have no default turn, wall-clock, or token budget; only configured operator, role and inherited limits apply. ",
@@ -14866,9 +14978,8 @@ impl ToolSpec for AgentTool {
             "type": "object",
             "properties": {
                 "action": {
-                    "type": "string",
-                    "enum": ["start", "roster", "status", "peek", "message", "followup", "interrupt", "wait", "claim", "release", "cancel"],
-                    "description": "start launches a worker and returns immediately. Healthy workers continue after an ordinary parent response. roster lists roles with their resolved routes and capability/cost evidence. status/peek inspect running or retained workers. message queues a note without waking a running child. followup delivers notes to a running child or continues an interrupted child from its checkpoint; use the returned agent_id for subsequent waits/messages. Retrying followup on the original interrupted id reuses its successor. Bulk targets return individual continuation mappings and errors. interrupt stops the current turn while preserving the child checkpoint. wait only observes; see until. claim widens your own enforced write scope (see write_roots). release clears write claims whose owner is no longer running; pass agent_id to clear one, omit it to sweep. cancel permanently cancels a running child."
+                    "enum": ["start", "swarm", "roster", "status", "peek", "message", "followup", "interrupt", "wait", "claim", "release", "cancel"],
+                    "description": "start launches a worker and returns immediately. Healthy workers continue after an ordinary parent response. swarm fans one batch of items out to fresh workers: pass items with prompt_template or one of the four presets (audit-followup, audit-review, oracle-followup, file-review), or a from evidence source; description is required, items/from are mutually exclusive, and the template must contain {{item}}. Foreground joins inline with per-item results; background=true returns a frozen start receipt and each worker completion is pushed to this session exactly once — do not poll. roster lists roles with their resolved routes and capability/cost evidence. status/peek inspect running or retained workers. message queues a note without waking a running child. followup delivers notes to a running child or continues an interrupted child from its checkpoint; use the returned agent_id for subsequent waits/messages. Retrying followup on the original interrupted id reuses its successor. Bulk targets return individual continuation mappings and errors. interrupt stops the current turn while preserving the child checkpoint. wait only observes; see until. claim widens your own enforced write scope (see write_roots). release clears write claims whose owner is no longer running; pass agent_id to clear one, omit it to sweep. cancel permanently cancels a running child."
                 },
                 "until": {
                     "type": "string",
@@ -14914,6 +15025,42 @@ impl ToolSpec for AgentTool {
                 "detached": {
                     "type": "boolean",
                     "description": "Default children continue after ordinary parent turn completion and remain explicitly cancellable. true additionally opts this subtree out of parent-turn cancellation; its own budgets still apply."
+                },
+                "items": {
+                    "type": "array",
+                    "maxItems": 128,
+                    "items": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "object"}]},
+                    "description": "For action=swarm: the explicit work items. Each entry is a string or an object whose file/files/path/target/scope keys feed advisory scope warnings. Mutually exclusive with from."
+                },
+                "prompt_template": {
+                    "type": "string",
+                    "description": "For action=swarm: the worker prompt shape; must contain the {{item}} placeholder ({{index}} and {{total}} are also substituted). Required with items unless preset is used."
+                },
+                "preset": {
+                    "type": "string",
+                    "enum": ["audit-followup", "audit-review", "oracle-followup", "file-review"],
+                    "description": "For action=swarm: one of the four batch presets, supplying the worker prompt shape (structured Status/Changed files/Verification/Remaining risk/Parent follow-up labels)."
+                },
+                "from": {
+                    "type": "string",
+                    "enum": ["pending_obligations", "claimed_obligations", "stale_obligations", "active_obligations", "failing_oracles", "unknown_oracles", "failing_or_unknown_oracles"],
+                    "description": "For action=swarm: read the project evidence store for work items. Without a materialized store the call fails loud with an empty-input error; it never fabricates items. Mutually exclusive with items."
+                },
+                "concurrency": {
+                    "type": "integer", "minimum": 1, "maximum": 16,
+                    "description": "For action=swarm: workers running at once within this run (default 16, hard cap 16). Excess items queue."
+                },
+                "limit": {
+                    "type": "integer", "minimum": 1, "maximum": 100,
+                    "description": "For action=swarm: maximum items materialized from from (default 20) or sliced from items."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "For action=swarm: true returns a frozen start receipt and pushes each worker completion later (recommended for large batches); false (default) joins all items inline in this call."
+                },
+                "description": {
+                    "type": "string", "minLength": 1,
+                    "description": "For action=swarm, required: one line naming the batch so completions, receipts, and per-item titles can be attributed."
                 },
                 "type": {
                     "type": "string",
@@ -14995,6 +15142,13 @@ impl ToolSpec for AgentTool {
                                 "prompt": {}
                             },
                             "required": ["prompt"]
+                        },
+                        {
+                            "properties": {
+                                "action": {"const": "swarm"},
+                                "description": {}
+                            },
+                            "required": ["description"]
                         },
                         {
                             "properties": {"action": {"const": "roster"}}
@@ -15149,6 +15303,36 @@ impl ToolSpec for AgentTool {
                         "Cloud agent runs are no longer started from the agent tool; omit runtime and remote to run a local child.",
                     ));
                 }
+            }
+            AgentToolAction::Swarm => {
+                let evidence = evidence::FileEvidenceSource::new(&context.workspace);
+                touch_running_shell_owners(
+                    &self.manager,
+                    &context.execution.shell_manager,
+                    &context.state_namespace,
+                )
+                .await;
+                let mut swarm_runtime = self.runtime.clone();
+                swarm_runtime.context.execution.child_activation =
+                    context.execution.child_activation.clone();
+                let payload = swarm::execute_swarm(
+                    &input,
+                    self.manager.clone(),
+                    swarm_runtime,
+                    context,
+                    &evidence,
+                )
+                .await?;
+                let mut result = ToolResult::json(&payload)
+                    .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+                result.metadata = Some(json!({
+                    "action": "swarm",
+                    "background": payload["background"],
+                    "success": payload["success"],
+                    "failure": payload["failure"],
+                    "swarm_concurrency": payload["swarm_concurrency"],
+                }));
+                return Ok(result);
             }
             AgentToolAction::Roster => {
                 let mut runtime = self.runtime.clone();
@@ -15898,7 +16082,7 @@ async fn wait_result_payload(
     Ok(tool_result)
 }
 
-async fn spawn_subagent_from_input(
+pub(crate) async fn spawn_subagent_from_input(
     input: Value,
     manager: SharedSubAgentManager,
     mut runtime: SubAgentRuntime,
@@ -22596,6 +22780,8 @@ mod delivery_tests;
 mod lifecycle_tests;
 #[cfg(test)]
 mod limits_tests;
+#[cfg(test)]
+mod swarm_tests;
 #[cfg(test)]
 mod tests;
 

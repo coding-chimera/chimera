@@ -1516,7 +1516,7 @@ pub struct SubagentsConfig {
     /// spawn. `0` blocks the model-facing `agent` tool at this runtime depth;
     /// use `[subagents] enabled = false` for the clearer durable off switch.
     /// `1` allows one level, `2` two, and so on. When unset, defaults to
-    /// [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`], with no product depth cap.
+    /// [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`] (3, root included).
     /// Fleet workers are governed separately by `[fleet.exec] max_spawn_depth`;
     /// both use the same default.
     #[serde(default)]
@@ -7173,9 +7173,10 @@ impl Config {
 
     /// How many levels of nested sub-agents the interactive `agent` tool may
     /// spawn. Reads `[subagents] max_depth`; when unset it defaults to
-    /// [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`]. `0` is a valid value that
-    /// blocks the `agent` tool at this runtime depth. Positive owner choices
-    /// are preserved without another product ceiling.
+    /// [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`] (3, root included).
+    /// `0` is a valid value that blocks the `agent` tool at this runtime
+    /// depth. Positive owner choices are preserved without another product
+    /// ceiling.
     #[must_use]
     pub fn subagent_max_spawn_depth(&self) -> u32 {
         self.subagents

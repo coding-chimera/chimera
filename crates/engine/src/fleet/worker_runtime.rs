@@ -4585,7 +4585,7 @@ mod tests {
             spec.max_spawn_depth,
             codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH
         );
-        assert_eq!(spec.max_spawn_depth, u32::MAX);
+        assert_eq!(spec.max_spawn_depth, 3);
 
         let hardened = apply_exec_hardening(spec, &codewhale_config::FleetExecConfig::default());
         let would_exceed = |spawn_depth: u32| spawn_depth + 1 > hardened.max_spawn_depth;
