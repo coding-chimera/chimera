@@ -9,10 +9,10 @@ use crate::permissions::{
     read_permissions_state, write_permissions_atomic,
 };
 use crate::state_dirs::resolve_config_path;
+use crate::{catalog, config_document, legacy_root};
 use anyhow::Context as _;
 use anyhow::{Result, bail};
 use codewhale_execpolicy::{ExecPolicyEngine, PermissionAction, ToolAskRule};
-use serde::de::Error as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -166,9 +166,10 @@ impl ConfigStore {
             let raw = read_checked_config_file(&path)?;
             let (mut parsed, receipt) = parse_config_toml_with_receipt(&raw).map_err(|err| {
                 anyhow::anyhow!(
-                    "failed to parse config at {} ({}); file contents were omitted",
+                    "failed to parse config at {} ({}): {}; file contents were omitted",
                     quote_os_path(&path),
-                    config_toml_error_location(&raw, &err)
+                    config_toml_error_location(&raw, &err),
+                    codewhale_secrets::redact::redact_secrets(err.message())
                 )
             })?;
             let raw_document: toml::Value = toml::from_str(&raw).map_err(|err| {

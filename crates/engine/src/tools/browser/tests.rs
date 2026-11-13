@@ -299,31 +299,22 @@ async fn cancel_token_aborts_before_execution() {
 
 #[tokio::test]
 async fn child_hosts_are_denied_browser_tools() {
-    use crate::core::authority::TurnAuthority;
     use crate::core::engine::tests::engine_child_host_fixture;
     use crate::tools::subagent::SubAgentRuntime;
     use crate::tools::subagent::engine::ChildAuthority;
-    use codewhale_agent_contract::worker_profile::FleetRole;
+    use codewhale_agent_contract::role::FleetRole;
 
     let dir = tempdir().unwrap();
     let _home = crate::test_support::SealedHome::at(dir.path());
-    let (parent, _handle, _authority, route) = engine_child_host_fixture(dir.path(), None);
-    let policy = TurnAuthority::from_effective_fields(
-        codewhale_config::AppMode::Agent,
-        true,
-        false,
-        false,
-        codewhale_execpolicy::ApprovalMode::Suggest,
-    );
-    let context = parent.build_tool_context_for_turn(&policy, &route);
+    let (handle, context, _authority, route) = engine_child_host_fixture(dir.path(), None);
     let client = route.client.clone().expect("client");
     let runtime = SubAgentRuntime::new(
         client,
-        crate::DEFAULT_TEXT_MODEL.into(),
+        codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.into(),
         context,
         true,
         None,
-        parent.subagent_manager(),
+        handle.subagent_manager(),
     );
     let authority = ChildAuthority::capture(
         runtime,

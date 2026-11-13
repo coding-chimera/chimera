@@ -2954,7 +2954,6 @@ async fn read_file_refusal_names_the_callers_spelling_not_the_symlink_target() {
     // way. What this test needs is mutual exclusion against siblings that DO
     // rebind `HOME`, not a home of its own.
     let _env_lock = crate::test_support::lock_test_env();
-    let denylist = codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]);
     let Some(home) = dirs::home_dir() else {
         return;
     };

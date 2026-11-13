@@ -39,12 +39,21 @@ pub fn engine_child_host_fixture(
     workspace: &std::path::Path,
     scope: Option<Vec<String>>,
 ) -> (
-    crate::Engine,
-    crate::EngineHandle,
+    EngineHandle,
+    crate::tools::spec::ToolContext,
     std::sync::Arc<crate::tools::subagent::engine::ChildAuthority>,
     super::TurnRouteContext,
 ) {
-    child_host::fixture(workspace, scope)
+    let (parent, handle, authority, route) = child_host::fixture(workspace, scope);
+    let policy = crate::core::authority::TurnAuthority::from_effective_fields(
+        codewhale_config::AppMode::Agent,
+        true,
+        false,
+        false,
+        codewhale_execpolicy::ApprovalMode::Suggest,
+    );
+    let context = parent.build_tool_context_for_turn(&policy, &route);
+    (handle, context, authority, route)
 }
 
 include!("tests/test_cases_01.rs");

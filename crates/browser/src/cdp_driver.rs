@@ -392,7 +392,7 @@ impl DriverTab for CdpDriverTab {
                 state
                     .pages
                     .get(&self.raw)
-                    .map(|page| page.current_url.clone())
+                    .and_then(|page| page.try_lock().ok().map(|page| page.current_url.clone()))
             })
             .unwrap_or_default()
     }
@@ -409,7 +409,12 @@ impl DriverTab for CdpDriverTab {
             .state
             .try_lock()
             .ok()
-            .and_then(|state| state.pages.get(&self.raw).map(|page| page.generation))
+            .and_then(|state| {
+                state
+                    .pages
+                    .get(&self.raw)
+                    .and_then(|page| page.try_lock().ok().map(|page| page.generation))
+            })
             .unwrap_or(0)
     }
 

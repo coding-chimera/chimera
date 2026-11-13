@@ -247,8 +247,6 @@ fn session_index_compact_line_threshold() -> usize {
     if cfg!(test) { 5 } else { 5_000 }
 }
 
-const SCHEMA_VERSION: u32 = 8;
-
 /// The `user_version` the last step of `StateStore::migrate_schema` writes.
 const SCHEMA_VERSION: u32 = 8;
 

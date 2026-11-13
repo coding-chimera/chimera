@@ -1321,6 +1321,7 @@ pub async fn run_tui(
         handle_store: app.runtime_services.handle_store.clone(),
         rlm_sessions: app.runtime_services.rlm_sessions.clone(),
         media_originals_dir: codewhale_runtime::media_originals::default_store_dir(),
+        browser_manager: app.runtime_services.browser_manager.clone(),
     };
     codewhale_runtime::startup_trace::mark("task_manager_ready");
     refresh_active_task_panel(&mut app, &task_manager).await;

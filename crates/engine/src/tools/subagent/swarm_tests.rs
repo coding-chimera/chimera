@@ -7,17 +7,19 @@
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
-use super::super::new_shared_subagent_manager_with_state_root_and_timeout;
-use super::evidence::{EVIDENCE_SOURCES, FileEvidenceSource, NoopEvidenceSource};
-use super::{
+use super::evidence::{
+    EVIDENCE_SOURCES, FileEvidenceSource, NoopEvidenceSource, SwarmEvidenceSource,
+};
+use super::swarm::{
     DEFAULT_SWARM_CONCURRENCY, DEFAULT_SWARM_LIMIT, MAX_SWARM_CONCURRENCY, MAX_SWARM_ITEMS,
     MAX_SWARM_LIMIT, SWARM_FROM_SOURCES, SWARM_PRESETS, SwarmSource, bounded_u64,
     collect_scope_warnings, extract_swarm_summary, materialize_swarm_items, parse_swarm_params,
     preset_role, preset_template, render_template, validate_swarm_source,
 };
+use super::{SharedSubAgentManager, new_shared_subagent_manager_with_state_root_and_timeout};
 use codewhale_agent_contract::role::FleetRole;
 
-fn params(input: Value) -> super::SwarmParams {
+fn params(input: Value) -> super::swarm::SwarmParams {
     parse_swarm_params(&input).expect("swarm params parse")
 }
 
@@ -533,7 +535,7 @@ fn materialize_with_empty_from_result_reports_empty_input() {
 
 // ---- Durable completion outbox ----
 
-fn manager_with_state() -> super::super::SharedSubAgentManager {
+fn manager_with_state() -> SharedSubAgentManager {
     let tmp = tempdir().expect("tempdir");
     new_shared_subagent_manager_with_state_root_and_timeout(
         tmp.path().to_path_buf(),

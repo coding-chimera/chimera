@@ -1,6 +1,4 @@
 // Opt-in real-Chromium smoke over the production CDP driver.
-use std::time::Duration;
-
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";

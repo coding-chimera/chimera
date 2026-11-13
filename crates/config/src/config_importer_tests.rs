@@ -8,6 +8,7 @@ use super::*;
 use crate::importer::{
     IMPORTED_SCHEMA_VERSION, ImportScope, import_chimera_config, import_codewhale_toml,
 };
+use codewhale_execpolicy::PermissionAction;
 
 #[test]
 fn versioned_document_rejects_unknown_root_keys() {
@@ -207,4 +208,12 @@ fn project_permission_rule_import_is_always_tightening() {
             .iter()
             .any(|rule| rule.tool == "*" && rule.action == PermissionAction::Ask)
     );
+
+    let error = import_chimera_config(
+        Some(r#"{"permission": { "bash": "deny" }}"#),
+        Some(r#"{"permission": { "bash": "allow" }}"#),
+        ImportScope::Project,
+    )
+    .expect_err("a project cannot replace a global deny with allow");
+    assert!(format!("{error:#}").contains("permission.bash"));
 }

@@ -3,7 +3,7 @@ use super::*;
 use crate::tools::subagent::engine::ChildAuthority;
 use anyhow::anyhow;
 
-fn fixture(
+pub(super) fn fixture(
     workspace: &Path,
     scope: Option<Vec<String>>,
 ) -> (Engine, EngineHandle, Arc<ChildAuthority>, TurnRouteContext) {

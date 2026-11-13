@@ -62,6 +62,11 @@ pub enum ResponsesPathPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponsesHeaderPolicy {
+    pub protocol_headers: ProtocolHeaderPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolHeaderPolicy {
     StandardJson,
     /// Subscription-backend identity headers: `originator: codewhale_cli_rs`

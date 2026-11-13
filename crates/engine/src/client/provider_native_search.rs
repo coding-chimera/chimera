@@ -338,7 +338,6 @@ enum ResponsesSearchDialect {
     Openai,
     Xai,
     ModelStudio,
-    Alibailian,
     Deepseek,
 }
 
@@ -356,11 +355,7 @@ fn build_responses_search_body(
     request: &ProviderNativeSearchRequest,
     dialect: ResponsesSearchDialect,
 ) -> Value {
-    let mut tool = if matches!(dialect, ResponsesSearchDialect::Alibailian) {
-        super::alibailian::hosted_web_search_declaration()
-    } else {
-        json!({ "type": "web_search" })
-    };
+    let mut tool = json!({ "type": "web_search" });
     if !request.domains.is_empty()
         && matches!(
             dialect,
@@ -384,9 +379,6 @@ fn build_responses_search_body(
             body["tool_choice"] = json!("required");
         }
         ResponsesSearchDialect::ModelStudio => {
-            body["tool_choice"] = json!("required");
-        }
-        ResponsesSearchDialect::Alibailian => {
             body["tool_choice"] = json!("required");
         }
         ResponsesSearchDialect::Deepseek => {

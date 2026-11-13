@@ -165,10 +165,8 @@ pub fn import_chimera_config(
     build_outcome(object, scope)
 }
 
-/// Merge the global and project layers with final-value semantics: the
-/// project layer wins per key wholesale (scalars, objects, and arrays alike).
-/// The runtime has no merge language, so the importer computes the final
-/// value here.
+/// Merge global and project objects recursively. Scalars and arrays use the
+/// project's final value; object keys not mentioned by the project survive.
 fn merge_layers(
     global: Option<serde_json::Value>,
     project: Option<serde_json::Value>,
@@ -185,11 +183,53 @@ fn merge_layers(
                 .ok_or_else(|| anyhow::anyhow!("chimera project config must be a JSON object"))?;
             let mut merged = global_map.clone();
             for (key, value) in project_map {
-                merged.insert(key.clone(), value.clone());
+                if key == "permission"
+                    && let Some(global_permission) = merged.get(key)
+                {
+                    ensure_permission_only_tightens(global_permission, value)?;
+                }
+                let value = match merged.remove(key) {
+                    Some(global_value) => merge_layer_value(global_value, value.clone()),
+                    None => value.clone(),
+                };
+                merged.insert(key.clone(), value);
             }
             Ok(Some(serde_json::Value::Object(merged)))
         }
     }
+}
+
+fn merge_layer_value(global: serde_json::Value, project: serde_json::Value) -> serde_json::Value {
+    match (global, project) {
+        (serde_json::Value::Object(mut global), serde_json::Value::Object(project)) => {
+            for (key, project_value) in project {
+                let value = match global.remove(&key) {
+                    Some(global_value) => merge_layer_value(global_value, project_value),
+                    None => project_value,
+                };
+                global.insert(key, value);
+            }
+            serde_json::Value::Object(global)
+        }
+        (_, project) => project,
+    }
+}
+
+fn ensure_permission_only_tightens(
+    global: &serde_json::Value,
+    project: &serde_json::Value,
+) -> Result<()> {
+    let global = normalize_permission_object(global);
+    for (tool, project_action) in normalize_permission_object(project) {
+        let Some(project_action) = project_action.as_str() else {
+            continue;
+        };
+        let global_action = global.get(&tool).and_then(serde_json::Value::as_str);
+        if project_permission_only_tightens(global_action, project_action) == Some(false) {
+            bail!("chimera import: project permission.{tool} cannot loosen the global action");
+        }
+    }
+    Ok(())
 }
 
 /// Permission action restrictiveness order for the project "only tighten" rule.
