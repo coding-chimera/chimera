@@ -53,6 +53,12 @@ pub struct ResponsesEndpointPolicy {
 pub enum ResponsesPathPolicy {
     VersionedResponses,
     UnversionedResponses,
+    /// `https://chatgpt.com/backend-api/codex` subscription Responses
+    /// surface: the request path is `/responses` under the unversioned
+    /// backend root. Kept distinct from `UnversionedResponses` so the
+    /// DeepSeek stateless profile cannot be confused with the subscription
+    /// backend.
+    BackendApiCodexResponses,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +69,11 @@ pub struct ResponsesHeaderPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolHeaderPolicy {
     StandardJson,
+    /// Subscription-backend identity headers: `originator: codewhale_cli_rs`
+    /// plus a per-session id and account id. Isolated from
+    /// [`ProtocolHeaderPolicy::StandardJson`] so the public API's header
+    /// contract never inherits them and vice versa.
+    ChatgptSubscriptionIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +127,9 @@ pub enum ReasoningEffortMapping {
     OpenaiCompatible,
     Codex,
     Deepseek,
+    /// Subscription-backend effort ladder: like `Codex`, but the `ultra`
+    /// product tier is the top rung and maps to the wire's `max`.
+    ChatgptSubscription,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -524,9 +538,28 @@ mod tests {
     }
 
     #[test]
-    fn builtin_table_has_four_profiles_and_one_usage_policy() {
+    fn builtin_table_has_five_profiles_and_one_usage_policy() {
         let profiles = builtin_profiles();
-        assert_eq!(profiles.len(), 4);
+        assert_eq!(profiles.len(), 5);
+        let subscription = profiles
+            .iter()
+            .find(|profile| profile.id.as_str() == "chatgpt_subscription")
+            .expect("chatgpt_subscription profile");
+        assert_eq!(
+            subscription.endpoint.path,
+            ResponsesPathPolicy::BackendApiCodexResponses
+        );
+        assert_eq!(
+            subscription.headers.protocol_headers,
+            ProtocolHeaderPolicy::ChatgptSubscriptionIdentity
+        );
+        assert_eq!(
+            subscription.reasoning.effort_mapping,
+            ReasoningEffortMapping::ChatgptSubscription
+        );
+        // The subscription profile is grant-scoped and never selectable by a
+        // custom provider.
+        assert!(subscription.replay.encrypted_state == EncryptedReasoningReplayPolicy::AccountApiModelScoped);
         let usage = profiles[0].usage;
         assert!(profiles.iter().all(|profile| profile.usage == usage));
         assert_eq!(
@@ -641,6 +674,51 @@ mod tests {
             )),
             "standard"
         );
+    }
+
+    #[test]
+    fn subscription_binding_selects_only_the_exact_backend_url() {
+        assert_eq!(
+            selected(query(
+                WireFormat::Responses,
+                ProviderKind::OpenaiCodex,
+                "responses",
+                "https://chatgpt.com/backend-api/codex",
+                None,
+            )),
+            "chatgpt_subscription"
+        );
+        // Case and trailing-slash normalization still bind.
+        assert_eq!(
+            selected(query(
+                WireFormat::Responses,
+                ProviderKind::OpenaiCodex,
+                "responses",
+                "https://CHATGPT.com/backend-api/codex/",
+                None,
+            )),
+            "chatgpt_subscription"
+        );
+        // Every neighboring spelling stays on the public codex profile and
+        // never inherits the subscription dialect.
+        for nearby in [
+            "https://chatgpt.com/backend-api",
+            "https://chatgpt.com/backend-api/codex/v1",
+            "https://chatgpt.com.example.net/backend-api/codex",
+            "https://api.openai.com/v1",
+        ] {
+            assert_eq!(
+                selected(query(
+                    WireFormat::Responses,
+                    ProviderKind::OpenaiCodex,
+                    "responses",
+                    nearby,
+                    None,
+                )),
+                "codex",
+                "{nearby}"
+            );
+        }
     }
 
     #[test]

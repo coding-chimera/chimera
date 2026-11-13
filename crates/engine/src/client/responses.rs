@@ -30,6 +30,8 @@ use codewhale_models::{
 };
 use codewhale_runtime::logging;
 
+pub mod subscription;
+
 use super::CodewhaleClient;
 use super::chat::REASONING_REPLAY_PLACEHOLDER;
 use super::prepared::WireDialect;
@@ -223,6 +225,9 @@ pub(super) fn build_responses_wire_body(
             ReasoningEffortMapping::Codex => codex_responses_reasoning_effort(raw),
             ReasoningEffortMapping::Deepseek => responses_reasoning_effort(raw, true),
             ReasoningEffortMapping::OpenaiCompatible => compatible_responses_reasoning_effort(raw),
+            ReasoningEffortMapping::ChatgptSubscription => {
+                subscription_responses_reasoning_effort(raw)
+            }
         }
     {
         body["reasoning"] = match profile.reasoning.summary {
@@ -1221,6 +1226,17 @@ fn codex_responses_reasoning_effort(raw: &str) -> Option<&'static str> {
     crate::reasoning_preference::ReasoningEffort::parse_strict(raw)
         .unwrap_or(crate::reasoning_preference::ReasoningEffort::Medium)
         .api_value_for_provider(ProviderKind::OpenaiCodex)
+}
+
+/// The subscription backend's effort ladder. The Codex roster publishes
+/// `ultra` as its own rung on the public API; the subscription product tier
+/// names that top rung `max`, so `ultra` maps to `max` here and every other
+/// tier keeps the Codex spelling.
+fn subscription_responses_reasoning_effort(raw: &str) -> Option<&'static str> {
+    if raw.trim().eq_ignore_ascii_case("ultra") || raw.trim().eq_ignore_ascii_case("ultracode") {
+        return Some("max");
+    }
+    codex_responses_reasoning_effort(raw)
 }
 
 fn compatible_responses_reasoning_effort(raw: &str) -> Option<&'static str> {

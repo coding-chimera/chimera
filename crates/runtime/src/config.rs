@@ -11644,10 +11644,16 @@ impl Config {
         let identity = self
             .active_provider_identity()
             .map_err(anyhow::Error::msg)?;
+        // The official grant serves exactly two surfaces: the public API
+        // route and the subscription Responses backend. A custom endpoint
+        // never receives it.
+        let base_url = self.base_url_for_route(&identity);
+        let sanctioned = identity.provider == ProviderKind::OpenaiCodex
+            && (crate::oauth::is_official_chatgpt_public_route(&base_url)
+                || crate::oauth::is_chatgpt_subscription_backend(&base_url));
         anyhow::ensure!(
-            identity.provider == ProviderKind::OpenaiCodex
-                && !self.provider_uses_custom_endpoint(&identity),
-            "ChatGPT credentials are only available on the official public API route"
+            sanctioned,
+            "ChatGPT credentials are only available on the official public API or subscription backend routes"
         );
         crate::oauth::official_chatgpt_registration(self)?;
         crate::oauth::get_owned_credentials(crate::oauth::OAuthProvider::Chatgpt, self)

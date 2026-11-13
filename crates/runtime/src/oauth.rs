@@ -2339,6 +2339,22 @@ pub const DEFAULT_SCOPES: &str = "openid profile email offline_access api:access
 /// Hard ceiling past a device grant's own `expires_in`.
 pub(crate) const DEVICE_POLL_MAX_SECS: u64 = 900;
 
+/// The public API base the official ChatGPT grant serves (the same shape the
+/// engine's pricing layer calls the official ChatGPT API). Kept here so the
+/// runtime credential fence and the engine billing fence cannot drift.
+pub fn is_official_chatgpt_public_route(base_url: &str) -> bool {
+    let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    normalized == "https://api.openai.com/v1"
+}
+
+/// The ChatGPT subscription Responses backend. Exact match only: neighbors
+/// (`/backend-api`, other hosts, other paths, plaintext) are not sanctioned
+/// and never receive the grant.
+pub fn is_chatgpt_subscription_backend(base_url: &str) -> bool {
+    let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    normalized == "https://chatgpt.com/backend-api/codex"
+}
+
 /// ChatGPT issuer and public client.
 pub const CHATGPT_OAUTH_ISSUER: &str = "https://auth.openai.com";
 pub const CHATGPT_OAUTH_CLIENT_ID: &str = "dynamic_agent_client";

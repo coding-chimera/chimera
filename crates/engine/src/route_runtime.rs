@@ -441,14 +441,18 @@ fn classify_provider_route_preflight_next_step(
 ) -> Option<String> {
     let headless = surface == RouteErrorSurface::Headless;
     let lower = reason.to_ascii_lowercase();
-    if lower.contains("chatgpt credentials are only available on the official public api route") {
+    if lower.contains(
+        "chatgpt credentials are only available on the official public api or subscription backend routes",
+    ) || lower
+        .contains("chatgpt credentials are only available on the official public api route")
+    {
         return Some(if headless {
             format!(
-                "Remove the custom base_url from [providers.{identity_key}]; ChatGPT plan access only works on the official public API route."
+                "Remove the custom base_url from [providers.{identity_key}]; ChatGPT plan access only works on the official public API route or the subscription backend https://chatgpt.com/backend-api/codex."
             )
         } else {
             format!(
-                "Run /provider setup {identity_key} and remove its custom base URL; ChatGPT plan access only works on the official public API route."
+                "Run /provider setup {identity_key} and remove its custom base URL; ChatGPT plan access only works on the official public API route or the subscription backend https://chatgpt.com/backend-api/codex."
             )
         });
     }
@@ -1611,7 +1615,7 @@ mod tests {
         ));
 
         let custom = anyhow::anyhow!(
-            "ChatGPT credentials are only available on the official public API route"
+            "ChatGPT credentials are only available on the official public API or subscription backend routes"
         );
         let custom_formatted = format_provider_route_preflight_error(
             "openai-codex",
@@ -1620,7 +1624,7 @@ mod tests {
             RouteErrorSurface::Interactive,
         );
         assert!(custom_formatted.contains(
-            "Next step: Run /provider setup openai-codex and remove its custom base URL; ChatGPT plan access only works on the official public API route."
+            "Next step: Run /provider setup openai-codex and remove its custom base URL; ChatGPT plan access only works on the official public API route or the subscription backend https://chatgpt.com/backend-api/codex."
         ));
     }
 

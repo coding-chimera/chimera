@@ -328,6 +328,10 @@ const ALLOW_INSECURE_HTTP_ENV: &str = "CODEWHALE_ALLOW_INSECURE_HTTP";
 /// Legacy alias for [`ALLOW_INSECURE_HTTP_ENV`].
 const LEGACY_ALLOW_INSECURE_HTTP_ENV: &str = "DEEPSEEK_ALLOW_INSECURE_HTTP";
 
+/// Stable per-process conversation id for the ChatGPT subscription backend
+/// (`session_id` header). One id per process, like the OpenCode session.
+static SUBSCRIPTION_SESSION_ID: OnceLock<String> = OnceLock::new();
+
 fn client_user_agent(_api_provider: ProviderKind) -> &'static str {
     concat!(
         "Mozilla/5.0 (compatible; codewhale/",
@@ -1208,6 +1212,11 @@ fn responses_api_url(base_url: &str, path: ResponsesPathPolicy) -> String {
         ResponsesPathPolicy::UnversionedResponses => {
             format!("{}/responses", unversioned_base_url(base_url))
         }
+        // The subscription backend already carries its full path in the
+        // configured base URL; only the terminal segment is appended.
+        ResponsesPathPolicy::BackendApiCodexResponses => {
+            format!("{}/responses", base_url.trim_end_matches('/'))
+        }
         ResponsesPathPolicy::VersionedResponses => api_url(base_url, "responses"),
     }
 }
@@ -1688,10 +1697,14 @@ impl CodewhaleClient {
         let api_provider = admitted.identity.provider;
         let base_url = admitted.base_url.as_str();
         if api_provider == ProviderKind::OpenaiCodex {
+            // The subscription Responses endpoint is the one sanctioned
+            // chatgpt.com surface; every other chatgpt.com spelling is the
+            // retired legacy backend and still fails closed.
             anyhow::ensure!(
                 !reqwest::Url::parse(base_url)
                     .ok()
-                    .is_some_and(|url| url.host_str() == Some("chatgpt.com")),
+                    .is_some_and(|url| url.host_str() == Some("chatgpt.com"))
+                    || crate::pricing::is_chatgpt_codex_backend(base_url),
                 "The legacy ChatGPT backend route is retired. Use https://api.openai.com/v1 and run codewhale auth chatgpt."
             );
         }
@@ -1761,7 +1774,8 @@ impl CodewhaleClient {
         base_url: &str,
     ) -> Result<CapturedRouteCredentials> {
         if identity.provider == ProviderKind::OpenaiCodex
-            && crate::pricing::is_official_chatgpt_api(base_url)
+            && (crate::pricing::is_official_chatgpt_api(base_url)
+                || crate::pricing::is_chatgpt_codex_backend(base_url))
         {
             return Ok(CapturedRouteCredentials::Codex(config.codex_credentials()?));
         }
@@ -1965,7 +1979,8 @@ impl CodewhaleClient {
             ));
         }
 
-        let http_client = Self::http_client_builder_with_auth_mode(
+        let subscription_account_id = codex_account_id.as_deref();
+        let http_client = Self::http_client_builder_with_subscription_account(
             &api_key,
             &http_headers,
             api_provider,
@@ -1976,6 +1991,7 @@ impl CodewhaleClient {
             config,
             AuthHeaderSurface::Inference,
             root_cert.as_ref(),
+            subscription_account_id,
         )?;
         let http_client = http_client
             .redirect(reqwest::redirect::Policy::none())
@@ -1996,7 +2012,7 @@ impl CodewhaleClient {
         .build()?;
         // The HTTP/1.1 twin is eligible only after a proven pre-dispatch failure.
         // A stalled request may already have been accepted by the provider.
-        let http1_client = Self::http_client_builder_with_auth_mode(
+        let http1_client = Self::http_client_builder_with_subscription_account(
             &api_key,
             &http_headers,
             api_provider,
@@ -2007,6 +2023,7 @@ impl CodewhaleClient {
             config,
             AuthHeaderSurface::Inference,
             root_cert.as_ref(),
+            subscription_account_id,
         )?;
         let http1_client = http1_client
             .redirect(reqwest::redirect::Policy::none())
@@ -2529,6 +2546,38 @@ impl CodewhaleClient {
         surface: AuthHeaderSurface,
         root_cert: Option<&CapturedRootCert>,
     ) -> Result<reqwest::ClientBuilder> {
+        Self::http_client_builder_with_subscription_account(
+            api_key,
+            extra_headers,
+            api_provider,
+            base_url,
+            wire_format,
+            auth_disabled,
+            force_http1,
+            config,
+            surface,
+            root_cert,
+            None,
+        )
+    }
+
+    /// Inference builders on the subscription backend additionally carry the
+    /// verified account id; every other route passes `None` and keeps the
+    /// public-API header contract exactly as before.
+    #[allow(clippy::too_many_arguments)]
+    fn http_client_builder_with_subscription_account(
+        api_key: &str,
+        extra_headers: &HashMap<String, String>,
+        api_provider: ProviderKind,
+        base_url: &str,
+        wire_format: WireFormat,
+        auth_disabled: bool,
+        force_http1: bool,
+        config: &Config,
+        surface: AuthHeaderSurface,
+        root_cert: Option<&CapturedRootCert>,
+        subscription_account_id: Option<&str>,
+    ) -> Result<reqwest::ClientBuilder> {
         let filtered_headers;
         let extra_headers = if config.session_provider_keys_only {
             filtered_headers = extra_headers
@@ -2548,6 +2597,7 @@ impl CodewhaleClient {
             wire_format,
             auth_disabled,
             surface,
+            subscription_account_id,
         )?;
         let mut builder = crate::platform_client_builder()
             .default_headers(headers)
@@ -2592,6 +2642,7 @@ impl CodewhaleClient {
             WireFormat::ChatCompletions,
             false,
             AuthHeaderSurface::Inference,
+            None,
         )
     }
 
@@ -2610,6 +2661,7 @@ impl CodewhaleClient {
             provider_default_wire_format(api_provider),
             false,
             AuthHeaderSurface::Inference,
+            None,
         )
     }
 
@@ -2628,6 +2680,7 @@ impl CodewhaleClient {
             provider_default_wire_format(api_provider),
             true,
             AuthHeaderSurface::Inference,
+            None,
         )
     }
 }
@@ -2658,6 +2711,7 @@ fn build_default_headers(
     wire_format: WireFormat,
     auth_disabled: bool,
     surface: AuthHeaderSurface,
+    subscription_account_id: Option<&str>,
 ) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -2756,6 +2810,29 @@ fn build_default_headers(
             HeaderValue::from_static("cli-agent,personal-agent"),
         );
     }
+    // ChatGPT subscription backend identity headers. The official grant on
+    // this exact endpoint is the only route that may carry them; the public
+    // API keeps its plain Bearer contract (no originator, no account header,
+    // no session header). A user-configured header of the same name still
+    // wins through the extra-header loop below.
+    if api_provider == ProviderKind::OpenaiCodex
+        && surface == AuthHeaderSurface::Inference
+        && crate::pricing::is_chatgpt_codex_backend(base_url)
+    {
+        headers.insert(
+            HeaderName::from_static("originator"),
+            HeaderValue::from_static("codewhale_cli_rs"),
+        );
+        if let Some(account_id) = subscription_account_id
+            && let Ok(value) = HeaderValue::from_str(account_id)
+        {
+            headers.insert(HeaderName::from_static("chatgpt-account-id"), value);
+        }
+        let session = SUBSCRIPTION_SESSION_ID.get_or_init(|| uuid::Uuid::new_v4().to_string());
+        if let Ok(value) = HeaderValue::from_str(session) {
+            headers.insert(HeaderName::from_static("session_id"), value);
+        }
+    }
     // OpenCode Go / OpenCode Zen gateways (https://opencode.ai/docs/go/)
     // ask clients to send a stable `x-opencode-session` header so the
     // service can optimize prompt caching and attribute traffic to a
@@ -2794,6 +2871,39 @@ fn build_default_headers(
         headers.insert(header_name, HeaderValue::from_str(value)?);
     }
     Ok(headers)
+}
+
+/// Test-only seam for the Responses endpoint URL policy.
+#[cfg(any(test, feature = "test-support"))]
+pub fn responses_api_url_for_test(
+    base_url: &str,
+    path: codewhale_config::responses_dialect::ResponsesPathPolicy,
+) -> String {
+    responses_api_url(base_url, path)
+}
+
+/// Test-only seam for the default-header contract, including the
+/// subscription identity headers.
+#[cfg(any(test, feature = "test-support"))]
+pub fn build_default_headers_for_test(
+    api_key: &str,
+    extra_headers: &HashMap<String, String>,
+    api_provider: ProviderKind,
+    base_url: &str,
+    wire_format: WireFormat,
+    auth_disabled: bool,
+    subscription_account_id: Option<&str>,
+) -> Result<HeaderMap> {
+    build_default_headers(
+        api_key,
+        extra_headers,
+        api_provider,
+        base_url,
+        wire_format,
+        auth_disabled,
+        AuthHeaderSurface::Inference,
+        subscription_account_id,
+    )
 }
 
 fn is_auth_dialect_header(header_name: &HeaderName) -> bool {
@@ -3014,6 +3124,7 @@ pub async fn verify_provider_api_key(
         provider_default_wire_format(provider),
         false,
         AuthHeaderSurface::Listing,
+        None,
     )
     .map_err(|err| format!("failed to build auth headers: {err:#}"))?;
     let client = crate::platform_client_builder()

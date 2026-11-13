@@ -171,12 +171,16 @@ pub fn parse(raw: &str) -> Result<ParsedDialects, String> {
         }
     }
     for profile in &parsed_profiles {
-        if profile.endpoint_path != "unversioned_responses" {
+        let pinned = matches!(
+            profile.endpoint_path.as_str(),
+            "unversioned_responses" | "backend_api_codex_responses"
+        );
+        if !pinned {
             continue;
         }
         if custom_allowed.iter().any(|id| id == &profile.id) || profile.id == default_profile {
             return Err(format!(
-                "unversioned profile `{}` cannot be a default or custom profile",
+                "endpoint-pinned profile `{}` cannot be a default or custom profile",
                 profile.id
             ));
         }
@@ -186,7 +190,7 @@ pub fn parse(raw: &str) -> Result<ParsedDialects, String> {
         });
         if !bound {
             return Err(format!(
-                "unversioned profile `{}` requires an exact base url binding",
+                "endpoint-pinned profile `{}` requires an exact base url binding",
                 profile.id
             ));
         }
@@ -334,7 +338,11 @@ fn variant(group: &str, value: &str) -> &'static str {
     match (group, value) {
         ("path", "versioned_responses") => "ResponsesPathPolicy::VersionedResponses",
         ("path", "unversioned_responses") => "ResponsesPathPolicy::UnversionedResponses",
+        ("path", "backend_api_codex_responses") => "ResponsesPathPolicy::BackendApiCodexResponses",
         ("headers", "standard_json") => "ProtocolHeaderPolicy::StandardJson",
+        ("headers", "chatgpt_subscription_identity") => {
+            "ProtocolHeaderPolicy::ChatgptSubscriptionIdentity"
+        }
         ("store", "explicit_false") => "StorePolicy::ExplicitFalse",
         ("store", "omit") => "StorePolicy::Omit",
         ("include", "encrypted_reasoning") => "IncludePolicy::EncryptedReasoning",
@@ -348,6 +356,7 @@ fn variant(group: &str, value: &str) -> &'static str {
         ("effort", "openai_compatible") => "ReasoningEffortMapping::OpenaiCompatible",
         ("effort", "codex") => "ReasoningEffortMapping::Codex",
         ("effort", "deepseek") => "ReasoningEffortMapping::Deepseek",
+        ("effort", "chatgpt_subscription") => "ReasoningEffortMapping::ChatgptSubscription",
         ("shape", "effort_with_summary") => "ReasoningRequestShape::EffortWithSummary",
         ("shape", "effort_only") => "ReasoningRequestShape::EffortOnly",
         ("summary", "auto") => "ReasoningSummaryPolicy::Auto",
@@ -486,7 +495,11 @@ fn parse_profile(value: &Value, index: usize) -> Result<ParsedProfile, String> {
         &endpoint,
         &format!("{at}.endpoint"),
         "path",
-        &["versioned_responses", "unversioned_responses"],
+        &[
+            "versioned_responses",
+            "unversioned_responses",
+            "backend_api_codex_responses",
+        ],
     )?;
     let shape = enum_str(
         &reasoning,
@@ -541,7 +554,7 @@ fn parse_profile(value: &Value, index: usize) -> Result<ParsedProfile, String> {
             &headers,
             &format!("{at}.headers"),
             "protocol_headers",
-            &["standard_json"],
+            &["standard_json", "chatgpt_subscription_identity"],
         )?
         .to_string(),
         store: enum_str(
@@ -583,7 +596,7 @@ fn parse_profile(value: &Value, index: usize) -> Result<ParsedProfile, String> {
             &reasoning,
             &format!("{at}.reasoning"),
             "effort_mapping",
-            &["openai_compatible", "codex", "deepseek"],
+            &["openai_compatible", "codex", "deepseek", "chatgpt_subscription"],
         )?
         .to_string(),
         shape: shape.to_string(),
