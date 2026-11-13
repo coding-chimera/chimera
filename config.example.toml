@@ -1275,6 +1275,10 @@ apply_patch = true
 mcp = true
 exec_policy = true
 code_mode = true # execute_tools composes MCP/plugin/native calls; false defers it behind tool_search
+# browser_tools = false # enable the Rust CDP browser tools (browser_open/
+                         # snapshot/click/type/screenshot/close/evaluate),
+                         # deferred behind tool_search. Uses the system
+                         # Chromium; no bundled download. BETA.
 # vision_model = false  # enable vision model for image_analyze tool
 # verify_tool = false   # disable the agent-callable `verify` self-critique tool
                         # (#4196). On by default; the agent decides when to spend

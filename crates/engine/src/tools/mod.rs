@@ -14,6 +14,7 @@ pub mod approval_cache;
 pub mod approval_summary;
 pub mod arg_repair;
 pub mod automation;
+pub mod browser;
 #[cfg(any(test, feature = "test-support"))]
 pub mod canonical_action_test_support;
 #[cfg(test)]
