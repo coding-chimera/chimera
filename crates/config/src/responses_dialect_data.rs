@@ -596,7 +596,12 @@ fn parse_profile(value: &Value, index: usize) -> Result<ParsedProfile, String> {
             &reasoning,
             &format!("{at}.reasoning"),
             "effort_mapping",
-            &["openai_compatible", "codex", "deepseek", "chatgpt_subscription"],
+            &[
+                "openai_compatible",
+                "codex",
+                "deepseek",
+                "chatgpt_subscription",
+            ],
         )?
         .to_string(),
         shape: shape.to_string(),

@@ -744,11 +744,6 @@ pub struct ToolExecutionState {
     /// overwrite each other; defaults to the fail-safe built-in set.
     pub read_denylist: Arc<codewhale_sandbox::read_guard::ReadDenylist>,
     pub child_activation: Option<Arc<crate::tools::subagent::ChildActivationRequest>>,
-    /// Read deny-list the in-process file tools enforce for this context.
-    /// Captured immutably by the owning Engine (or its host's captured
-    /// context) so concurrent Engines with different projects' deny-lists
-    /// never overwrite each other; defaults to the fail-safe built-in set.
-    pub read_denylist: Arc<codewhale_sandbox::read_guard::ReadDenylist>,
 }
 
 static DEFAULT_READ_DENYLIST: std::sync::LazyLock<
@@ -782,12 +777,6 @@ impl std::ops::DerefMut for ToolContext {
 impl ToolContext {
     /// Create an inert context for a registry that intentionally has no tools.
     ///
-static DEFAULT_READ_DENYLIST: LazyLock<Arc<codewhale_sandbox::read_guard::ReadDenylist>> =
-    LazyLock::new(|| {
-        Arc::new(codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]))
-    });
-
-
     /// Empty paths are deliberate: isolated Runtime Chat must not retain the
     /// host workspace or derive project notes and MCP paths. Isolation comes
     /// from callers pairing this context with an empty registry and allow-list

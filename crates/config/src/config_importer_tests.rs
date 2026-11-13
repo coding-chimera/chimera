@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::importer::{
-    ImportScope, IMPORTED_SCHEMA_VERSION, import_chimera_config, import_codewhale_toml,
+    IMPORTED_SCHEMA_VERSION, ImportScope, import_chimera_config, import_codewhale_toml,
 };
 
 #[test]
@@ -41,11 +41,7 @@ fn unversioned_documents_keep_the_tolerant_extras_path() {
 fn strict_gate_key_list_is_redacted() {
     let err = crate::parse_config_toml("schema_version = 1\nsk-leaked-secret-name = 1\n")
         .expect_err("unknown root key must fail");
-    assert!(
-        !err.message().contains("sk-leaked"),
-        "{}",
-        err.message()
-    );
+    assert!(!err.message().contains("sk-leaked"), "{}", err.message());
 }
 
 #[test]
@@ -146,7 +142,9 @@ fn cas_conflict_and_failed_reload_keep_the_old_config() {
     // A reload whose document fails the strict gate is refused; the store
     // keeps the previously loaded configuration.
     std::fs::write(&path, "schema_version = 1\nbogus_key = 1\n").expect("strict failure");
-    let reload_err = store.reload().expect_err("strict gate must fail the reload");
+    let reload_err = store
+        .reload()
+        .expect_err("strict gate must fail the reload");
     assert!(
         format!("{reload_err:#}").contains("unknown key(s): bogus_key"),
         "{reload_err:#}"
@@ -162,11 +160,23 @@ fn cas_conflict_and_failed_reload_keep_the_old_config() {
 fn project_cannot_loosen_global_permission_posture() {
     use crate::importer::project_permission_only_tightens;
     // deny (2) > ask (1) > allow (0): only rank increases survive.
-    assert_eq!(project_permission_only_tightens(Some("deny"), "allow"), Some(false));
-    assert_eq!(project_permission_only_tightens(Some("ask"), "deny"), Some(true));
-    assert_eq!(project_permission_only_tightens(Some("allow"), "allow"), Some(true));
+    assert_eq!(
+        project_permission_only_tightens(Some("deny"), "allow"),
+        Some(false)
+    );
+    assert_eq!(
+        project_permission_only_tightens(Some("ask"), "deny"),
+        Some(true)
+    );
+    assert_eq!(
+        project_permission_only_tightens(Some("allow"), "allow"),
+        Some(true)
+    );
     assert_eq!(project_permission_only_tightens(None, "allow"), Some(true));
-    assert_eq!(project_permission_only_tightens(Some("allow"), "nonsense"), None);
+    assert_eq!(
+        project_permission_only_tightens(Some("allow"), "nonsense"),
+        None
+    );
 }
 
 #[test]
@@ -185,12 +195,16 @@ fn project_permission_rule_import_is_always_tightening() {
     // The project layer's final value replaces the global one per key, and
     // the importer itself refuses loosening at the layer level; the typed
     // output shows the winner.
-    assert!(parsed
-        .rules
-        .iter()
-        .any(|rule| rule.tool == "bash" && rule.action == PermissionAction::Allow));
-    assert!(parsed
-        .rules
-        .iter()
-        .any(|rule| rule.tool == "*" && rule.action == PermissionAction::Ask));
+    assert!(
+        parsed
+            .rules
+            .iter()
+            .any(|rule| rule.tool == "bash" && rule.action == PermissionAction::Allow)
+    );
+    assert!(
+        parsed
+            .rules
+            .iter()
+            .any(|rule| rule.tool == "*" && rule.action == PermissionAction::Ask)
+    );
 }

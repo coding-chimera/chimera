@@ -2145,10 +2145,7 @@ pub fn run_cli() -> std::process::ExitCode {
             if let Some(machine) =
                 err.downcast_ref::<codewhale_account_cli::machine::MachineError>()
             {
-                eprintln!(
-                    "  chimera: code={} status={}",
-                    machine.code, machine.status
-                );
+                eprintln!("  chimera: code={} status={}", machine.code, machine.status);
                 if let Ok(code) = u8::try_from(machine.exit_code) {
                     return std::process::ExitCode::from(code);
                 }
@@ -9901,15 +9898,7 @@ verbosity = "concise"
             "--base-url",
             "--model",
         ] {
-            let mut cli = parse_ok(&[
-                "chimera",
-                flag,
-                "first",
-                "exec",
-                flag,
-                "second",
-                "Reply OK",
-            ]);
+            let mut cli = parse_ok(&["chimera", flag, "first", "exec", flag, "second", "Reply OK"]);
             assert!(capture_exec_startup_options(&mut cli).is_err(), "{flag}");
         }
     }
@@ -11350,9 +11339,8 @@ verbosity = "concise"
             "{codex}"
         );
         assert!(
-            codex.contains(
-                "switch account: `CODEWHALE_CHATGPT_NEW_ACCOUNT=1 chimera auth chatgpt`"
-            ),
+            codex
+                .contains("switch account: `CODEWHALE_CHATGPT_NEW_ACCOUNT=1 chimera auth chatgpt`"),
             "{codex}"
         );
         let xai = auth_status_lines_for_provider(&store, &secrets, ProviderKind::Xai).join("\n");
@@ -11976,10 +11964,7 @@ verbosity = "concise"
             .lines()
             .find(|line| line.starts_with("openai-codex"))
             .unwrap_or_else(|| panic!("missing openai-codex row:\n{output}"));
-        assert!(
-            row.contains("missing (run `chimera auth chatgpt`"),
-            "{row}"
-        );
+        assert!(row.contains("missing (run `chimera auth chatgpt`"), "{row}");
         assert!(!row.contains("external-consent"), "{row}");
         assert!(!output.contains("secret-token"));
     }
@@ -13318,10 +13303,7 @@ verbosity = "concise"
         let cli = parse_ok(&["chimera", "--continue", "-p", "follow up"]);
 
         let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
-        assert!(
-            err.to_string()
-                .contains("chimera exec --continue <PROMPT>")
-        );
+        assert!(err.to_string().contains("chimera exec --continue <PROMPT>"));
     }
 
     #[test]

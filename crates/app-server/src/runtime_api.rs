@@ -373,7 +373,6 @@ impl Drop for ScopePin {
             .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         self.activity.touch();
     }
-
 }
 
 impl RuntimeWorkspaceScope {
@@ -732,7 +731,6 @@ impl RuntimeWorkspaceScopes {
             }
         }
     }
-
 }
 
 /// How long a recycled scope stays pinned so a reconnecting client does not
@@ -15548,7 +15546,6 @@ impl ApiError {
             code: None,
         }
     }
-
 
     fn with_code(mut self, code: &'static str) -> Self {
         self.code = Some(code);

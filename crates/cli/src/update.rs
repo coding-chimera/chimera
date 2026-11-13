@@ -207,7 +207,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     let mut host_update = compiled_host::prepare(
         &download,
         latest_tag,
-        plan.asset_stem.trim_start_matches('chimera-'),
+        plan.asset_stem.trim_start_matches("chimera-"),
         &current_exe,
         proxy.as_ref(),
     )?;
@@ -589,11 +589,8 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
             SignatureCheck::NotConfigured => false,
             other => bail!("the release signature does not verify ({other:?})"),
         };
-        let asset = release_asset_name_for_prefix(
-            "chimera",
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        );
+        let asset =
+            release_asset_name_for_prefix("chimera", std::env::consts::OS, std::env::consts::ARCH);
         let checksums = parse_checksum_manifest(
             std::str::from_utf8(&manifest).context("the checksum manifest is not UTF-8")?,
         )?;
@@ -3471,9 +3468,10 @@ mod tests {
 
         assert_eq!(
             plan.target_paths,
-            vec![dir
-                .path()
-                .join(format!("chimera{}", std::env::consts::EXE_SUFFIX))]
+            vec![
+                dir.path()
+                    .join(format!("chimera{}", std::env::consts::EXE_SUFFIX))
+            ]
         );
         assert!(plan.asset_stem.starts_with("chimera-"));
     }
@@ -3490,9 +3488,10 @@ mod tests {
 
         assert_eq!(
             plan.target_paths,
-            vec![dir
-                .path()
-                .join(format!("chimera{}", std::env::consts::EXE_SUFFIX))]
+            vec![
+                dir.path()
+                    .join(format!("chimera{}", std::env::consts::EXE_SUFFIX))
+            ]
         );
         assert!(plan.asset_stem.starts_with("chimera-"));
     }
@@ -3569,14 +3568,10 @@ mod tests {
         assert_eq!(plan.target_paths, vec![primary.clone()]);
         assert!(plan.asset_stem.starts_with("chimera-"));
 
-        replace_verified_downloads(&plan.target_paths, b"new primary bytes", |_| Ok(()))
-            .unwrap();
+        replace_verified_downloads(&plan.target_paths, b"new primary bytes", |_| Ok(())).unwrap();
 
         assert_eq!(std::fs::read(&primary).unwrap(), b"new primary bytes");
-        assert_eq!(
-            std::fs::read(&codewhale).unwrap(),
-            b"retired sibling bytes"
-        );
+        assert_eq!(std::fs::read(&codewhale).unwrap(), b"retired sibling bytes");
     }
 
     #[test]
@@ -3598,8 +3593,7 @@ mod tests {
         assert_eq!(plan.target_paths, vec![retired.clone(), primary.clone()]);
         assert!(plan.asset_stem.starts_with("chimera-"));
 
-        replace_verified_downloads(&plan.target_paths, b"new primary bytes", |_| Ok(()))
-            .unwrap();
+        replace_verified_downloads(&plan.target_paths, b"new primary bytes", |_| Ok(())).unwrap();
         for path in [&primary, &retired] {
             assert_eq!(std::fs::read(path).unwrap(), b"new primary bytes");
         }
@@ -3641,14 +3635,12 @@ mod tests {
                 },
                 Asset {
                     name: "chimera-macos-arm64".to_string(),
-                    browser_download_url: "https://example.invalid/chimera-macos-arm64"
-                        .to_string(),
+                    browser_download_url: "https://example.invalid/chimera-macos-arm64".to_string(),
                 },
             ],
         };
 
-        let asset =
-            select_platform_asset(&release, "chimera-macos-arm64").expect("platform asset");
+        let asset = select_platform_asset(&release, "chimera-macos-arm64").expect("platform asset");
 
         assert_eq!(asset.name, "chimera-macos-arm64");
     }
@@ -3746,9 +3738,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *chimera-windo
             Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
         );
         assert_eq!(
-            checksums
-                .get("chimera-windows-x64.exe")
-                .map(String::as_str),
+            checksums.get("chimera-windows-x64.exe").map(String::as_str),
             Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
         );
     }

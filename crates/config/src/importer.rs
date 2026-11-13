@@ -141,7 +141,6 @@ fn strip_jsonc(text: &str) -> String {
     out
 }
 
-
 /// Import one Chimera configuration (global) plus an optional project
 /// overlay, producing the new TOML bodies. See the module docs for the
 /// precedence and tightening rules.
@@ -825,7 +824,6 @@ fn provider_table_mut<'a>(
         .expect("provider entry was inserted as a table")
 }
 
-
 fn subagents_table(document: &mut toml_edit::DocumentMut) -> &mut toml_edit::Table {
     named_table(document, "subagents")
 }
@@ -916,7 +914,6 @@ fn render_mcp_json(servers: &serde_json::Map<String, serde_json::Value>) -> Stri
     serde_json::to_string_pretty(&serde_json::Value::Object(root))
         .expect("MCP server map is serializable")
 }
-
 
 #[cfg(test)]
 mod tests {

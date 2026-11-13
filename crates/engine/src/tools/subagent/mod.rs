@@ -101,11 +101,11 @@ pub mod coord;
 mod delivery;
 pub mod engine;
 pub mod evidence;
-pub mod swarm;
 mod governor;
 mod lifecycle;
 pub mod mailbox;
 mod naming;
+pub mod swarm;
 mod worktree;
 
 pub use delivery::{DeliverableVerdict, DeliveryEvidence};
@@ -7024,10 +7024,7 @@ impl SubAgentManager {
     /// Undelivered outbox rows for one owner session, in commit order. A
     /// recovered engine drains these before accepting new completions so a
     /// restart cannot drop or duplicate a background worker push.
-    pub fn pending_completion_outbox_for_session(
-        &self,
-        owner_session_id: &str,
-    ) -> Vec<OutboxRow> {
+    pub fn pending_completion_outbox_for_session(&self, owner_session_id: &str) -> Vec<OutboxRow> {
         self.completion_outbox
             .iter()
             .filter(|row| row.owner_session_id == owner_session_id && !row.delivered)
@@ -7038,8 +7035,7 @@ impl SubAgentManager {
     /// Mark rows delivered. Unknown ids are ignored so a racing sweep or a
     /// foreign session's row cannot be flipped by this call.
     pub fn mark_completion_outbox_delivered(&mut self, agent_ids: &[String]) {
-        let ids: std::collections::HashSet<&str> =
-            agent_ids.iter().map(String::as_str).collect();
+        let ids: std::collections::HashSet<&str> = agent_ids.iter().map(String::as_str).collect();
         for row in &mut self.completion_outbox {
             if ids.contains(row.agent_id.as_str()) {
                 row.delivered = true;

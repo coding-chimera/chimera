@@ -7,6 +7,7 @@
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
+use super::super::new_shared_subagent_manager_with_state_root_and_timeout;
 use super::evidence::{EVIDENCE_SOURCES, FileEvidenceSource, NoopEvidenceSource};
 use super::{
     DEFAULT_SWARM_CONCURRENCY, DEFAULT_SWARM_LIMIT, MAX_SWARM_CONCURRENCY, MAX_SWARM_ITEMS,
@@ -14,7 +15,6 @@ use super::{
     collect_scope_warnings, extract_swarm_summary, materialize_swarm_items, parse_swarm_params,
     preset_role, preset_template, render_template, validate_swarm_source,
 };
-use super::super::new_shared_subagent_manager_with_state_root_and_timeout;
 use codewhale_agent_contract::role::FleetRole;
 
 fn params(input: Value) -> super::SwarmParams {
@@ -97,11 +97,7 @@ fn items_and_from_are_mutually_exclusive() {
         "prompt_template": "Review {{item}}",
     }));
     let error = validate_swarm_source(&parsed).expect_err("items+from rejected");
-    assert!(
-        error.to_string().contains("not both"),
-        "{}",
-        error
-    );
+    assert!(error.to_string().contains("not both"), "{}", error);
 }
 
 #[test]
@@ -130,11 +126,7 @@ fn template_without_item_placeholder_is_rejected() {
     let source = validate_swarm_source(&parsed).expect("arms validate");
     let error = materialize_swarm_items(&parsed, &source, None)
         .expect_err("missing {{item}} placeholder rejected");
-    assert!(
-        error.to_string().contains("{{item}}"),
-        "{}",
-        error
-    );
+    assert!(error.to_string().contains("{{item}}"), "{}", error);
 }
 
 #[test]
@@ -145,13 +137,9 @@ fn template_and_preset_both_missing_is_rejected() {
         "items": ["x"],
     }));
     let source = validate_swarm_source(&parsed).expect("arms validate");
-    let error = materialize_swarm_items(&parsed, &source, None)
-        .expect_err("missing template rejected");
-    assert!(
-        error.to_string().contains("prompt_template"),
-        "{}",
-        error
-    );
+    let error =
+        materialize_swarm_items(&parsed, &source, None).expect_err("missing template rejected");
+    assert!(error.to_string().contains("prompt_template"), "{}", error);
 }
 
 #[test]
@@ -163,7 +151,10 @@ fn empty_items_array_is_rejected() {
         "prompt_template": "Review {{item}}",
     }));
     let error = validate_swarm_source(&parsed).expect_err("empty items rejected");
-    assert!(error.to_string().contains("swarm needs work items"), "{error}");
+    assert!(
+        error.to_string().contains("swarm needs work items"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -201,15 +192,14 @@ fn non_string_non_object_items_are_rejected() {
         "prompt_template": "Review {{item}}",
     }))
     .expect_err("numeric item rejected");
-    assert!(
-        error.to_string().contains("strings or objects"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("strings or objects"), "{error}");
 }
 
 #[test]
 fn items_over_the_single_run_cap_are_rejected() {
-    let items: Vec<String> = (0..(MAX_SWARM_ITEMS + 1)).map(|i| format!("item-{i}")).collect();
+    let items: Vec<String> = (0..(MAX_SWARM_ITEMS + 1))
+        .map(|i| format!("item-{i}"))
+        .collect();
     let parsed = params(json!({
         "action": "swarm",
         "description": "d",
@@ -217,10 +207,7 @@ fn items_over_the_single_run_cap_are_rejected() {
         "prompt_template": "Review {{item}}",
     }));
     let error = validate_swarm_source(&parsed).expect_err("over-cap items rejected");
-    assert!(
-        error.to_string().contains("at most"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("at most"), "{error}");
 }
 
 // ---- Presets and rendering ----
@@ -232,7 +219,9 @@ fn all_four_presets_supply_item_templates() {
         assert!(template.contains("{{item}}"), "{preset}");
         assert!(template.contains("Item {{index}}/{{total}}:"), "{preset}");
         assert!(
-            template.contains("Status: actionable | covered | irrelevant | duplicate | blocked | no-issue"),
+            template.contains(
+                "Status: actionable | covered | irrelevant | duplicate | blocked | no-issue"
+            ),
             "{preset}"
         );
         assert!(
@@ -253,7 +242,12 @@ fn preset_role_maps_file_review_to_scout() {
 #[test]
 fn render_template_substitutes_all_placeholders() {
     assert_eq!(
-        render_template("Item {{index}}/{{total}}: {{item}}", &json!("src/auth.ts"), 2, 5),
+        render_template(
+            "Item {{index}}/{{total}}: {{item}}",
+            &json!("src/auth.ts"),
+            2,
+            5
+        ),
         "Item 2/5: src/auth.ts"
     );
 }
@@ -290,7 +284,10 @@ fn materialized_items_carry_titles_and_prompts() {
 
 #[test]
 fn concurrency_defaults_to_16_and_caps_at_16() {
-    assert_eq!(bounded_u64(None, DEFAULT_SWARM_CONCURRENCY, MAX_SWARM_CONCURRENCY), 16);
+    assert_eq!(
+        bounded_u64(None, DEFAULT_SWARM_CONCURRENCY, MAX_SWARM_CONCURRENCY),
+        16
+    );
     assert_eq!(bounded_u64(Some(0), 16, 16), 1);
     assert_eq!(bounded_u64(Some(4), 16, 16), 4);
     assert_eq!(bounded_u64(Some(64), 16, 16), 16);
@@ -313,8 +310,7 @@ fn items_slice_to_the_requested_limit() {
         "limit": 5,
     }));
     let source = validate_swarm_source(&parsed).expect("valid");
-    let (work_items, _, _) =
-        materialize_swarm_items(&parsed, &source, None).expect("materializes");
+    let (work_items, _, _) = materialize_swarm_items(&parsed, &source, None).expect("materializes");
     assert_eq!(work_items.len(), 5);
 }
 
@@ -330,7 +326,9 @@ fn scope_warnings_collect_files_shared_by_multiple_items() {
     assert_eq!(warnings[0].file, "src/a.ts");
     assert_eq!(warnings[0].item_indexes, vec![1, 2]);
     assert!(
-        warnings[0].message.contains("Possible scope conflict: src/a.ts"),
+        warnings[0]
+            .message
+            .contains("Possible scope conflict: src/a.ts"),
         "{}",
         warnings[0].message
     );
@@ -363,7 +361,9 @@ fn outbox_delivered_rows_stay_delivered_across_restart() {
     let reloaded = make_manager();
     let guard = reloaded.blocking_write();
     assert!(
-        guard.pending_completion_outbox_for_session("session-a").is_empty(),
+        guard
+            .pending_completion_outbox_for_session("session-a")
+            .is_empty(),
         "a delivered row must not resurrect on recovery"
     );
 }
@@ -373,7 +373,10 @@ fn summary_clamps_long_values() {
     let long = "x".repeat(2000);
     let summary = extract_swarm_summary(&format!("Status: {long}\n"));
     assert!(
-        summary.status.as_deref().is_some_and(|value| value.len() <= 1004),
+        summary
+            .status
+            .as_deref()
+            .is_some_and(|value| value.len() <= 1004),
         "clamped to ~1000 chars + ellipsis"
     );
 }
@@ -466,9 +469,7 @@ fn oracles_read_filters_by_status_and_limit() {
     std::fs::create_dir_all(&dir).expect("evidence dir");
     let mut lines = String::new();
     for i in 0..5 {
-        lines.push_str(
-            &json!({"id": format!("oracle-{i}"), "status": "fail"}).to_string(),
-        );
+        lines.push_str(&json!({"id": format!("oracle-{i}"), "status": "fail"}).to_string());
         lines.push('\n');
     }
     lines.push_str(&json!({"id": "oracle-pass", "status": "pass"}).to_string());
@@ -527,10 +528,7 @@ fn materialize_with_empty_from_result_reports_empty_input() {
     let source = validate_swarm_source(&parsed).expect("from arm valid");
     let error = materialize_swarm_items(&parsed, &source, None)
         .expect_err("no materialized items is an error");
-    assert!(
-        error.to_string().contains("no work items"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("no work items"), "{error}");
 }
 
 // ---- Durable completion outbox ----
@@ -566,7 +564,12 @@ fn outbox_records_and_marks_delivered_rows() {
 
     // Unknown ids are ignored.
     guard.mark_completion_outbox_delivered(&["agent_nope".to_string()]);
-    assert_eq!(guard.pending_completion_outbox_for_session("session-a").len(), 1);
+    assert_eq!(
+        guard
+            .pending_completion_outbox_for_session("session-a")
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -574,7 +577,11 @@ fn outbox_is_scoped_to_the_owner_session() {
     let manager = manager_with_state();
     let mut guard = manager.blocking_write();
     guard.record_completion_outbox("agent_1", "session-a");
-    assert!(guard.pending_completion_outbox_for_session("session-b").is_empty());
+    assert!(
+        guard
+            .pending_completion_outbox_for_session("session-b")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -583,7 +590,12 @@ fn outbox_row_is_idempotent_per_agent() {
     let mut guard = manager.blocking_write();
     guard.record_completion_outbox("agent_1", "session-a");
     guard.record_completion_outbox("agent_1", "session-a");
-    assert_eq!(guard.pending_completion_outbox_for_session("session-a").len(), 1);
+    assert_eq!(
+        guard
+            .pending_completion_outbox_for_session("session-a")
+            .len(),
+        1
+    );
 }
 
 #[test]

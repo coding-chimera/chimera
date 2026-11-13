@@ -11,8 +11,8 @@ pub mod extension_host;
 pub mod external_credentials;
 pub mod hooks;
 pub mod importer;
-pub mod instruction_budget;
 pub mod importer;
+pub mod instruction_budget;
 pub mod legacy_root;
 pub mod local_reasoning;
 pub mod model_reference;
@@ -55,6 +55,7 @@ pub use external_credentials::{
     external_credential_consent_status, quote_os_path, resolve_external_credential_path,
 };
 pub use importer::IMPORTED_SCHEMA_VERSION;
+pub use importer::IMPORTED_SCHEMA_VERSION;
 pub use model_reference::{Modality, ModelReferenceCard, ModelReferenceDatabase};
 pub use opencode_go::{opencode_go_endpoint_key, opencode_go_model_id, opencode_go_models};
 pub(crate) use provider_defaults::*;
@@ -90,7 +91,6 @@ pub use xai_credentials::{
     with_xai_oauth_lifecycle_lock, with_xai_oauth_revocation_transaction,
     xai_oauth_credentials_dir, xai_oauth_generation_path,
 };
-pub use importer::IMPORTED_SCHEMA_VERSION;
 mod base_url_resolution;
 mod config_backup;
 mod config_migration;

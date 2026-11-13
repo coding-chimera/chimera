@@ -62,15 +62,6 @@ pub enum ResponsesPathPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    StandardJson,
-    /// Subscription-backend identity headers: `originator: codewhale_cli_rs`
-    /// plus a per-session id and account id. Isolated from
-    /// [`ProtocolHeaderPolicy::StandardJson`] so the public API's header
-    /// contract never inherits them and vice versa.
-    ChatgptSubscriptionIdentity,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolHeaderPolicy {
     StandardJson,
     /// Subscription-backend identity headers: `originator: codewhale_cli_rs`
@@ -563,7 +554,10 @@ mod tests {
         );
         // The subscription profile is grant-scoped and never selectable by a
         // custom provider.
-        assert!(subscription.replay.encrypted_state == EncryptedReasoningReplayPolicy::AccountApiModelScoped);
+        assert!(
+            subscription.replay.encrypted_state
+                == EncryptedReasoningReplayPolicy::AccountApiModelScoped
+        );
         let usage = profiles[0].usage;
         assert!(profiles.iter().all(|profile| profile.usage == usage));
         assert_eq!(

@@ -1,10 +1,10 @@
-use crate::importer::IMPORTED_SCHEMA_VERSION;
 use crate::catalog;
 use crate::extension_toml::{
     ControlSocketToml, HookSinksToml, LifecycleOutboxToml, SkillsToml, SnapshotsToml, ToolsToml,
 };
 use crate::fleet::FleetConfigToml;
 use crate::hotbar::HotbarBindingToml;
+use crate::importer::IMPORTED_SCHEMA_VERSION;
 use crate::provider_kind::ProviderKind;
 use crate::provider_toml::ProvidersToml;
 use crate::provider_toml::{deserialize_root_provider, http_headers_are_effectively_empty};

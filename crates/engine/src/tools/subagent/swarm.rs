@@ -269,9 +269,9 @@ pub fn parse_swarm_params(input: &Value) -> Result<SwarmParams, ToolError> {
         }
     };
     if let Some(items) = items.as_deref()
-        && items.iter().any(|item| {
-            !matches!(item, Value::String(_) | Value::Object(_))
-        })
+        && items
+            .iter()
+            .any(|item| !matches!(item, Value::String(_) | Value::Object(_)))
     {
         return Err(ToolError::invalid_input(
             "swarm items must be an array of strings or objects",
@@ -312,12 +312,8 @@ pub fn parse_swarm_params(input: &Value) -> Result<SwarmParams, ToolError> {
 /// The three-arm validation result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwarmSource {
-    Items {
-        items: Vec<Value>,
-    },
-    From {
-        source: String,
-    },
+    Items { items: Vec<Value> },
+    From { source: String },
 }
 
 /// Validate the input arms: `description` required, `items`/`from` mutually
@@ -330,7 +326,10 @@ pub fn validate_swarm_source(params: &SwarmParams) -> Result<SwarmSource, ToolEr
             "swarm requires a 'description' that names the batch in one line; add it so completions and receipts can be attributed. Example: { \"action\": \"swarm\", \"description\": \"review changed auth files\", \"items\": [...], \"prompt_template\": \"Review {{item}}\" }",
         ));
     }
-    let has_items = params.items.as_deref().is_some_and(|items| !items.is_empty());
+    let has_items = params
+        .items
+        .as_deref()
+        .is_some_and(|items| !items.is_empty());
     if has_items && params.from.is_some() {
         return Err(ToolError::invalid_input(
             "Provide either explicit items or from, not both.",
@@ -502,9 +501,7 @@ impl SwarmSummary {
     pub fn render(&self) -> String {
         let parts: Vec<String> = SUMMARY_LABELS
             .iter()
-            .filter_map(|(key, label)| {
-                self.member(key).map(|value| format!("{label} {value}"))
-            })
+            .filter_map(|(key, label)| self.member(key).map(|value| format!("{label} {value}")))
             .collect();
         if parts.is_empty() {
             "(none)".to_string()
@@ -518,7 +515,9 @@ impl SwarmSummary {
 /// the next label or the end; newlines collapse; each value clamps to 1000
 /// chars.
 pub fn extract_swarm_summary(output: &str) -> SwarmSummary {
-    let text: String = output.replace("<task_result>", "").replace("</task_result>", "");
+    let text: String = output
+        .replace("<task_result>", "")
+        .replace("</task_result>", "");
     let mut positions: Vec<(usize, &str, &str)> = SUMMARY_LABELS
         .iter()
         .filter_map(|(key, label)| text.find(label).map(|index| (index, *key, *label)))
@@ -679,17 +678,17 @@ pub async fn execute_swarm(
         // bounds *executing* children per-run (queued items wait for permits
         // under the manager's existing launch gate, which remains the
         // authority for global pool admission).
-        let _permit = semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| ToolError::execution_failed("the swarm concurrency limiter is closed"))?;
+        let _permit =
+            semaphore.clone().acquire_owned().await.map_err(|_| {
+                ToolError::execution_failed("the swarm concurrency limiter is closed")
+            })?;
         let mut spawn_input = base_input.clone();
         spawn_input["prompt"] = json!(item.prompt);
         if let Some(description) = params.description.as_deref() {
             spawn_input["expected_artifact"] = json!(format!(
                 "{description} — item {}/{}",
-                item.index, items.len()
+                item.index,
+                items.len()
             ));
         }
         if params.background {
@@ -714,7 +713,11 @@ pub async fn execute_swarm(
                 child_runs.push(SwarmChildRun {
                     index: item.index,
                     title: item.title.clone(),
-                    status: if params.background { "queued" } else { "running" },
+                    status: if params.background {
+                        "queued"
+                    } else {
+                        "running"
+                    },
                     agent_id: Some(snapshot.agent_id),
                     error: None,
                 });
@@ -758,8 +761,8 @@ pub async fn execute_swarm(
     }
 
     // Foreground: wait for every spawned child to settle, then aggregate.
-    let settled = wait_for_swarm_children(&manager, &context.state_namespace, &spawned_agent_ids)
-        .await;
+    let settled =
+        wait_for_swarm_children(&manager, &context.state_namespace, &spawned_agent_ids).await;
     let mut results = Vec::with_capacity(child_runs.len());
     let mut successes = 0_u64;
     let mut failures = 0_u64;
@@ -869,9 +872,7 @@ async fn wait_for_swarm_children(
             let guard = manager.read().await;
             for agent_id in pending.drain(..) {
                 match guard.get_result(&agent_id) {
-                    Ok(snapshot)
-                        if !matches!(snapshot.status, super::SubAgentStatus::Running) =>
-                    {
+                    Ok(snapshot) if !matches!(snapshot.status, super::SubAgentStatus::Running) => {
                         settled.push(snapshot);
                     }
                     Ok(_) => still_pending.push(agent_id),
