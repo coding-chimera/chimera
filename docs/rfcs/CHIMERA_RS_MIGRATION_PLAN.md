@@ -1,6 +1,6 @@
 # Chimera-rs 硬分叉与能力迁移实施计划
 
-> 状态：实施中，2026-11-12。
+> 状态：实施中，2026-11-12 制定；2026-11-16 按代码核实审计修订（见 §21 与 HANDOFF.md §8）。
 >
 > 本文是实施计划与验收基线，不是完成报告。完成标志是全部迁移能力和质量门均落地，且实际 Chimera-rs 产品可正常使用。
 >
@@ -60,6 +60,8 @@
 | 未跟踪文件指纹 | `DUAL_SYSTEM_PROMPT_PLAN.md` = `90901cbbdb9dbb052e17891019e6a625f09c44a19ee821e30c8b1b256f430846`；`chimera.json` = `367e1f4ffe32c55d42b677b353b25ba7b9521401ae8140ea149065a703b54b3c` |
 
 每个实施切片开工前都要重新记录源 commit、工作树 diff 和实际读取文件哈希。若源文件已变化，以新证据修订对应切片，不能机械套用本文行号。
+
+2026-11-16 更新：目标仓库 `main=af5c1fb`（领先 `origin/main` 57 个提交，未推送），仍 shallow、无 tag，FORK-0 的历史/remote 收口未完成。上表 Chimera 源固定点是调研时快照，开工前仍须按上段规则重新固定。目标仓库各切片的实际落地状态以 HANDOFF.md §2/§8 为准，本文其余行号仍是调研基线。
 
 ### 2.2 旧文档不能当作现状
 
@@ -265,7 +267,7 @@ chimera CLI / TUI / web / ACP / MCP / exec
 - scorer/verifier、失败源分类、run usage ceiling 和类型化告警，不能因 Chimera swarm 本身没有这些能力而删除。
 - Workflow 排序、Lane 运行实例、429 自适应 governor 和 CLI/API/TUI 控制面。
 
-不恢复旧 Codewhale swarm，不引入 TS `WorkerBatch` 第二套执行生命周期。可参考 `chimera-host` Rust swarm 的 Semaphore/JobRegistry，但最终归属现有 Runtime/SubAgentManager。目标现有 `rx_subagent_completion` idle 唤醒可直接复用，但它没有持久 delivery 标记；必须补 generation + dedupe outbox，不能仅靠 mpsc 就声称重启后恰好一次。
+不恢复旧 Codewhale swarm，不引入 TS `WorkerBatch` 第二套执行生命周期。可参考 `chimera-host` Rust swarm 的 Semaphore/JobRegistry，但最终归属现有 Runtime/SubAgentManager。目标现有 `rx_subagent_completion` idle 唤醒可直接复用；generation + dedupe outbox 的行持久化、幂等与 delivered 标记已入仓（2026-11-16 核实），但恢复路径没有 drain 调用方，重启后恰好一次投递尚未闭合，不能仅凭 outbox 行存在宣称完成。
 
 ### 7.2 模型、CLI 与 API 形状
 
@@ -744,14 +746,39 @@ Chimera 当前 claim 存储故障多采取 degrade-open。Chimera-rs 在 **claim
 | Fleet | — | `crates/engine/src/fleet/manager.rs:418-1055`；`ledger.rs:340`；`host.rs:165-209`；`docs/FLEET.md:14-37` |
 | swarm | `packages/chimera/src/tool/swarm.ts:20-137`（schema）、`:485-565`（后台）；`packages/chimera/src/agent/worker-batch.ts:241-383`；`packages/chimera/src/agent/batch-source.ts:9-17` | `crates/engine/src/tools/subagent/governor.rs:1-46`；`core/engine.rs:3700-3760` 的 idle 唤醒 |
 | edit 图传播 | `packages/chimera/src/chimera/provenance.ts:1153-1278`；`packages/chimera/src/graph/index.ts:2119-2260`；`packages/chimera/src/chimera/propagation-probe.ts:431-502` | `crates/engine/src/tools/file.rs:2504-2579`；`core/engine/lsp_hooks.rs:51-117` |
-| 图内核 | `codegraph-kernel/src/store.rs:1404-1476`；`codegraph-kernel/src/resolver.rs`；`packages/chimera/src/graph/db/schema.sql:1-225` | 当前无 CodeGraph；`crates/engine/src/work_graph/` 是另一领域 |
+| 图内核 | `codegraph-kernel/src/store.rs:1404-1476`；`codegraph-kernel/src/resolver.rs`；`packages/chimera/src/graph/db/schema.sql:1-225` | 调研时无 CodeGraph；2026-11-16 起 `crates/codegraph` 内核已入仓（零依赖方，engine 未接线）；`crates/engine/src/work_graph/` 是另一领域 |
 | 图 core 骨架 | `crates/chimera-graph-core/src/lib.rs:29-63` 的 feature-gated 空模块 | — |
 | 图工具表面 | `packages/chimera/src/tool/chimera.ts:2562-2968`；`packages/chimera/src/graph/mcp/tools.ts:441-618`；`packages/chimera/src/tool/registry.ts:330-344` | 生产工具落点是 `crates/engine/src/tools/{registry,spec}.rs`，不是未接线的 `crates/tools::ToolRegistry` |
 | predesign/claims | `packages/chimera/src/chimera/edit-intent.ts:111-144,261-350`；`packages/chimera/src/chimera/store.ts:2024-2057`；`packages/chimera/src/tool/edit.ts:281-323` | `crates/engine/src/tools/subagent/coord/ledger.rs:392-810`；`core/engine.rs:385-470` 的写权限缝 |
 | 渐进披露 | `packages/chimera/src/session/tool-search.ts:36-47,191-220`；`packages/chimera/src/session/prompt.ts:247-254,534-566,1351-1430` | `crates/engine/src/core/engine/tool_catalog.rs:129-236`；`core/session.rs:18-298` |
-| Codex 订阅后端 | `packages/chimera/src/plugin/codex.ts:15-18,115-241`；`packages/chimera/src/session/codex-responses.ts:228-248,497-651` | `crates/engine/src/client.rs:1690-1706` 当前拒绝 ChatGPT backend；`crates/config/assets/responses_dialects.json` |
+| Codex 订阅后端 | `packages/chimera/src/plugin/codex.ts:15-18,115-241`；`packages/chimera/src/session/codex-responses.ts:228-248,497-651` | 调研时 `client.rs` 拒绝 ChatGPT backend；2026-11-16 起 subscription profile/endpoint fence/headers 已入仓（turn-state 仅离线骨架）；`crates/config/assets/responses_dialects.json` |
 | Alibailian | `packages/chimera/src/session/llm.ts:48-127`；`packages/chimera/src/tool/websearch.ts:96-133,404-490` | `crates/config/assets/provider_descriptors.json` 的 Model Studio 行；`crates/engine/src/client/chat.rs:398-586` |
 | browser | `packages/chimera/src/browser/runtime.ts:143-177,207-632`；`packages/chimera/src/browser/artifact.ts:51-177`；`packages/chimera/src/tool/browser_evaluate.ts:65-83` | `crates/net/src/guard.rs:25-217`；`crates/engine/src/mcp.rs:7641-7705`；`crates/engine/src/profile_constitution.rs:83-108` |
 | prompt 分层 | `packages/chimera/src/session/system.ts:58-199`；`packages/chimera/src/session/prompt/default.txt`、`packages/chimera/src/session/prompt/workflow.txt`、`packages/chimera/src/session/prompt/chimera.txt` | `docs/CACHE.md:10-63,119-126`；`crates/engine/src/prompts.rs:1071-1457` |
 | feature/config 守卫 | `packages/chimera/src/config/parse.ts:48-88` 的未知顶层键拒绝 | `docs/features.toml:1-35`；`crates/tui/tests/feature_registry.rs`；`crates/core/tests/single_turn_loop.rs` |
 | 分叉供应链 | — | `crates/config/src/telemetry.rs:18`；`crates/release/src/lib.rs:27-60`；`crates/cloud-facts/src/lib.rs:32`；`LICENSE`、`THIRD_PARTY_NOTICES.md` |
+
+## 21. 2026-11-16 审计后的工作包修订
+
+依据：HANDOFF.md §8 的代码核实（7 个只读子代理 + 主线复核）。本节只修订工作包边界与顺序，不改变 §3 不变量与各波出口门。
+
+### 21.1 已完成，从工作包划掉
+
+- W2：429 自适应 governor（AIMD DynamicGate，engine/app-server/TUI 已装配）；Lane/Fleet 控制面 Cli+Slash 两表面与 ControlReceipt。剩余只有 HTTP 表面、swarm run receipt 与真实 429 收据。
+- W1：全 loaded-thread reload preflight（含 API 级拒绝测试）、终端宿主、prompt override。
+- W3B：OAuth 生命周期代码（PKCE/device code/回调/刷新）已完整，剩余是真机验收收据。
+- W6A：importer 库层（JSONC/合并/收紧/redaction/CAS）已完成，剩余是 CLI 显式命令接线。
+
+### 21.2 新增或提级的工作包
+
+1. **PROJ-3（P1 前置）**：把 `crates/state` turn store（admit/lease/terminal commit/sweep）接入 turn loop 与 app-server——当前零调用方；重写 `sigkilled_holder_is_recovered_by_a_later_process` 为真 kill + 真子进程持锁（现测试不 kill、子进程过滤器零匹配、手动删自己的 boot 行）；补 `idle_scopes_recycle_with_jitter_pin` 的真实回收断言。
+2. **SWARM-1b（提级）**：evidence store ↔ swarm `from` 接线（store 已有 legacy JSON importer，swarm 端口仍读 `.codewhale/chimera/*.json`）；outbox 恢复 drain 接入 engine 恢复路径。这两个是"库完成但链路断"，先于 Fleet importer。
+3. **DISCLOSE-2（裁决 + 收口）**：reveal 经 activation cache 在下一 turn 进入请求数组，与 §8.2 "compaction 边界才提升"冲突。先裁决语义（保留 Codewhale cache 行为并修订本文与注释，或改为仅 compaction 提升），再补"搜索后下一 turn 数组"与"提升→`change:tool_surface` 事件"测试；by-name 执行需要真实调用测试，权限/隔离/restore 测试需走真实 gate/session/恢复路径。
+4. **BROWSER-0（先于真实 smoke）**：生产 `BrowserManager` 安装点（`install_browser_manager` 零调用）；修复 CDP `type_text`→`click` 双重加锁死锁、redirects 恒空、frame/target id 误判、hook 仅注入一次；manager session 注册表加 project 键；`Target.createBrowserContext` 隔离；审批 scope 引入 origin。未完成前 §12.4 的真实 smoke 必然失败。
+5. **PROVIDER-1b**：Alibailian websearch fallback 从合同变行为（`web_search.rs` 丢弃返回值、chain 未排序）；subscription `x-codex-turn-state` 头接入生产请求或明确保持离线并登记限制。
+6. **FORK-0 遗留**：完整历史/tags 恢复与独立 remote 仍是 P0 外部前置。
+
+### 21.3 顺序
+
+`FORK-0 收尾 → PROJ-3 → SWARM-1b → DISCLOSE-2 裁决 → GRAPH/COORD（复用 <context_update> 通道与 validate_claim 写缝）→ BROWSER-0 → 真实表面收据 → 品牌/发布收口`。原 §19 依赖关系不变，本节只是把"库已存在"的切片收窄为"接线 + 行为测试"。
+
