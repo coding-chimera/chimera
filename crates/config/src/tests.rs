@@ -8885,6 +8885,21 @@ fn env_telemetry_off_is_a_floor_over_cli_on() {
 }
 
 #[test]
+fn cli_telemetry_on_enables_the_default_run() {
+    let _guard = TelemetryEnvGuard::take();
+    let cli = CliRuntimeOverrides {
+        telemetry: Some(true),
+        ..CliRuntimeOverrides::default()
+    };
+
+    let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+    assert!(resolved.telemetry);
+    assert_eq!(resolved.telemetry_source, TelemetrySource::Cli);
+    assert!(!resolved.telemetry_explicit_off);
+}
+
+#[test]
 fn persisted_telemetry_off_is_a_floor_over_cli_on() {
     // Regression: `--telemetry true` used to beat `telemetry = false` in the
     // config file, and the dispatcher then forwarded the resolved `true` as

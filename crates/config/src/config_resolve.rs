@@ -1116,15 +1116,23 @@ impl ConfigToml {
         // this run; `--telemetry true` can never climb over a kill switch.
         // The source names the CLI only when the CLI term actually decided
         // the outcome — a flag that lost to a kill switch is not the provenance.
-        let telemetry = telemetry_env_file && cli.telemetry != Some(false);
-        let telemetry_source = if cli.telemetry == Some(false)
-            || (cli.telemetry == Some(true) && telemetry_env_file)
-        {
-            TelemetrySource::Cli
-        } else {
-            telemetry_source_env_file
-        };
         let telemetry_persisted_off = self.telemetry == Some(false);
+        let telemetry = match cli.telemetry {
+            Some(true) => {
+                env.telemetry != Some(false)
+                    && !env.telemetry_env_invalid
+                    && !env.telemetry_floor
+                    && !telemetry_persisted_off
+            }
+            Some(false) => false,
+            None => telemetry_env_file,
+        };
+        let telemetry_source =
+            if cli.telemetry == Some(false) || (cli.telemetry == Some(true) && telemetry) {
+                TelemetrySource::Cli
+            } else {
+                telemetry_source_env_file
+            };
         // Only a *persisted* off is an answer. `--telemetry false` and
         // `CODEWHALE_TELEMETRY=0` are run-scoped kill switches: they must stop
         // this run without deleting the identity and buffered events of a user

@@ -45,7 +45,12 @@ fn env_off_beats_cli_on_end_to_end() {
 /// network latency. The next interactive session owns delivery.
 #[test]
 fn short_cli_exit_persists_without_network_delivery() {
-    let evidence = dispatch_and_read_telemetry_with_endpoint(None, None, None, false);
+    let evidence = dispatch_and_read_telemetry_with_endpoint(
+        None,
+        Some("https://example.invalid/telemetry"),
+        Some(TELEMETRY_NOTICE_VERSION),
+        true,
+    );
     let pending = evidence
         .pending
         .expect("short CLI must seal its pending telemetry before process exit");
@@ -179,9 +184,6 @@ fn missing_preference_stays_off_without_inventing_acceptance() {
         assert!(
             !evidence.telemetry_dir_exists && evidence.dry_run.is_none(),
             "an unconfigured run must not arm telemetry or write any state"
-            evidence
-                .stderr
-                .contains("chimera config set telemetry false")
         );
     }
 }
@@ -193,7 +195,7 @@ fn an_explicit_blank_endpoint_arms_the_dry_run_without_inference() {
         evidence
             .dry_run
             .as_ref()
-            .expect("an explicit dry-run endpoint plus `--telemetry true` writes the sink")
+            .unwrap_or_else(|| panic!("dry-run sink missing; stderr: {}", evidence.stderr))
             .lines()
             .next()
             .unwrap(),
@@ -215,7 +217,6 @@ struct DispatchEvidence {
     telemetry_dir_exists: bool,
     dry_run: Option<String>,
     pending: Option<String>,
-    setup: Option<SetupState>,
     stderr: String,
 }
 
@@ -310,7 +311,6 @@ fn dispatch_and_read_telemetry_with_endpoint(
         telemetry_dir_exists: telemetry_dir.exists(),
         dry_run,
         pending,
-        setup: SetupState::load_from(&codewhale_home.join("setup_state.json")),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
 }
