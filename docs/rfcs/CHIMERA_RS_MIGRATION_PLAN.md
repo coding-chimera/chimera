@@ -61,7 +61,7 @@
 
 每个实施切片开工前都要重新记录源 commit、工作树 diff 和实际读取文件哈希。若源文件已变化，以新证据修订对应切片，不能机械套用本文行号。
 
-2026-11-16 更新：目标仓库 `main=af5c1fb`（领先 `origin/main` 57 个提交，未推送），仍 shallow、无 tag，FORK-0 的历史/remote 收口未完成。上表 Chimera 源固定点是调研时快照，开工前仍须按上段规则重新固定。目标仓库各切片的实际落地状态以 HANDOFF.md §2/§8 为准，本文其余行号仍是调研基线。
+2026-11-16 更新：已 `fetch --unshallow --tags`（14766 提交、183 tags）；fork 分支 `chimera-rs` 已推送到 `git@github.com:coding-chimera/chimera.git`（ref `1a3b4b5`，推送前内容/身份审计通过，见 HANDOFF.md §1）。`origin` 仍指向上游 codewhale-hq，未推送。上表 Chimera 源固定点是调研时快照，开工前仍须按上段规则重新固定。目标仓库各切片的实际落地状态以 HANDOFF.md §2/§8 为准，本文其余行号仍是调研基线。
 
 ### 2.2 旧文档不能当作现状
 

@@ -10,15 +10,15 @@
 | --- | --- |
 | 仓库 | `/Volumes/workspace/chimera-rs` |
 | 分支 | `main` |
-| HEAD | `af5c1fb docs: add Chimera-rs migration handoff`（本文档提交；上一实现提交为 `71123ce`） |
-| 工作区 | 仅本文档的审计更新未提交；无其他脏文件 |
+| HEAD | `1a3b4b5 docs: record 2026-11-16 code-verification audit and revise work packages` |
+| 工作区 | 干净 |
 | 合并状态 | `git branch --no-merged main` 为空；15 个功能/历史分支均已合入 |
 | 临时 worktree | 已删除；`chimera-rs-*` 临时目录已清理 |
 | 分支 | 保留，未删除 |
-| 远端 | `origin=https://github.com/codewhale-hq/Codewhale.git`；尚未配置独立 fork upstream/origin |
-| 本地提交 | `main` 领先 `origin/main` 57 个提交（含本文档提交），**未推送** |
+| 远端 | `origin=https://github.com/codewhale-hq/Codewhale.git`（上游，未推送）；`chimera=git@github.com:coding-chimera/chimera.git`（fork 目标，仓库局部 SSH 固定公开账号 logic10492 的个人 key） |
+| 推送状态 | 分支 `chimera-rs` 已推送到 `chimera` remote，远端 ref = `1a3b4b5`（2026-11-16）；推送前审计：58 个 fork 提交（merge-base `f5a3dda`）消息/diff 无 ali-inc/内部身份/密钥命中，alibailian endpoint 为 `.invalid` 占位。`main` 本身未推送 |
 | 编译缓存 | `/Volumes/workspace/chimera-rs-target` 已删除；仓内仍有 `target/debug`（约 653M，deps/incremental） |
-| 历史 | 仓库仍为 shallow（grafted 于 `f5a3dda`），无 tag；FORK-0 的完整历史恢复未完成 |
+| 历史 | 已 `fetch --unshallow --tags`：14766 提交、183 tags，shallow 标记已移除；tags 未推送到 fork remote |
 
 当前没有运行中的后台构建或测试任务。
 
