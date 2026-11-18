@@ -53,6 +53,26 @@ describe("builtin skills", () => {
     ),
   )
 
+  it.live("pins the task/swarm/orchestrate selection guidance", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const skill = yield* Skill.Service
+          const content = (yield* skill.get("orchestrate-authoring"))!.content
+          expect(content).toContain("## Which tool")
+          expect(content).toContain("`task`")
+          expect(content).toContain("`chimera_swarm`")
+          expect(content).toContain("explicit `items` + `prompt_template`")
+          expect(content).toContain("plan the whole program up front")
+          expect(content).toContain("Prefer `background: true` for any dispatch that supports it")
+          expect(content).toContain("never sleep, poll, or busy-wait")
+          expect(content).not.toContain("default execution surface")
+          expect(content).not.toContain("Only two shapes")
+        }),
+      { git: true },
+    ),
+  )
+
   it.live("lets a filesystem skill override a built-in with the same name", () =>
     provideTmpdirInstance(
       (dir) =>

@@ -245,4 +245,18 @@ describe("orchestrate parameters", () => {
     const parsed = examples.map((example) => Schema.decodeUnknownSync(OrchestrateParameters)(example))
     expect(parsed.some((entry) => entry.timeoutMs === 0 && entry.maxTotalAgents === 64)).toBe(true)
   })
+
+  test("description routes single-layer work to task, homogeneous batches to chimera_swarm, and complex programs to orchestrate", () => {
+    expect(ORCHESTRATE_DESCRIPTION).toContain("single-layer one-off research, implementation, review, or verification axis")
+    expect(ORCHESTRATE_DESCRIPTION).toContain("use `task`")
+    expect(ORCHESTRATE_DESCRIPTION).toContain("homogeneous single-layer bounded fan-out over one prompt shape")
+    expect(ORCHESTRATE_DESCRIPTION).toContain("use `chimera_swarm` with explicit `items` + `prompt_template`")
+    expect(ORCHESTRATE_DESCRIPTION).toContain("multi-stage pipeline")
+    expect(ORCHESTRATE_DESCRIPTION).toContain("single-agent program is justified only when the program's own capabilities are needed")
+    expect(ORCHESTRATE_DESCRIPTION).toContain("plan the whole program up front")
+    expect(ORCHESTRATE_DESCRIPTION).toContain("Prefer `background: true` for any program")
+    expect(ORCHESTRATE_DESCRIPTION).toContain("Never block the session with sleep, polling, or busy-waiting")
+    expect(ORCHESTRATE_DESCRIPTION).not.toContain("default execution surface")
+    expect(ORCHESTRATE_DESCRIPTION).not.toContain("Every substantive task")
+  })
 })

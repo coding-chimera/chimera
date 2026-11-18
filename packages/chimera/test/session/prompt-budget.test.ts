@@ -20,7 +20,7 @@ import { ToolSearch } from "../../src/session/tool-search"
 const BASELINE = {
   generic: 25888,
   deepseek: 28528,
-  deepseekUltra: 33194, // 2026-10-30 re-record (browser_evaluate prompt guidance)
+  deepseekUltra: 34974, // 2026-11-18 re-record #2 (plan-and-handoff gate + background-first dispatch)
   kimi: 27905,
   gpt55: 30900,
   claude: 30008,
@@ -34,10 +34,10 @@ const BASELINE = {
 const TOOL_BUDGETS = {
   "todowrite.txt": 9183,
   "ast_edit.txt": 10984,
-  "task.txt": 8158, // 2026-10-28 re-record
-  "swarm.txt": 10713, // 2026-10-28 re-record
+  "task.txt": 8380, // 2026-11-18 re-record (tool-selection semantics)
+  "swarm.txt": 10985, // 2026-11-18 re-record (tool-selection semantics; +1 for the swarm.txt EOF newline)
   "workbrief.txt": 6546,
-  "orchestrate.txt": 5804, // 2026-10-30 re-record (compaction-window wording)
+  "orchestrate.txt": 7361, // 2026-11-18 re-record #2 (plan-and-handoff gate + background-first dispatch)
   "shell/shell.txt": 7852,
 } as const
 
@@ -113,7 +113,21 @@ const TOOL_BUDGETS = {
 // (5750 -> 5804) now states that the compaction window only decides whether
 // retrying continues, while a round with valid structured output returns
 // directly; total floor 115195 -> 115249.
-const TOOL_TOTAL_BUDGET = 115249
+// 2026-11-18 re-record (tool-selection semantics): orchestrate is no longer the
+// default execution surface. ultra.txt, deepseek-ultra.txt, chimera.txt, llm.ts,
+// and the orchestrate/task/swarm descriptions now select by work shape (task for
+// a single one-off axis, chimera_swarm for a homogeneous single-layer batch,
+// orchestrate for multi-stage/heterogeneous/dynamic programs). task.txt
+// (8158 -> 8380), swarm.txt (10713 -> 10985, last byte an EOF newline), and
+// orchestrate.txt (5804 -> 6620) grew with that rewrite, and the deepseekUltra
+// floor 115249 -> 116559 (+1 for the swarm.txt EOF newline).
+// 2026-11-18 re-record #2 (plan-and-handoff gate + background-first dispatch):
+// ultra.txt, deepseek-ultra.txt, and the llm.ts ultra body now gate orchestrate
+// on a complete up-front program plan and prefer background dispatch with
+// notification-driven waiting (no sleep/poll); orchestrate.txt (6620 -> 7361)
+// carries the same gate and background contract, so the total floor
+// 116559 -> 117300 and the deepseekUltra skeleton 34217 -> 34974.
+const TOOL_TOTAL_BUDGET = 117300
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the

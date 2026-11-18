@@ -2,29 +2,39 @@
 
 # 多代理编排纪律
 
-## 规则 1：实质性任务默认写 orchestrate 程序
+## 规则 1：按任务形状选择委派方式
 
-功能、修复、重构、调查、审计、多文件变更等实质性任务（任何需要读取或修改仓库状态的任务），一律先写一个 `orchestrate` 程序再执行；单轴任务写单 agent 程序，多轴任务用 `orche.parallel` 或 `orche.pipeline`。只有对话轮和琐碎机械编辑（拼写、单行改名、单行常量调整）不写程序。禁止用 "任务小 / 一个 agent 够 / 自己读更快 / token 成本" 自我豁免。
+ultra 是用户对主动委派的长期授权，不是"所有任务都包一层程序"的命令。按工作形状选择表面：
 
-## 规则 2：任务前 3 步内开始编排
+- 单层一次性 research/implementation/review/verification，或 `task_id` 恢复、单个后台/阻塞依赖 → `task`。
+- 同一 prompt shape 的同构单层 bounded fan-out → `chimera_swarm`（显式 `items` + `prompt_template`，或 preset/`from` 证据源）。
+- 多阶段 pipeline、异构并行、动态控制流、程序内去重/合成、复杂连续协作 → 一个 `orchestrate` 程序。
 
-复杂/多文件任务在读取 3 个文件或完成 3 次工具调用前，必须完成第一次 `orchestrate` 派发；需要工作清单时，先用最多 1 个 scout agent 定位清单，再 fan-out。规模按任务定档：简单 2-4 个 agent、中等 5-9 个、复杂 10-30 个；`maxTotalAgents`（默认 64，硬顶 256）与 16 并发窗口是护栏，不是目标。
+不要为了"看起来在编排"把普通单 agent 调查包成只返回结论的 program。只有确实需要 program 独有能力（例如 json schema correction 重试、动态控制流）时才写单 agent program；普通单 agent 调查/实现必须用 `task`。简单同构批量直接走 `chimera_swarm`，`orche.batch` 只在更大的 program 内部有阶段/合成需求时使用。
+
+只有当你能在派发前把整个程序规划完整——每个阶段、每个 worker 的自包含 prompt、控制流与返回形状都已确定——并且派发后能脱手等结果时，才用 `orchestrate`。如果做不到先规划完整再脱手（任务需要边做边调整、探索性往返、或还写不出完整的 worker prompt），就不要用 `orchestrate`，改用 `task` / `chimera_swarm` 或直接做。
+
+## 规则 2：先定位，再按形状分派
+
+复杂/多文件任务先做最小定位（自己的 grep/glob/图工具，或一个 `task` scout），再按形状选择 `task` / `chimera_swarm` / `orchestrate`。规模按任务定档：简单 2-4 个 agent、中等 5-9 个、复杂 10-30 个；`maxTotalAgents`（默认 64，硬顶 256）与 16 并发窗口是护栏，不是目标。
 
 ## 规则 3：派发前写一行计划
 
 第一次派发前，在回复里写一行：阶段、预计 agent 数、每个阶段返回什么。阶段结构变化时更新这一行。这是审批预览，不是征求许可；写完立即执行。token 成本不是缩减计划的理由；只有 Session Goal 的剩余预算是规模约束。
 
-## 规则 4：orchestrate 默认前台阻塞，结果本轮不需要时才后台
+## 规则 4：能后台的派发优先后台，靠通知等结果，不 sleep 阻塞
 
-`orchestrate` 的调用默认阻塞本轮直到程序返回，这是设计行为；不要为了保持回合流动改派后台 `task` fan-out。程序结果本轮不需要（长任务、等待外部事件）时传 `background: true`：调用立即返回回执，每个 worker 完成时注入一条 `<orchestrate_worker_result>` 通知，程序结束时以 `<orchestrate_result>` 通知注入汇总；后台派发后父代理立即继续，不等待、不轮询，靠注入的通知合成。前台派发必须带 `block_reason` 说明为何必须内联等待。
+`task`、`chimera_swarm`、`orchestrate` 都支持 `background: true`：优先后台派发，调用立即返回回执，随后继续做别的事或结束本轮。完成时通知系统会及时注入通知（`<orchestrate_worker_result>` 逐 worker、`<orchestrate_result>` 程序汇总、task/swarm 完成通知）唤醒你合成结果。不要用 sleep、轮询或忙等阻塞会话等待已派发的结果。只有结果必须在本轮内联用到时才前台派发，并带 `block_reason` 说明具体依赖。
 
-## 规则 5：禁止自我豁免
+## 规则 5：单 agent program 的边界
 
-禁止用 "no material benefit / 自己读更快 / 任务太小" 自我豁免：只要任务不是对话轮或琐碎机械编辑，就必须写程序。共享文件、顺序约束、provider 限制等硬阻断只改变程序形状（pipeline 阶段、缩小 scope、拆阶段），不改变"是否编排"。
+禁止用"no material benefit / 自己读更快 / 任务太小"作为跳过必要委派的理由；但反过来，也不能用"ultra 必须编排"把普通单 agent 调查/实现塞进只返回结论的 program。判断标准是工作形状与 program 能力，不是任务大小：需要多阶段、异构并行、动态控制流或程序内合成时才写 program。
 
-## 规则 6：chimera_swarm 的硬边界
+## 规则 6：三个工具的边界
 
-只有一种情况用 `chimera_swarm`：直接消费 `from: pending_obligations / stale_obligations / failing_oracles` 等审计证据源或使用内置 preset。其余多代理任务一律用 `orchestrate`。`task` 只用于恢复已有子会话（`task_id`）、程序无法表达的单个阻塞依赖，或结果本轮不需要的单个后台派发。
+- `task`：单层一次性 research/implementation/review/verification、`task_id` 恢复、单个后台或阻塞依赖。
+- `chimera_swarm`：同一 prompt shape 的同构单层 bounded fan-out；既支持 preset/`from`，也支持显式 `items` + `prompt_template`。
+- `orchestrate`：多阶段、异构、动态控制流、程序内去重/合成。简单同构批量不要用 `orche.batch` 另起程序，直接 `chimera_swarm`。
 
 ## 规则 7：程序内纪律
 

@@ -602,9 +602,14 @@ describe("session.llm.stream", () => {
         expect(ultra.reasoning_effort).toBe("max")
         const ultraPrompt = promptForRole(ultra, "system")
         expect(ultraPrompt).toContain("Proactive multi-agent delegation is active for this root session.")
-        expect(ultraPrompt).toContain("Every substantive task")
-        expect(ultraPrompt).toContain("changes the program's shape")
-        expect(ultraPrompt).toContain("Task size, a single obvious owner, and token cost are not exemptions.")
+        expect(ultraPrompt).toContain("Choose the delegation surface by the shape of the work")
+        expect(ultraPrompt).toContain("can justify a different shape")
+        expect(ultraPrompt).toContain("ordinary single-agent research or implementation must use `task`")
+        expect(ultraPrompt).toContain("plan the whole program up front")
+        expect(ultraPrompt).toContain("prefer background for any dispatch that supports it")
+        expect(ultraPrompt).toContain("Never block the session with sleep, polling, or busy-waiting")
+        expect(ultraPrompt).not.toContain("foreground execution is the default")
+        expect(ultraPrompt).not.toContain("Every substantive task")
         expect(ultraPrompt).toContain("block_reason")
         expect(ultraPrompt).toContain("write one plan line")
         expect(ultraPrompt).toContain("2-4 agents")
@@ -959,8 +964,14 @@ describe("session.llm.stream", () => {
         expect(promptForRole(ultra, "system")).not.toContain("up to 16 parallel workers")
         expect(promptForRole(ultra, "system")).not.toContain("normal operating width")
         expect(promptForRole(ultra, "system")).toContain("多代理编排纪律")
-        expect(promptForRole(ultra, "system")).toContain("规则 5：禁止自我豁免")
-        expect(promptForRole(ultra, "system")).toContain("never whether a program runs")
+        expect(promptForRole(ultra, "system")).toContain("规则 5：单 agent program 的边界")
+        expect(promptForRole(ultra, "system")).toContain("规则 4：能后台的派发优先后台")
+        expect(promptForRole(ultra, "system")).toContain("脱手等结果")
+        expect(promptForRole(ultra, "system")).toContain("不要用 sleep、轮询或忙等阻塞会话")
+        expect(promptForRole(ultra, "system")).not.toContain("orchestrate 默认前台阻塞")
+        expect(promptForRole(ultra, "system")).toContain("按任务形状选择委派方式")
+        expect(promptForRole(ultra, "system")).not.toContain("规则 5：禁止自我豁免")
+        expect(promptForRole(ultra, "system")).not.toContain("never whether a program runs")
         expect(promptForRole(ultra, "system")).toContain("orchestrate-authoring")
 
         const max = await capture("max", "max")
@@ -1246,6 +1257,34 @@ describe("session.llm.stream", () => {
         expect(JSON.stringify(body)).not.toContain('"ultra"')
         expect(promptForRole(body, "system")).not.toContain("Explicit-request-only multi-agent mode is active.")
         expect(promptForRole(body, "system")).not.toContain("Proactive multi-agent delegation")
+
+        // Non-codex, non-ultra child sessions still get the child policy: the
+        // parentSessionID branch runs before the backend/variant gate.
+        const childSessionID = SessionID.make("session-kimi-options-only-child")
+        const childRequest = waitRequest(
+          "/chat/completions",
+          new Response(createChatStream("options-only-child"), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        )
+        await drain({
+          user: {
+            ...user,
+            id: MessageID.make("user-kimi-options-only-child"),
+            sessionID: childSessionID,
+          },
+          sessionID: childSessionID,
+          parentSessionID: SessionID.make("session-kimi-options-only-parent"),
+          model: k3,
+          agent,
+          system: ["runtime-system"],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+        const childBody = (await childRequest).body
+        expect(promptForRole(childBody, "system")).toContain("active for this child session")
+        expect(promptForRole(childBody, "system")).not.toContain("active for this root session")
 
         const plainSessionID = SessionID.make("session-kimi-unadvertised")
         const plainAgent = { ...agent, options: {} }

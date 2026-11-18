@@ -5,11 +5,23 @@ description: Required reference for writing an orchestrate tool program (orche A
 
 # Orchestrate authoring reference
 
-`orchestrate` is the default execution surface for substantive tasks under the ultra policy: one program per task, a single agent when the task is one axis, parallel/pipeline when it has several. It structures work across many subagents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context cannot hold (migrations, audits, broad sweeps). The program is where you encode that structure: what fans out, what verifies, what synthesizes.
+## Which tool
 
-The right move is often **hybrid**: scope the work-list first (your own grep/glob/graph calls, or one cheap `orche.agent` scout), then fan out over it. Decide the program shape before the fan-out step, not before the task.
+Pick by the shape of the work, not by task size:
 
-Only two shapes stay outside a program: a conversational turn that requires no repository work, and a trivial mechanical edit (a typo, a one-line rename, a one-line constant change). `task` is for resuming an existing child session, one blocking dependency the program cannot express, or a single background delegation whose result is not needed in this turn; `chimera_swarm` is only for a preset/`from` audit-evidence fan-out.
+| Shape | Tool |
+| --- | --- |
+| One single-layer one-off research, implementation, review, or verification axis; `task_id` resume; one background/blocking delegation | `task` |
+| Homogeneous single-layer bounded fan-out over one prompt shape (explicit `items` + `prompt_template`, or a preset/`from` evidence source) | `chimera_swarm` |
+| Multi-stage pipeline, heterogeneous parallel work, dynamic control flow, in-program dedupe/synthesis, complex continuous collaboration | `orchestrate` |
+
+`orchestrate` structures work across many subagents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context cannot hold (migrations, audits, broad sweeps). The program is where you encode that structure: what fans out, what verifies, what synthesizes.
+
+A single-agent program is justified only when the program's own capabilities are genuinely needed (for example JSON-schema correction turns or dynamic control flow). Do not wrap an ordinary investigation in a program that only returns its conclusion. `orche.batch` belongs inside a larger program that has staged or synthesis needs; a simple homogeneous batch goes straight to `chimera_swarm`.
+
+Use `orchestrate` only when you can plan the whole program up front — every stage, every worker prompt fully contextualized, control flow and return shape decided — and then hand it off and wait for the result. If you cannot commit to that complete plan before dispatch (the work needs iterative steering, exploratory back-and-forth, or worker prompts you cannot yet specify), do not use `orchestrate`; use `task` / `chimera_swarm` or direct work instead.
+
+The right move is often **hybrid**: scope the work-list first (your own grep/glob/graph calls, or one cheap `task` scout), then fan out over it. Decide the program shape before the fan-out step, not before the task.
 
 Common single-phase programs to chain across turns:
 - **Understand** — parallel readers over subsystems -> structured map
@@ -18,7 +30,7 @@ Common single-phase programs to chain across turns:
 - **Research** — multi-angle sweep -> deep-read -> synthesize
 - **Migrate** — discover sites -> transform each -> verify
 
-**Ultra tier.** The multi-agent orchestration block in the runtime context is a standing opt-in, not a hint: every substantive task gets a program. Do not wait for 5+ agents; a 2-4 agent program is normal. Write the plan line (phases, estimated agent count, what each phase returns) before the first dispatch, then write the program. Solo only on conversational turns or trivial mechanical edits.
+**Ultra tier.** The multi-agent orchestration block in the runtime context is a standing opt-in to delegation, not a mandate to wrap every task in a program. Choose the surface by shape (table above); a 2-4 agent program is normal when the work genuinely has stages or parallel axes. Write the plan line (phases, estimated agent count, what each phase returns) before the first dispatch of a multi-agent task, then execute. Prefer `background: true` for any dispatch that supports it (`task`, `chimera_swarm`, `orchestrate`): the call returns a receipt immediately, and completion notifications wake you to synthesize — never sleep, poll, or busy-wait for a dispatched result.
 
 ## Program shape
 
@@ -62,7 +74,7 @@ The program runs in a dedicated worker process with a scrubbed environment. Stan
 
 The call resolves to an array aligned with the input items: `{ item, index, status, summary, outputFile? }` per item, or `null` for an item whose worker failed. Filter `null` like any other orchestration result.
 
-Use `orche.batch` when the work is a homogeneous audit / obligation / oracle batch that a built-in template already describes. Use hand-written `orche.parallel` / `orche.pipeline` when items need heterogeneous custom prompts, per-item control flow, or in-program synthesis.
+Use `orche.batch` only when a homogeneous batch sits inside a larger program that has staged or synthesis needs (or when the program already exists for other reasons). A standalone homogeneous batch goes straight to `chimera_swarm`. Use hand-written `orche.parallel` / `orche.pipeline` when items need heterogeneous custom prompts, per-item control flow, or in-program synthesis.
 
 ## Failure semantics
 
