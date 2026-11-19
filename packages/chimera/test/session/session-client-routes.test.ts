@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { Effect } from "effect"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Server } from "../../src/server/server"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
+import { testProviderConfig } from "../fixture/prompt-harness"
+import { it } from "../lib/effect"
+import { TestLLMServer } from "../lib/llm-server"
 
 const original = Flag.OPENCODE_EXPERIMENTAL_HTTPAPI
 
@@ -79,5 +83,134 @@ for (const experimental of [false, true]) {
       expect(response.status).toBe(200)
       expect(((await response.json()) as { client?: string }).client).toBeUndefined()
     })
+  })
+}
+
+// Compaction boundary resync: both server backends capture x-chimera-client
+// on the summarize route and adopt it once compaction succeeds.
+for (const experimental of [false, true]) {
+  const label = experimental ? "HttpApi" : "legacy Hono"
+
+  describe(`session compaction client resync (${label})`, () => {
+    it.live("summarize with a webui header resyncs a tui session to webui", () =>
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            tmpdir({ git: true, config: { formatter: false, lsp: false, ...testProviderConfig(llm.url) } }),
+          ),
+          (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()).pipe(Effect.ignore),
+        )
+        yield* Effect.tryPromise(async () => {
+          const call = (path: string, init: RequestInit) => app(experimental).request(path, init)
+          const directory = { "x-chimera-directory": tmp.path }
+          const json = { ...directory, "content-type": "application/json" }
+
+          const created = await call(SessionPaths.create, {
+            method: "POST",
+            headers: { ...json, "x-chimera-client": "tui" },
+            body: "{}",
+          })
+          const sessionID = ((await created.json()) as { id: string }).id
+
+          const prompted = await call(SessionPaths.prompt.replace(":sessionID", sessionID), {
+            method: "POST",
+            headers: json,
+            body: JSON.stringify({
+              agent: "build",
+              model: { providerID: "test", modelID: "test-model" },
+              parts: [{ type: "text", text: "hello" }],
+            }),
+          })
+          await prompted.text()
+
+          const summarized = await call(SessionPaths.summarize.replace(":sessionID", sessionID), {
+            method: "POST",
+            headers: { ...json, "x-chimera-client": "webui" },
+            body: JSON.stringify({ providerID: "test", modelID: "test-model" }),
+          })
+          expect(summarized.status).toBe(200)
+
+          const got = await call(SessionPaths.get.replace(":sessionID", sessionID), { headers: directory })
+          expect(((await got.json()) as { client?: string }).client).toBe("webui")
+        })
+      }).pipe(Effect.provide(TestLLMServer.layer)),
+    )
+
+    it.live("an invalid client header is ignored on the prompt route", () =>
+      Effect.gen(function* () {
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir({ git: true, config: { formatter: false, lsp: false } })),
+          (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()).pipe(Effect.ignore),
+        )
+        yield* Effect.tryPromise(async () => {
+          const call = (path: string, init: RequestInit) => app(experimental).request(path, init)
+          const directory = { "x-chimera-directory": tmp.path }
+          const json = { ...directory, "content-type": "application/json" }
+
+          const created = await call(SessionPaths.create, {
+            method: "POST",
+            headers: { ...json, "x-chimera-client": "tui" },
+            body: "{}",
+          })
+          const sessionID = ((await created.json()) as { id: string }).id
+
+          const accepted = await call(SessionPaths.promptAsync.replace(":sessionID", sessionID), {
+            method: "POST",
+            headers: { ...json, "x-chimera-client": "not-a-client" },
+            body: JSON.stringify({ noReply: true, parts: [{ type: "text", text: "hello" }] }),
+          })
+          expect(accepted.status).toBe(204)
+
+          const got = await call(SessionPaths.get.replace(":sessionID", sessionID), { headers: directory })
+          expect(((await got.json()) as { client?: string }).client).toBe("tui")
+        })
+      }),
+    )
+
+    it.live("an invalid client header is ignored on the summarize route", () =>
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            tmpdir({ git: true, config: { formatter: false, lsp: false, ...testProviderConfig(llm.url) } }),
+          ),
+          (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()).pipe(Effect.ignore),
+        )
+        yield* Effect.tryPromise(async () => {
+          const call = (path: string, init: RequestInit) => app(experimental).request(path, init)
+          const directory = { "x-chimera-directory": tmp.path }
+          const json = { ...directory, "content-type": "application/json" }
+
+          const created = await call(SessionPaths.create, {
+            method: "POST",
+            headers: { ...json, "x-chimera-client": "tui" },
+            body: "{}",
+          })
+          const sessionID = ((await created.json()) as { id: string }).id
+
+          const prompted = await call(SessionPaths.prompt.replace(":sessionID", sessionID), {
+            method: "POST",
+            headers: json,
+            body: JSON.stringify({
+              agent: "build",
+              model: { providerID: "test", modelID: "test-model" },
+              parts: [{ type: "text", text: "hello" }],
+            }),
+          })
+          await prompted.text()
+
+          const summarized = await call(SessionPaths.summarize.replace(":sessionID", sessionID), {
+            method: "POST",
+            headers: { ...json, "x-chimera-client": "not-a-client" },
+            body: JSON.stringify({ providerID: "test", modelID: "test-model" }),
+          })
+          expect(summarized.status).toBe(200)
+
+          const got = await call(SessionPaths.get.replace(":sessionID", sessionID), { headers: directory })
+          expect(((await got.json()) as { client?: string }).client).toBe("tui")
+        })
+      }).pipe(Effect.provide(TestLLMServer.layer)),
+    )
   })
 }

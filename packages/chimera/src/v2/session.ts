@@ -178,6 +178,7 @@ export interface Interface {
     sessionID: SessionID
     prompt: Prompt
     delivery?: Delivery
+    client?: Session.Client
   }) => Effect.Effect<SessionMessage.User, never>
   readonly shell: (input: { id?: EventV2.ID; sessionID: SessionID; command: string }) => Effect.Effect<void, never>
   readonly skill: (input: { id?: EventV2.ID; sessionID: SessionID; skill: string }) => Effect.Effect<void, never>
@@ -190,7 +191,7 @@ export interface Interface {
   }) => Effect.Effect<void, NotFoundError>
   readonly switchAgent: (input: { sessionID: SessionID; agent: string }) => Effect.Effect<void, never>
   readonly switchModel: (input: { sessionID: SessionID; model: Modelv2.Ref }) => Effect.Effect<void, never>
-  readonly compact: (sessionID: SessionID) => Effect.Effect<void, never>
+  readonly compact: (sessionID: SessionID, client?: Session.Client) => Effect.Effect<void, never>
   readonly wait: (sessionID: SessionID) => Effect.Effect<void, never>
 }
 
@@ -375,15 +376,15 @@ export const layer = Layer.effect(
         // "immediate" inline before returning, "deferred" detached. There is
         // no queueing-semantics difference to honor until one exists.
         const user = yield* sessionPrompt
-          .prompt({ sessionID: input.sessionID, noReply: true, parts: toParts(input.prompt) })
+          .prompt({ sessionID: input.sessionID, noReply: true, parts: toParts(input.prompt) }, input.client)
           .pipe(Effect.orDie)
         if (input.delivery === "deferred") {
           yield* sessionPrompt
-            .loop({ sessionID: input.sessionID })
+            .loop({ sessionID: input.sessionID, client: input.client })
             .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach)
           return toUserMessage(user)
         }
-        yield* sessionPrompt.loop({ sessionID: input.sessionID })
+        yield* sessionPrompt.loop({ sessionID: input.sessionID, client: input.client })
         return toUserMessage(user)
       }),
       shell: Effect.fn("V2Session.shell")(function* (input) {
@@ -458,7 +459,7 @@ export const layer = Layer.effect(
           Effect.forkDetach,
         )
       }),
-      compact: Effect.fn("V2Session.compact")(function* (sessionID) {
+      compact: Effect.fn("V2Session.compact")(function* (sessionID, client?: Session.Client) {
         // Mirrors the v1 summarize route: clear any staged revert, stage a
         // manual compaction against the latest user turn's agent/model, then
         // drive the loop that performs the summarization turn.
@@ -483,7 +484,7 @@ export const layer = Layer.effect(
           model,
           auto: false,
         })
-        yield* sessionPrompt.loop({ sessionID })
+        yield* sessionPrompt.loop({ sessionID, client })
       }),
       wait: Effect.fn("V2Session.wait")(function* (sessionID) {
         // Family-aware quiescence (SessionActivity.waitQuiescent): resolves

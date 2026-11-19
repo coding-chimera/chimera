@@ -1,6 +1,8 @@
 import { WorkspaceID } from "@/control-plane/schema"
 import { SessionV2 } from "@/v2/session"
 import { Effect, Schema } from "effect"
+import { Session } from "@/session/session"
+import { HttpServerRequest } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../../api"
 
@@ -84,17 +86,26 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "v2.session
       .handle(
         "prompt",
         Effect.fn(function* (ctx) {
+          // Compaction boundary client capture: an unrecognized header is ignored.
+          const request = yield* HttpServerRequest.HttpServerRequest
+          const headerClient = request.headers["x-chimera-client"] ?? undefined
+          const client = Session.isClient(headerClient) ? headerClient : undefined
           return yield* session.prompt({
             sessionID: ctx.params.sessionID,
             prompt: ctx.payload.prompt,
             delivery: ctx.payload.delivery ?? SessionV2.DefaultDelivery,
+            client,
           })
         }),
       )
       .handle(
         "compact",
         Effect.fn(function* (ctx) {
-          yield* session.compact(ctx.params.sessionID)
+          // Compaction boundary client capture: an unrecognized header is ignored.
+          const request = yield* HttpServerRequest.HttpServerRequest
+          const headerClient = request.headers["x-chimera-client"] ?? undefined
+          const client = Session.isClient(headerClient) ? headerClient : undefined
+          yield* session.compact(ctx.params.sessionID, client)
           return HttpApiSchema.NoContent.make()
         }),
       )

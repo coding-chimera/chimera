@@ -2639,6 +2639,7 @@ export type SyncEventSessionUpdated = {
       }
       title?: string | null
       agent?: string | null
+      client?: "webui" | "tui" | "cli" | "acp" | "desktop" | null
       model?: {
         id: string
         providerID: string

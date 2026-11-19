@@ -314,6 +314,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof SummarizePayload.Type
     }) {
+      // Compaction boundary client capture: an unrecognized header is ignored.
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const headerClient = request.headers["x-chimera-client"] ?? undefined
+      const client = Session.isClient(headerClient) ? headerClient : undefined
       yield* revertSvc.cleanup(yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID)))
       const messages = yield* session.messages({ sessionID: ctx.params.sessionID })
       const defaultAgent = yield* agentSvc.defaultAgent()
@@ -328,7 +332,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         },
         auto: ctx.payload.auto ?? false,
       })
-      yield* promptSvc.loop({ sessionID: ctx.params.sessionID })
+      yield* promptSvc.loop({ sessionID: ctx.params.sessionID, client })
       return true
     })
 
@@ -336,15 +340,21 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof PromptPayload.Type
     }) {
+      // Compaction boundary client capture: an unrecognized header is ignored.
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const headerClient = request.headers["x-chimera-client"] ?? undefined
+      const client = Session.isClient(headerClient) ? headerClient : undefined
       const instance = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
       return HttpServerResponse.stream(
         Stream.fromEffect(
           promptSvc
             .prompt({
-              ...ctx.payload,
-              sessionID: ctx.params.sessionID,
-            })
+                ...ctx.payload,
+                sessionID: ctx.params.sessionID,
+              },
+              client,
+            )
             .pipe(Effect.provideService(InstanceRef, instance), Effect.provideService(WorkspaceRef, workspace)),
         ).pipe(
           Stream.map((message) => JSON.stringify(message)),
@@ -358,7 +368,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof PromptPayload.Type
     }) {
-      yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
+      // Compaction boundary client capture: an unrecognized header is ignored.
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const headerClient = request.headers["x-chimera-client"] ?? undefined
+      const client = Session.isClient(headerClient) ? headerClient : undefined
+      yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID }, client).pipe(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             yield* Effect.logError("prompt_async failed", { sessionID: ctx.params.sessionID, cause })

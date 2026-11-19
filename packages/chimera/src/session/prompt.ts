@@ -368,7 +368,7 @@ const elog = EffectLogger.create({ service: "session.prompt" })
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
-  readonly prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error>
+  readonly prompt: (input: PromptInput, client?: Session.Client) => Effect.Effect<MessageV2.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts>
   readonly command: (input: CommandInput) => Effect.Effect<MessageV2.WithParts, Image.Error>
@@ -2887,9 +2887,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return { info, parts }
     }, Effect.scoped)
 
-    const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn(
-      "SessionPrompt.prompt",
-    )(function* (input: PromptInput) {
+    const prompt: (input: PromptInput, client?: Session.Client) => Effect.Effect<MessageV2.WithParts, Image.Error> =
+      Effect.fn("SessionPrompt.prompt")(function* (input: PromptInput, client?: Session.Client) {
       // Arm the per-instance edit-intent release watcher and process-exit watch
       // (memoized; the subscriptions need instance context, which layer build
       // lacks).
@@ -2915,7 +2914,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       }
 
       if (input.noReply === true) return message
-      return yield* loop({ sessionID: input.sessionID })
+      return yield* loop({ sessionID: input.sessionID, client })
     })
 
     const injectSynthetic = Effect.fn("SessionPrompt.injectSynthetic")(function* (input: InjectSyntheticInput) {
@@ -3031,8 +3030,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       yield* sessions.updateMessage(lastAssistant)
     })
 
-    const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
-      function* (sessionID: SessionID) {
+    const runLoop: (sessionID: SessionID, requestedClient?: Session.Client) => Effect.Effect<MessageV2.WithParts> =
+      Effect.fn("SessionPrompt.run")(function* (sessionID: SessionID, requestedClient?: Session.Client) {
         const ctx = yield* InstanceState.context
         const slog = elog.with({ sessionID })
         let structured: unknown
@@ -3041,6 +3040,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         let cutoffRetries = 0
         let cutoffPending = false
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        // Local client snapshot used for env assembly. It starts at the frozen
+        // session value and is refreshed only when a compaction boundary
+        // resyncs the session client below.
+        let client = session.client
         // (R1 hotspot-4) The instruction set (AGENTS.md/CLAUDE.md/CONTEXT.md findUp
         // scans + file reads + optional remote URL fetches with a 5s timeout each)
         // is the I/O-heaviest component of the per-step system assembly, and it
@@ -3178,6 +3181,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             // cache was resolved from; drop it so the next iteration re-resolves.
             remoteCompactionCache = undefined
             if (result === "stop") break
+            // Compaction is a context boundary: a session created under one
+            // client but compacted from another adopts the driving client here.
+            // Only a successful compaction resyncs, and only when the driving
+            // client is known and actually differs.
+            if (requestedClient !== undefined && requestedClient !== client && sessions.updateClient) {
+              yield* sessions.updateClient({ sessionID, client: requestedClient })
+              client = requestedClient
+            }
             continue
           }
 
@@ -3301,7 +3312,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             const cachedInstructions = instructionsCache?.turnKey === turnKey ? instructionsCache.value : undefined
             const [skills, env, instructions, mcpInstructions] = yield* Effect.all([
               sys.skills(agent),
-              sys.environment(model, session.client),
+              sys.environment(model, client),
               cachedInstructions !== undefined
                 ? Effect.succeed(cachedInstructions)
                 : instruction.system().pipe(
@@ -3511,7 +3522,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
-      return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
+      return yield* state.ensureRunning(
+        input.sessionID,
+        lastAssistant(input.sessionID),
+        runLoop(input.sessionID, input.client),
+      )
     })
 
     const shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.shell")(
@@ -4022,6 +4037,7 @@ export type PromptInput = Schema.Schema.Type<typeof PromptInput>
 
 export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({
   sessionID: SessionID,
+  client: Schema.optional(Session.Client),
 }) {
   static readonly zod = zod(this)
 }

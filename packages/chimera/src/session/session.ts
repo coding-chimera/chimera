@@ -191,8 +191,9 @@ const Model = Schema.Struct({
 })
 
 // Client environment that owns a session's conversation. Frozen at creation
-// (`createNext`), inherited by child sessions and forks, and never patched.
-// Unknown/legacy sessions have no value and keep the terminal wording.
+// (`createNext`), inherited by child sessions and forks, and only resynced at a
+// compaction boundary via `updateClient`. Unknown/legacy sessions have no value
+// and keep the terminal wording.
 export const Client = Schema.Literals(["webui", "tui", "cli", "acp", "desktop"])
 export type Client = Types.DeepMutable<Schema.Schema.Type<typeof Client>>
 export function isClient(value: string | undefined): value is Client {
@@ -403,6 +404,7 @@ const UpdatedInfo = Schema.Struct({
   share: Schema.optional(UpdatedShare),
   title: Schema.optional(Schema.NullOr(Schema.String)),
   agent: Schema.optional(Schema.NullOr(Schema.String)),
+  client: Schema.optional(Client),
   model: Schema.optional(Schema.NullOr(Model)),
   version: Schema.optional(Schema.NullOr(Schema.String)),
   usage: Schema.optional(Schema.NullOr(Usage)),
@@ -609,11 +611,21 @@ export interface Interface {
     model?: Schema.Schema.Type<typeof Model>
     permission?: Permission.Ruleset
     workspaceID?: WorkspaceID
+    client?: Client
   }) => Effect.Effect<Info>
   readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info, NotFound>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
+  /**
+   * Resync the frozen client environment at a compaction boundary: a session
+   * created under one client and compacted from another adopts the driving
+   * client. Writes only `client` (no `time.updated` bump); normal turns never
+   * call this, so the creation-time freeze is otherwise unchanged. Optional on
+   * the interface only because partial Session.Service mocks exist outside this
+   * module; the real layer always provides it.
+   */
+  readonly updateClient?: (input: { sessionID: SessionID; client: Client }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number | null }) => Effect.Effect<void>
   /**
    * Marks or clears the compaction window (time_compacting). Optional on the
@@ -725,7 +737,8 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       const ctx = yield* InstanceState.context
       // Freeze the owning client environment: an explicit value wins, a child
       // session inherits its parent's value, and an unknown/legacy session
-      // stays undefined (terminal wording). Never patched afterwards.
+      // stays undefined (terminal wording). Only a compaction boundary resyncs
+      // it afterwards, via `updateClient`.
       const client =
         input.client ??
         (input.parentID
@@ -1133,6 +1146,17 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       yield* patch(input.sessionID, { title: input.title })
     })
 
+    const updateClient = Effect.fn("Session.updateClient")(function* (input: {
+      sessionID: SessionID
+      client: Client
+    }) {
+      // A client resync is metadata-only: carry the current timestamp through
+      // explicitly so the `time_updated` $onUpdate default does not make the
+      // resync look like activity in the session list.
+      const session = yield* get(input.sessionID).pipe(Effect.orDie)
+      yield* patch(input.sessionID, { client: input.client, time: { updated: session.time.updated } })
+    })
+
     const setArchived = Effect.fn("Session.setArchived")(function* (input: {
       sessionID: SessionID
       time?: number | null
@@ -1280,6 +1304,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       touch,
       get,
       setTitle,
+      updateClient,
       setArchived,
       setCompacting,
       setPermission,

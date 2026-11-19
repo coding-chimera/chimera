@@ -817,6 +817,9 @@ export const SessionRoutes = lazy(() =>
         jsonRequest("SessionRoutes.summarize", c, function* () {
           const sessionID = c.req.valid("param").sessionID
           const body = c.req.valid("json")
+          // Compaction boundary client capture: an unrecognized header is ignored.
+          const headerClient = c.req.header("x-chimera-client")
+          const client = Session.isClient(headerClient) ? headerClient : undefined
           const session = yield* Session.Service
           const revert = yield* SessionRevert.Service
           const compact = yield* SessionCompaction.Service
@@ -844,7 +847,7 @@ export const SessionRoutes = lazy(() =>
             },
             auto: body.auto,
           })
-          yield* prompt.loop({ sessionID })
+          yield* prompt.loop({ sessionID, client })
           return true
         }),
     )
@@ -1127,11 +1130,14 @@ export const SessionRoutes = lazy(() =>
         return stream(c, async (stream) => {
           const sessionID = c.req.valid("param").sessionID
           const body = c.req.valid("json")
+          // Compaction boundary client capture: an unrecognized header is ignored.
+          const headerClient = c.req.header("x-chimera-client")
+          const client = Session.isClient(headerClient) ? headerClient : undefined
           const msg = await runRequest(
             "SessionRoutes.prompt",
             c,
             SessionPrompt.Service.use((svc) =>
-              svc.prompt({ ...body, sessionID } as unknown as SessionPrompt.PromptInput),
+              svc.prompt({ ...body, sessionID } as unknown as SessionPrompt.PromptInput, client),
             ),
           )
           void stream.write(JSON.stringify(msg))
@@ -1162,11 +1168,14 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
+        // Compaction boundary client capture: an unrecognized header is ignored.
+        const headerClient = c.req.header("x-chimera-client")
+        const client = Session.isClient(headerClient) ? headerClient : undefined
         void runRequest(
           "SessionRoutes.prompt_async",
           c,
           SessionPrompt.Service.use((svc) =>
-            svc.prompt({ ...body, sessionID } as unknown as SessionPrompt.PromptInput),
+            svc.prompt({ ...body, sessionID } as unknown as SessionPrompt.PromptInput, client),
           ),
         ).catch((err) => {
           log.error("prompt_async failed", { sessionID, error: err })
