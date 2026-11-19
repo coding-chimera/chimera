@@ -93,4 +93,79 @@ describe('LRUCache', () => {
     expect(cache.has('key9900')).toBe(true);
     expect(cache.has('key0')).toBe(false);
   });
+
+  describe('byte budget', () => {
+    it('evicts by bytes before the entry cap is reached', () => {
+      // 4-entry cap, 10-byte budget: three 4-byte values fit, the fourth evicts
+      // the oldest even though the count cap would still admit it.
+      const cache = new LRUCache<string, string>(4, {
+        maxBytes: 10,
+        sizeOf: (value) => value.length,
+      });
+      cache.set('a', 'aaaa');
+      cache.set('b', 'bbbb');
+      expect(cache.bytes).toBe(8);
+      cache.set('c', 'cccc');
+      expect(cache.bytes).toBe(8);
+      expect(cache.has('a')).toBe(false);
+      expect(cache.has('b')).toBe(true);
+      expect(cache.has('c')).toBe(true);
+    });
+
+    it('keeps both caps independent: the smaller one wins', () => {
+      const cache = new LRUCache<string, string>(2, {
+        maxBytes: 1_000,
+        sizeOf: (value) => value.length,
+      });
+      cache.set('a', 'aaaa');
+      cache.set('b', 'bbbb');
+      cache.set('c', 'cccc');
+      expect(cache.size).toBe(2);
+      expect(cache.has('a')).toBe(false);
+      expect(cache.bytes).toBe(8);
+    });
+
+    it('overwrite replaces the old weight instead of double-counting it', () => {
+      const cache = new LRUCache<string, string>(4, {
+        maxBytes: 100,
+        sizeOf: (value) => value.length,
+      });
+      cache.set('a', 'aaaa');
+      cache.set('b', 'bbbb');
+      cache.set('a', 'aaaaaaaa');
+      expect(cache.bytes).toBe(12);
+      expect(cache.size).toBe(2);
+    });
+
+    it('stores a single over-budget value alone so the cache is never empty', () => {
+      const cache = new LRUCache<string, string>(4, {
+        maxBytes: 3,
+        sizeOf: (value) => value.length,
+      });
+      cache.set('a', 'aaaa');
+      cache.set('b', 'bbbb');
+      expect(cache.size).toBe(1);
+      expect(cache.has('b')).toBe(true);
+      expect(cache.bytes).toBe(4);
+    });
+
+    it('clear() resets the byte accounting', () => {
+      const cache = new LRUCache<string, string>(4, {
+        maxBytes: 100,
+        sizeOf: (value) => value.length,
+      });
+      cache.set('a', 'aaaa');
+      cache.clear();
+      expect(cache.size).toBe(0);
+      expect(cache.bytes).toBe(0);
+    });
+
+    it('defaults to count-only accounting when no sizeOf is given', () => {
+      const cache = new LRUCache<string, string>(2, { maxBytes: 1 });
+      cache.set('a', 'aaaa');
+      cache.set('b', 'bbbb');
+      expect(cache.size).toBe(2);
+      expect(cache.bytes).toBe(0);
+    });
+  });
 });

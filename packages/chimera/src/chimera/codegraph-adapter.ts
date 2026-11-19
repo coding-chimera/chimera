@@ -285,6 +285,20 @@ export class CodeGraphAdapter {
     return this.graph.projectNode(nodeOrId, snapshot)
   }
 
+  /**
+   * Force-retain pre-edit source text for these graph paths on `revision`
+   * until unpinned, bypassing the projection byte budget. The mutation audit
+   * pins its changed files around the tool effect so the before projection
+   * never re-reads source the effect already rewrote on disk.
+   */
+  pinProjectionSources(revision: string, filePaths: readonly string[]) {
+    this.graph.pinProjectionSources(revision, filePaths)
+  }
+
+  unpinProjectionSources(revision: string, filePaths: readonly string[]) {
+    this.graph.unpinProjectionSources(revision, filePaths)
+  }
+
   projectNodeWithMemo(
     nodeOrId: CodeGraphNode | string,
     memo: ProjectionMemo,

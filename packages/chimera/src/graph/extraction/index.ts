@@ -63,6 +63,54 @@ function resolveStoreBatchSize(raw: string | undefined): number {
   return Number.isFinite(n) && n >= 1 ? n : DEFAULT_STORE_BATCH_FILES;
 }
 
+/**
+ * Total source-byte ceiling for the files dispatched-but-not-yet-committed
+ * (the `completed` buffer plus the partial store batch). The count window
+ * below bounds how many files may be in flight, not how much source text they
+ * retain: 64 files x the 1 MiB per-file cap is still 64 MiB of live content.
+ * This budget makes the memory bound explicit. It is a SOFT ceiling — dispatch
+ * waits while the buffer is non-empty and at/over budget, so one file may push
+ * it past the limit by at most MAX_FILE_SIZE. A single over-budget file can
+ * never deadlock the run: an empty buffer always admits the next file.
+ * Overridable with CODEGRAPH_EXTRACTION_SOURCE_BYTES.
+ */
+const DEFAULT_EXTRACTION_SOURCE_BYTE_BUDGET = 64 * 1024 * 1024;
+function resolveExtractionSourceByteBudget(raw: string | undefined): number {
+  const n = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(n) && n >= 1 ? n : DEFAULT_EXTRACTION_SOURCE_BYTE_BUDGET;
+}
+
+/**
+ * Bounded source-byte accounting for the ordered-commit pipeline: `add` when a
+ * file is dispatched, `release` when it leaves memory (committed, or dropped
+ * as a parse failure / non-store result). `pressured()` is the dispatch gate.
+ */
+export class SourceByteBudget {
+  private used = 0;
+
+  constructor(private readonly limit: number) {}
+
+  get bytes(): number {
+    return this.used;
+  }
+
+  get max(): number {
+    return this.limit;
+  }
+
+  pressured(): boolean {
+    return this.used > 0 && this.used >= this.limit;
+  }
+
+  add(bytes: number): void {
+    this.used += Math.max(0, bytes);
+  }
+
+  release(bytes: number): void {
+    this.used = Math.max(0, this.used - Math.max(0, bytes));
+  }
+}
+
 /** One file's extraction result awaiting a batched store commit. */
 interface StoreBatchItem {
   filePath: string;
@@ -1346,13 +1394,16 @@ export class ExtractionOrchestrator {
     // drifting with parse timing. The `completed` buffer holds at most ~window
     // size out-of-order results, so memory stays bounded.
     const storeBatchSize = resolveStoreBatchSize(process.env.CODEGRAPH_STORE_BATCH);
+    const sourceBudget = new SourceByteBudget(
+      resolveExtractionSourceByteBudget(process.env.CODEGRAPH_EXTRACTION_SOURCE_BYTES)
+    );
     // The commit window must admit a full store batch or dispatch would block
     // before the batch can ever fill (deadlock between backpressure and batch).
     const windowSize = Math.max(storeBatchSize, pool ? Math.max(4, pool.size * 2) : 1);
     const inFlight = new Set<Promise<void>>();
     const completed = new Map<number,
-      | { ok: true; filePath: string; content: string; stats: fs.Stats; result: ExtractionResult }
-      | { ok: false; filePath: string; err: unknown }>();
+      | { ok: true; filePath: string; content: string; stats: fs.Stats; bytes: number; result: ExtractionResult }
+      | { ok: false; filePath: string; bytes: number; err: unknown }>();
     let nextSeq = 0;       // file-order sequence assigned at dispatch
     let nextToStore = 0;   // cursor: next sequence consumed into the ordered batch
     let aborted = false;
@@ -1431,6 +1482,10 @@ export class ExtractionOrchestrator {
       const bp = walBackpressure?.();
       if (bp) await bp;
       await this.commitExtractionResultsBatch(items);
+      // The batch's content leaves memory with the commit — release its budget
+      // share only after the transaction succeeded (a failed flush aborts the
+      // run anyway, but the accounting must not drift on success).
+      for (const item of items) sourceBudget.release(item.stats.size);
     };
 
     const flushOrdered = (): Promise<void> => {
@@ -1449,8 +1504,12 @@ export class ExtractionOrchestrator {
                 const language = detectLanguage(item.filePath, item.content);
                 if (tallyResult(item.filePath, item.content, item.result)) {
                   pending.push({ filePath: item.filePath, content: item.content, language, stats: item.stats, result: item.result });
+                } else {
+                  // Not a store unit: its content is dropped here, not committed.
+                  sourceBudget.release(item.bytes);
                 }
               } else {
+                sourceBudget.release(item.bytes);
                 recordParseFailure(item.filePath, item.err);
               }
             }
@@ -1495,12 +1554,14 @@ export class ExtractionOrchestrator {
     // in-order commit.
     const feed = async (filePath: string, content: string, stats: fs.Stats): Promise<void> => {
       const seq = nextSeq++;
+      const bytes = stats.size;
+      sourceBudget.add(bytes);
       const p = (async () => {
         try {
           const result = await parseFile(filePath, content);
-          completed.set(seq, { ok: true, filePath, content, stats, result });
+          completed.set(seq, { ok: true, filePath, content, stats, bytes, result });
         } catch (parseErr) {
-          completed.set(seq, { ok: false, filePath, err: parseErr });
+          completed.set(seq, { ok: false, filePath, bytes, err: parseErr });
         }
         flushOrdered();
       })();
@@ -1519,9 +1580,21 @@ export class ExtractionOrchestrator {
       // watchdog, hard-kill, drain sweep, progress render) is a timer, so the
       // hang ran invisibly at ~100% CPU. Escape on a dead commit stream and
       // let indexAll fail fast with the logged error instead.
-      while (!aborted && !flushError && nextSeq - nextToStore >= windowSize) {
-        if (inFlight.size > 0) await Promise.race(inFlight);
-        else await flushOrdered();
+      while (
+        !aborted &&
+        !flushError &&
+        (nextSeq - nextToStore >= windowSize || sourceBudget.pressured())
+      ) {
+        if (inFlight.size > 0) {
+          await Promise.race(inFlight);
+          continue;
+        }
+        await flushOrdered();
+        // Every dispatched parse has settled and the cursor consumed all it
+        // can, yet the byte buffer is still over budget: those bytes sit in a
+        // PARTIAL store batch that only the end-of-stream drain would flush.
+        // Commit it now (file order is preserved) to release room.
+        if (sourceBudget.pressured()) await drainPending();
       }
     };
 

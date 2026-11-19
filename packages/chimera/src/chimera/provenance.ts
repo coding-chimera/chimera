@@ -1175,20 +1175,31 @@ export function trackToolMutation<A, E, R>(
     // before projection must serve cached pre-edit text, file rows, and
     // override sets instead of re-reading after the effect.
     const beforeNodesByFile = readFileNodes(s.graph, files)
-    projectNodeSelection(s.graph, warmProjectionNodes(beforeNodesByFile), before, memo)
-    const exit = yield* effect.pipe(Effect.exit)
-    // Tool metadata may be a thunk computed inside the effect (edit builds its
-    // diff there); evaluate it once after the effect and reuse it below.
-    const metadata = safeMetadata(input.metadata)
-    const hunksByFile = mutationHunks({ metadata, projectRoot: s.projectRoot, files })
-    // Only hunk-hit nodes are projected. Before nodes are selected by both the
-    // old and new sides: a pure insertion has no old range, and every after-side
-    // counterpart needs its before projection (and relations) captured before
-    // the sync. File/module containers keep file-level facts intact.
-    const beforeInitial = projectionSelection(beforeNodesByFile, files, hunksByFile, ["old", "new"])
-    const beforeKeys = new Set(beforeInitial.map(projectionNodeKey))
-    const beforeNodes = projectNodeSelection(s.graph, beforeInitial, before, memo)
-    const beforeRelations = collectIncidentRelations(s.graph, beforeNodes, before)
+    // Pin the pre-edit source of every changed file for the before revision.
+    // The effect rewrites source on disk and the before projection runs after
+    // it, so the retention budget must not drop these entries: a dropped entry
+    // would be re-read post-edit and silently corrupt the before evidence.
+    // The pin lives only for this before phase (Effect.ensuring releases it
+    // even on interruption/failure); revision eviction is the fallback.
+    const pinnedPaths = files.flatMap((file) => (file.graphPath ? [file.graphPath] : []))
+    s.graph.pinProjectionSources(before.revision, pinnedPaths)
+    const { exit, metadata, hunksByFile, beforeKeys, beforeNodes, beforeRelations } = yield* Effect.gen(function* () {
+      projectNodeSelection(s.graph, warmProjectionNodes(beforeNodesByFile), before, memo)
+      const exit = yield* effect.pipe(Effect.exit)
+      // Tool metadata may be a thunk computed inside the effect (edit builds
+      // its diff there); evaluate it once after the effect and reuse it below.
+      const metadata = safeMetadata(input.metadata)
+      const hunksByFile = mutationHunks({ metadata, projectRoot: s.projectRoot, files })
+      // Only hunk-hit nodes are projected. Before nodes are selected by both the
+      // old and new sides: a pure insertion has no old range, and every after-side
+      // counterpart needs its before projection (and relations) captured before
+      // the sync. File/module containers keep file-level facts intact.
+      const beforeInitial = projectionSelection(beforeNodesByFile, files, hunksByFile, ["old", "new"])
+      const beforeKeys = new Set(beforeInitial.map(projectionNodeKey))
+      const beforeNodes = projectNodeSelection(s.graph, beforeInitial, before, memo)
+      const beforeRelations = collectIncidentRelations(s.graph, beforeNodes, before)
+      return { exit, metadata, hunksByFile, beforeKeys, beforeNodes, beforeRelations }
+    }).pipe(Effect.ensuring(Effect.sync(() => s.graph.unpinProjectionSources(before.revision, pinnedPaths))))
     const sync = yield* Effect.promise(() => s.graph.syncFiles(syncFiles)).pipe(Effect.orDie)
     const after = s.graph.snapshot()
     const afterNodesByFile = readFileNodes(s.graph, files)

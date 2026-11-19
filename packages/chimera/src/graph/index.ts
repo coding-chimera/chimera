@@ -99,6 +99,36 @@ import {
 
 const WATCH_INCREMENTAL_SYNC_FILE_LIMIT = 200;
 
+/**
+ * Per-revision byte budget for retained source text in the audit projection
+ * cache (`ProjectionRevisionCache.sources`). The cache keeps one revision's
+ * file sources so a before/after audit does not re-read post-edit content for
+ * the before projection; retention itself was unbounded, so a mutation touching
+ * many large files could pin hundreds of MB across the four retained revisions.
+ * Entries are retained while they fit the budget; a source that does not fit is
+ * still returned for the CURRENT projection (results are unchanged) but is not
+ * retained, so a later replay of that revision re-reads it. The default is sized
+ * so a normal changed-file set stays retained. Override with
+ * CODEGRAPH_PROJECTION_SOURCE_BYTES.
+ */
+const DEFAULT_PROJECTION_SOURCE_BYTES = 64 * 1024 * 1024;
+function resolveProjectionSourceBudget(raw: string | undefined): number {
+  const n = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(n) && n >= 1 ? n : DEFAULT_PROJECTION_SOURCE_BYTES;
+}
+
+/**
+ * Per-entry retention cap. A single file larger than this is never retained in
+ * the projection cache (the read itself already caps at the extraction source
+ * limit), keeping one pathological file from evicting a whole audit's working
+ * set. Override with CODEGRAPH_PROJECTION_SOURCE_ENTRY_BYTES.
+ */
+const DEFAULT_PROJECTION_SOURCE_ENTRY_BYTES = 1024 * 1024;
+function resolveProjectionSourceEntryBytes(raw: string | undefined): number {
+  const n = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(n) && n >= 1 ? n : DEFAULT_PROJECTION_SOURCE_ENTRY_BYTES;
+}
+
 // Re-export types for consumers
 export * from './types';
 // Storage building blocks for embedded/SDK consumers that drive the graph
@@ -974,16 +1004,20 @@ function openStoreBridge(dbPath: string, readOnly: boolean | undefined): StoreBr
  * every hunk node in a changed file around a sync; caching the file row,
  * semantic role, source text, and the file's override set per revision
  * keeps that at one read per file instead of one per node. The revision key
- * also keeps a before-phase projection from reading post-sync state. Entries
- * are retained for the whole revision (no per-file cap): a mutation can touch
- * more files than any fixed limit, and evicting one mid-audit would re-read
- * post-edit source for a before projection.
+ * also keeps a before-phase projection from reading post-sync state. There is
+ * no per-file COUNT cap (a mutation can touch more files than any fixed
+ * limit), but source retention is bounded by the per-revision byte budget and
+ * per-entry cap described on DEFAULT_PROJECTION_SOURCE_BYTES — an entry over
+ * either is still used for the current projection, just not retained.
  */
 type ProjectionRevisionCache = {
+  revision: string;
   files: Map<string, FileRecord | null>;
   semantics: Map<string, FileSemanticInfo>;
   sources: Map<string, string | undefined>;
   overrides: Map<string, ReadonlySet<string>>;
+  /** Retained characters in `sources` (see DEFAULT_PROJECTION_SOURCE_BYTES). */
+  sourceBytes: number;
 };
 
 /**
@@ -1058,6 +1092,22 @@ export class CodeGraph {
 
   /** Revision -> per-file projection inputs (see ProjectionRevisionCache). */
   private projectionCaches = new Map<string, ProjectionRevisionCache>();
+  private readonly projectionSourceBudget = resolveProjectionSourceBudget(
+    process.env.CODEGRAPH_PROJECTION_SOURCE_BYTES
+  );
+  private readonly projectionSourceEntryBytes = resolveProjectionSourceEntryBytes(
+    process.env.CODEGRAPH_PROJECTION_SOURCE_ENTRY_BYTES
+  );
+  /**
+   * Revision -> file paths whose projection source MUST be retained even when
+   * the byte budget/per-entry cap would reject it. A mutation audit warms the
+   * before revision, rewrites source on disk, and only then projects the full
+   * before selection; without a pin a budget-rejected file would be re-read
+   * post-edit and silently corrupt the before evidence. Pins are transient:
+   * the audit unpins at the end of its before phase, and revision eviction
+   * (LRU or close/reopen) drops any leftover pins so they cannot accumulate.
+   */
+  private projectionSourcePins = new Map<string, Set<string>>();
 
   /** How long a recreated, not-yet-indexed database is treated as a rebuild in progress. */
   private static readonly RECREATE_GRACE_MS = 120_000;
@@ -1120,6 +1170,7 @@ export class CodeGraph {
     this.queries = new QueryBuilder(fresh.getDb(), openStoreBridge(dbPath, false));
     this.wireLayers();
     this.projectionCaches.clear();
+    this.projectionSourcePins.clear();
     this.dbIdentity = this.statDbIdentity();
     this.pendingFullReconcile = true;
     // Releasing the dead handle also frees the leaked db/-wal/-shm fds that
@@ -1452,6 +1503,7 @@ export class CodeGraph {
       // store handle it borrows the commit-generation counter from (R1
       // pairing: ctx → store → connection, reverse of construction).
       this.projectionCaches.clear();
+      this.projectionSourcePins.clear();
       this.resolver.dispose();
       // (R1 A10) Finalize prepared statements deterministically before the
       // connection close instead of relying on db-close/GC cleanup.
@@ -2499,6 +2551,28 @@ export class CodeGraph {
     });
   }
 
+  /**
+   * Force-retain projection source text for `filePaths` (graph paths) on
+   * `revision`, bypassing the byte budget and per-entry cap until unpinned.
+   * Mutation audits pin their changed files before warming the before
+   * revision so the before projection cannot re-read post-edit source.
+   * Callers must unpin when the phase ends; revision eviction also drops pins.
+   */
+  pinProjectionSources(revision: string, filePaths: readonly string[]): void {
+    if (filePaths.length === 0) return;
+    const pinned = this.projectionSourcePins.get(revision) ?? new Set<string>();
+    for (const filePath of filePaths) pinned.add(filePath);
+    this.projectionSourcePins.set(revision, pinned);
+  }
+
+  /** Release a {@link pinProjectionSources} pin set for this revision. */
+  unpinProjectionSources(revision: string, filePaths: readonly string[]): void {
+    const pinned = this.projectionSourcePins.get(revision);
+    if (!pinned) return;
+    for (const filePath of filePaths) pinned.delete(filePath);
+    if (pinned.size === 0) this.projectionSourcePins.delete(revision);
+  }
+
   private projectionCache(revision: string): ProjectionRevisionCache {
     const cached = this.projectionCaches.get(revision);
     if (cached) {
@@ -2507,10 +2581,12 @@ export class CodeGraph {
       return cached;
     }
     const created: ProjectionRevisionCache = {
+      revision,
       files: new Map(),
       semantics: new Map(),
       sources: new Map(),
       overrides: new Map(),
+      sourceBytes: 0,
     };
     this.projectionCaches.set(revision, created);
     // Before/after audit phases span two revisions; four keeps concurrent
@@ -2519,6 +2595,8 @@ export class CodeGraph {
       const oldest = this.projectionCaches.keys().next().value;
       if (oldest === undefined) break;
       this.projectionCaches.delete(oldest);
+      // Bounded pin lifecycle: a revision leaving the cache drops its pins.
+      this.projectionSourcePins.delete(oldest);
     }
     return created;
   }
@@ -2542,7 +2620,28 @@ export class CodeGraph {
   private projectionSource(filePath: string, cache: ProjectionRevisionCache): string | undefined {
     if (cache.sources.has(filePath)) return cache.sources.get(filePath);
     const source = this.batchReadSources([filePath]).get(filePath);
-    cache.sources.set(filePath, source);
+    // An unreadable source is free to retain and caches like a read miss, so a
+    // repeated projection does not re-read it.
+    if (source === undefined) {
+      cache.sources.set(filePath, undefined);
+      return undefined;
+    }
+    // Retention is budgeted; the CURRENT projection always sees the live
+    // source. An entry over the per-file cap or over the remaining budget is
+    // returned without being retained (no result change, bounded memory).
+    // Pinned files (mutation-audit warm set) bypass both caps: their before
+    // projection runs after the edit rewrote source on disk, so dropping the
+    // retained pre-edit text would silently read post-edit content.
+    const bytes = source.length;
+    const pinned = this.projectionSourcePins.get(cache.revision)?.has(filePath) === true;
+    if (
+      pinned ||
+      (bytes <= this.projectionSourceEntryBytes &&
+        cache.sourceBytes + bytes <= this.projectionSourceBudget)
+    ) {
+      cache.sources.set(filePath, source);
+      cache.sourceBytes += bytes;
+    }
     return source;
   }
 

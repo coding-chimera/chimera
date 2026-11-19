@@ -67,6 +67,26 @@ function resolveCacheLimit(): number {
   return DEFAULT_CACHE_LIMIT;
 }
 
+/**
+ * Byte ceiling for the two content caches (`fileCache` full text and
+ * `linesCache` split line arrays). The entry-count limit alone still admitted
+ * 1000 x 1 MiB of retained source per cache (2 GiB across the pair in the
+ * worst case), so the byte budget is the real memory bound: 32 MiB per cache
+ * keeps the hot working set without letting a large-codebase resolution run
+ * pin hundreds of MB of source text. Each cached line array is weighted by
+ * its characters (newlines are not counted), so the pair stays ~64 MiB worst
+ * case by default. Override with `CODEGRAPH_RESOLVER_CACHE_BYTES` (a single
+ * integer applied to each content cache).
+ */
+const DEFAULT_CONTENT_CACHE_BYTES = 32 * 1024 * 1024;
+function resolveContentCacheBytes(): number {
+  const raw = process.env.CODEGRAPH_RESOLVER_CACHE_BYTES;
+  if (!raw) return DEFAULT_CONTENT_CACHE_BYTES;
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return DEFAULT_CONTENT_CACHE_BYTES;
+}
+
 // Re-export types
 export * from './types';
 
@@ -209,11 +229,19 @@ export class ReferenceResolver {
 
     const limit = resolveCacheLimit();
     // The content cache is heavier (full file text), so we give it a
-    // smaller budget than the metadata caches.
+    // smaller budget than the metadata caches — in BOTH dimensions: a smaller
+    // entry count and a shared byte ceiling for the retained source text.
     const contentLimit = Math.max(64, Math.floor(limit / 5));
+    const contentBytes = resolveContentCacheBytes();
     this.nodeCache = new LRUCache(limit);
-    this.fileCache = new LRUCache(contentLimit);
-    this.linesCache = new LRUCache(contentLimit);
+    this.fileCache = new LRUCache(contentLimit, {
+      maxBytes: contentBytes,
+      sizeOf: (content) => content?.length ?? 0,
+    });
+    this.linesCache = new LRUCache(contentLimit, {
+      maxBytes: contentBytes,
+      sizeOf: (lines) => lines.reduce((sum, line) => sum + line.length, 0),
+    });
     this.importMappingCache = new LRUCache(limit);
     this.reExportCache = new LRUCache(limit);
     this.nameCache = new LRUCache(limit);
