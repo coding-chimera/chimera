@@ -13,6 +13,7 @@ type StoreKind = "audit" | "predesign" | "oracle"
 
 type ResultMetadata = {
   truncated?: boolean
+  outputTruncated?: boolean
   outputPath?: string
 }
 
@@ -67,10 +68,12 @@ function projectRoot(metadata: Record<string, unknown>) {
 
 function resultMetadata(metadata: Record<string, unknown>): ResultMetadata | undefined {
   const truncated = typeof metadata.truncated === "boolean" ? metadata.truncated : undefined
+  const outputTruncated = typeof metadata.outputTruncated === "boolean" ? metadata.outputTruncated : undefined
   const outputPath = typeof metadata.outputPath === "string" ? metadata.outputPath : undefined
-  if (truncated === undefined && outputPath === undefined) return undefined
+  if (truncated === undefined && outputTruncated === undefined && outputPath === undefined) return undefined
   return {
     ...(truncated !== undefined ? { truncated } : {}),
+    ...(outputTruncated !== undefined ? { outputTruncated } : {}),
     ...(outputPath !== undefined ? { outputPath } : {}),
   }
 }
@@ -135,8 +138,9 @@ export function isPersisted(input: unknown): input is Persisted {
   if (!Array.isArray(value.refs) || value.refs.length === 0 || !value.refs.every((ref) => typeof ref === "string" && Boolean(refID(ref, kind)))) return false
   if (value.artifact !== undefined && typeof value.artifact !== "string") return false
   if (value.result !== undefined) {
-    if (!isRecord(value.result) || Object.keys(value.result).some((key) => key !== "truncated" && key !== "outputPath")) return false
+    if (!isRecord(value.result) || Object.keys(value.result).some((key) => key !== "truncated" && key !== "outputTruncated" && key !== "outputPath")) return false
     if (value.result.truncated !== undefined && typeof value.result.truncated !== "boolean") return false
+    if (value.result.outputTruncated !== undefined && typeof value.result.outputTruncated !== "boolean") return false
     if (value.result.outputPath !== undefined && typeof value.result.outputPath !== "string") return false
   }
   if (typeof value.metadataHash !== "string" || !/^[a-f0-9]{64}$/.test(value.metadataHash)) return false

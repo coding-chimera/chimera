@@ -211,4 +211,70 @@ describe("file.ripgrep", () => {
       else process.env["RIPGREP_CONFIG_PATH"] = prev
     }
   })
+
+  test("searchEvents streams matches without a partial marker for a clean search", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "a.ts"), "const needle = 1\nconst other = 2\n")
+        await Bun.write(path.join(dir, "b.ts"), "const needle = 3\n")
+      },
+    })
+
+    const events = await run(
+      Ripgrep.Service.use((rg) =>
+        rg.searchEvents({ cwd: tmp.path, pattern: "needle" }).pipe(
+          Stream.runCollect,
+          Effect.map((chunk) => [...chunk]),
+        ),
+      ),
+    )
+    const matches = events.flatMap((event) => (event.type === "match" ? [event.item] : []))
+    expect(matches).toHaveLength(2)
+    expect(matches.map((item) => item.path.text).sort()).toEqual(["a.ts", "b.ts"])
+    expect(events.some((event) => event.type === "partial")).toBe(false)
+  })
+
+  test("searchEvents fails on a nonexistent directory", async () => {
+    const exit = await Ripgrep.Service.use((rg) =>
+      rg.searchEvents({ cwd: "/tmp/nonexistent-dir-12345", pattern: "needle" }).pipe(Stream.runCollect),
+    ).pipe(Effect.provide(Ripgrep.defaultLayer), Effect.runPromiseExit)
+    expect(exit._tag).toBe("Failure")
+  })
+
+  test("searchEvents fails when the signal is already aborted", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "match.ts"), "const needle = 1\n")
+      },
+    })
+    const controller = new AbortController()
+    controller.abort()
+
+    const exit = await Ripgrep.Service.use((rg) =>
+      rg.searchEvents({ cwd: tmp.path, pattern: "needle", signal: controller.signal }).pipe(Stream.runCollect),
+    ).pipe(Effect.provide(Ripgrep.defaultLayer), Effect.runPromiseExit)
+    expect(exit._tag).toBe("Failure")
+  })
+
+  test("search and searchEvents report the same items", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "match.ts"), "const needle = 1\nconst needle = 2\n")
+      },
+    })
+
+    const [collected, streamed] = await run(
+      Ripgrep.Service.use((rg) =>
+        Effect.all([
+          rg.search({ cwd: tmp.path, pattern: "needle" }),
+          rg.searchEvents({ cwd: tmp.path, pattern: "needle" }).pipe(
+            Stream.runCollect,
+            Effect.map((chunk) => [...chunk]),
+          ),
+        ]),
+      ),
+    )
+    expect(streamed.flatMap((event) => (event.type === "match" ? [event.item] : []))).toEqual(collected.items)
+    expect(collected.partial).toBe(streamed.some((event) => event.type === "partial"))
+  })
 })

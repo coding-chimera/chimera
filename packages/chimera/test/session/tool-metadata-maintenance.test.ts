@@ -166,6 +166,71 @@ describe("tool metadata maintenance", () => {
     }
   })
 
+  test("round-trips truncated output metadata through the persisted envelope", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    const metadata = {
+      ...(await auditMetadata(tmp.path, "truncated")),
+      truncated: true,
+      outputTruncated: true,
+      outputPath: path.join(tmp.path, "truncated-output.txt"),
+    }
+
+    const persisted = SessionToolMetadata.forPersistence("chimera_audit_recent", metadata)
+
+    expect(SessionToolMetadata.isPersisted(persisted)).toBe(true)
+    expect(persisted).toHaveProperty("$chimeraStoreRef.result", {
+      truncated: true,
+      outputTruncated: true,
+      outputPath: metadata.outputPath,
+    })
+    const recovered = await SessionToolMetadata.recover(persisted)
+    expect(recovered.status).toBe("recovered")
+    if (recovered.status === "recovered") expect(recovered.metadata).toEqual(metadata)
+  })
+
+  test("keeps legacy envelopes without outputTruncated recoverable", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    const metadata = {
+      ...(await auditMetadata(tmp.path, "legacy-truncated")),
+      truncated: true,
+      outputPath: path.join(tmp.path, "legacy-output.txt"),
+    }
+
+    const persisted = SessionToolMetadata.forPersistence("chimera_audit_recent", metadata)
+
+    expect(SessionToolMetadata.isPersisted(persisted)).toBe(true)
+    expect(persisted).toHaveProperty("$chimeraStoreRef.result", {
+      truncated: true,
+      outputPath: metadata.outputPath,
+    })
+    const recovered = await SessionToolMetadata.recover(persisted)
+    expect(recovered.status).toBe("recovered")
+    if (recovered.status === "recovered") expect(recovered.metadata).toEqual(metadata)
+  })
+
+  test("round-trips a self-limited result that has no outputPath", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    const metadata = {
+      ...(await auditMetadata(tmp.path, "self-limited")),
+      truncated: false,
+      outputTruncated: true,
+    }
+
+    const persisted = SessionToolMetadata.forPersistence("chimera_audit_recent", metadata)
+
+    expect(SessionToolMetadata.isPersisted(persisted)).toBe(true)
+    expect(persisted).toHaveProperty("$chimeraStoreRef.result", {
+      truncated: false,
+      outputTruncated: true,
+    })
+    const recovered = await SessionToolMetadata.recover(persisted)
+    expect(recovered.status).toBe("recovered")
+    if (recovered.status === "recovered") expect(recovered.metadata).toEqual(metadata)
+  })
+
   test("rejects malformed successes and missing called-event context before any apply rewrite", async () => {
     await using tmp = await tmpdir()
     DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
@@ -222,7 +287,7 @@ describe("tool metadata maintenance", () => {
       `)
 
       await expect(ToolMetadataMaintenance.run({ dbPath, apply: true, sessionID: "session-cas" })).rejects.toThrow(
-        "metadata row changed during maintenance: part:part-cas-1",
+        "metadata row changed during maintenance: part:part-cas-2",
       )
       expect(data(db, "part", "part-cas-1")).toBe(firstPart)
       expect(data(db, "part", "part-cas-2")).toBe(secondPart)

@@ -20,6 +20,12 @@ const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
+// Absolute in-memory guard for image/PDF attachments, checked against stat.size
+// before any full read so raw bytes and their base64 copy are never resident at
+// once. This is deliberately independent of the configurable image base64 budget:
+// images above that budget but below this guard are still read and handed to the
+// existing auto-resize/normalize path, which shrinks them before encoding.
+const MAX_ATTACHMENT_MEMORY_BYTES = 32 * 1024 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
 const READ_CHUNK_SIZE = 64 * 1024
@@ -661,6 +667,9 @@ export const ReadTool = Tool.define(
           metadata: {
             preview: sliced.slice(0, 20).join("\n"),
             truncated,
+            // The listing is already paged by `limit`/`offset`; skip the unified
+            // output limit so its paging notice is not cut in half.
+            outputTruncated: true,
             loaded: [] as string[],
           },
         }
@@ -673,6 +682,15 @@ export const ReadTool = Tool.define(
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
 
       if (isImage || isPdfAttachment(mime)) {
+        // Only the absolute memory guard gates the pre-read here. The configurable
+        // image base64 budget is enforced later by the normalize/auto-resize path,
+        // so a large image that can still be shrunk must not fail at this stage.
+        const size = Number(stat.size)
+        if (size > MAX_ATTACHMENT_MEMORY_BYTES) {
+          return yield* Effect.fail(
+            new Error(`Attachment too large: ${filepath} is ${size} bytes (max ${MAX_ATTACHMENT_MEMORY_BYTES} bytes)`),
+          )
+        }
         const bytes = yield* fs.readFile(filepath)
         const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
         return {
@@ -775,6 +793,10 @@ export const ReadTool = Tool.define(
         metadata: {
           preview: visible.slice(0, 20).map((item) => item.content).join("\n"),
           truncated,
+          // Text reads already bound themselves to a byte/line window; the unified
+          // output limit would truncate the `Output capped`/`offset` notice a second
+          // time. `truncated` above still reports the result-set window.
+          outputTruncated: true,
           loaded: loaded.map((item) => item.filepath),
           readRefs: newSpans.map(readSpanMetadata),
           hashline: {

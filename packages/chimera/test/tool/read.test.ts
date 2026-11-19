@@ -608,6 +608,11 @@ describe("tool.read truncation", () => {
       expect(result.metadata.truncated).toBe(true)
       expect(result.output).toContain("Output capped at")
       expect(result.output).toContain("Use offset=")
+      // read.ts caps its own window and declares it, so the unified output limit
+      // must not truncate the cap/offset notice a second time.
+      expect(result.metadata.outputTruncated).toBe(true)
+      expect(result.metadata.outputPath).toBeUndefined()
+      expect(result.output).not.toContain("The tool call succeeded but the output was truncated")
     }),
   )
 
@@ -634,6 +639,9 @@ describe("tool.read truncation", () => {
 
       const result = yield* run({ filePath: path.join(test.directory, "small.txt") })
       expect(result.metadata.truncated).toBe(false)
+      // `outputTruncated` declares that read.ts already applied its own output
+      // window; it is not a truncation flag for this small read.
+      expect(result.metadata.outputTruncated).toBe(true)
       expect(result.output).toContain("End of file")
     }),
   )
@@ -775,6 +783,43 @@ describe("tool.read truncation", () => {
       expect(result.attachments?.[0]).not.toHaveProperty("id")
       expect(result.attachments?.[0]).not.toHaveProperty("sessionID")
       expect(result.attachments?.[0]).not.toHaveProperty("messageID")
+    }),
+  )
+
+  it.live("attaches images above the base64 budget but below the memory guard", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const bytes = Buffer.alloc(6 * 1024 * 1024)
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+      yield* put(path.join(dir, "big.png"), bytes)
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "big.png") })
+      expect(result.attachments?.length).toBe(1)
+      expect(result.attachments?.[0].mime).toBe("image/png")
+    }),
+  )
+
+  it.live("rejects image attachments beyond the memory guard before reading the file", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const bytes = Buffer.alloc(32 * 1024 * 1024 + 1)
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+      yield* put(path.join(dir, "huge.png"), bytes)
+
+      const err = yield* fail(dir, { filePath: path.join(dir, "huge.png") })
+      expect(err.message).toContain("Attachment too large")
+    }),
+  )
+
+  it.live("rejects PDF attachments beyond the memory guard before reading the file", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const bytes = Buffer.alloc(32 * 1024 * 1024 + 1)
+      Buffer.from("%PDF-1.4\n").copy(bytes)
+      yield* put(path.join(dir, "huge.pdf"), bytes)
+
+      const err = yield* fail(dir, { filePath: path.join(dir, "huge.pdf") })
+      expect(err.message).toContain("Attachment too large")
     }),
   )
 

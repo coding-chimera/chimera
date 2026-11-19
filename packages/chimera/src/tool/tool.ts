@@ -107,18 +107,23 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
             ),
           )
           const result = yield* execute(decoded as Schema.Schema.Type<Parameters>, ctx)
-          if (result.metadata.truncated !== undefined) {
-            return result
-          }
+          // A tool may cap its own output (read text windows, shell tails) and mark
+          // `outputTruncated` to say so. Only that explicit signal skips the unified
+          // limit: `truncated` alone describes the tool's result set (e.g. grep match
+          // counts) and must still be subject to output limiting.
+          if (result.metadata.outputTruncated === true) return result
           const agent = yield* agents.get(ctx.agent)
-          const truncated = yield* truncate.output(result.output, {}, agent)
+          const output = yield* truncate.output(result.output, {}, agent)
           return {
             ...result,
-            output: truncated.content,
+            output: output.content,
             metadata: {
               ...result.metadata,
-              truncated: truncated.truncated,
-              ...(truncated.truncated && { outputPath: truncated.outputPath }),
+              truncated: result.metadata.truncated ?? output.truncated,
+              ...(output.truncated && {
+                outputTruncated: true,
+                outputPath: output.outputPath,
+              }),
             },
           }
         }).pipe(Effect.orDie, Effect.withSpan("Tool.execute", { attributes: attrs }))

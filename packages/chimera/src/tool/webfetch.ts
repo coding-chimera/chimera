@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import * as Tool from "./tool"
 import TurndownService from "turndown"
@@ -6,9 +6,28 @@ import DESCRIPTION from "./webfetch.txt"
 import { isImageAttachment } from "@/util/media"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
+const RESPONSE_TOO_LARGE = "Response too large (exceeds 5MB limit)"
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
 const MAX_TIMEOUT = 120 * 1000 // 2 minutes
-
+// Reads the body incrementally and fails as soon as the cumulative size exceeds
+// MAX_RESPONSE_SIZE. Failing inside the stream run interrupts consumption, which
+// runs the response stream finalizer and cancels the underlying body reader, so
+// oversized bodies are never fully buffered.
+function readBody(stream: Stream.Stream<Uint8Array, unknown>) {
+  return Effect.gen(function* () {
+    const chunks: Uint8Array[] = []
+    let bytes = 0
+    yield* stream.pipe(
+      Stream.runForEach((chunk) => {
+        bytes += chunk.byteLength
+        if (bytes > MAX_RESPONSE_SIZE) return Effect.fail(new Error(RESPONSE_TOO_LARGE))
+        chunks.push(chunk)
+        return Effect.void
+      }),
+    )
+    return Buffer.concat(chunks, bytes)
+  })
+}
 export const Parameters = Schema.Struct({
   url: Schema.String.annotate({ description: "The URL to fetch content from" }),
   format: Schema.Literals(["text", "markdown", "html"])
@@ -93,20 +112,17 @@ export const WebFetchTool = Tool.define(
           // Check content length
           const contentLength = response.headers["content-length"]
           if (contentLength && parseInt(contentLength) > MAX_RESPONSE_SIZE) {
-            throw new Error("Response too large (exceeds 5MB limit)")
+            throw new Error(RESPONSE_TOO_LARGE)
           }
 
-          const arrayBuffer = yield* response.arrayBuffer
-          if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {
-            throw new Error("Response too large (exceeds 5MB limit)")
-          }
+          const bytes = yield* readBody(response.stream)
 
           const contentType = response.headers["content-type"] || ""
           const mime = contentType.split(";")[0]?.trim().toLowerCase() || ""
           const title = `${params.url} (${contentType})`
 
           if (isImageAttachment(mime)) {
-            const base64Content = Buffer.from(arrayBuffer).toString("base64")
+            const base64Content = Buffer.from(bytes).toString("base64")
             return {
               title,
               output: "Image fetched successfully",
@@ -121,7 +137,7 @@ export const WebFetchTool = Tool.define(
             }
           }
 
-          const content = new TextDecoder().decode(arrayBuffer)
+          const content = new TextDecoder().decode(bytes)
 
           // Handle content based on requested format and actual content type
           switch (params.format) {

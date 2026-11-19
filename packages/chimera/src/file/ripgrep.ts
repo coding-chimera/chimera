@@ -109,6 +109,12 @@ export interface SearchResult {
   partial: boolean
 }
 
+/**
+ * Incremental search events. `partial` is emitted once at the end of the
+ * stream when ripgrep reported inaccessible paths (exit code 2).
+ */
+export type SearchEvent = { readonly type: "match"; readonly item: Item } | { readonly type: "partial" }
+
 export interface FilesInput {
   cwd: string
   glob?: string[]
@@ -137,6 +143,11 @@ export interface TreeInput {
 export interface Interface {
   readonly files: (input: FilesInput) => Stream.Stream<string, PlatformError | Error>
   readonly tree: (input: TreeInput) => Effect.Effect<string, PlatformError | Error>
+  /**
+   * Streams matches as they are produced instead of materializing the full
+   * result set. Prefer this for broad patterns; `search` collects it.
+   */
+  readonly searchEvents: (input: SearchInput) => Stream.Stream<SearchEvent, PlatformError | Error>
   readonly search: (input: SearchInput) => Effect.Effect<SearchResult, PlatformError | Error>
 }
 
@@ -190,7 +201,7 @@ function parse(line: string) {
   return decodeResult(line).pipe(Effect.mapError((cause) => new Error("invalid ripgrep output", { cause })))
 }
 
-function fail(queue: Queue.Queue<string, PlatformError | Error | Cause.Done>, err: PlatformError | Error) {
+function fail<A>(queue: Queue.Queue<A, PlatformError | Error | Cause.Done>, err: PlatformError | Error) {
   Queue.failCauseUnsafe(queue, Cause.fail(err))
 }
 
@@ -376,42 +387,51 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | ChildPro
           }),
         )
 
-      const search: Interface["search"] = Effect.fn("Ripgrep.search")(function* (input: SearchInput) {
-        yield* check(input.cwd)
-
-        const program = Effect.scoped(
-          Effect.gen(function* () {
-            const handle = yield* spawner.spawn(yield* command(input.cwd, searchArgs(input)))
-
-            const [items, stderr, code] = yield* Effect.all(
-              [
-                Stream.decodeText(handle.stdout).pipe(
-                  Stream.splitLines,
-                  Stream.filter((line) => line.length > 0),
-                  Stream.mapEffect(parse),
-                  Stream.filter((item): item is Match => item.type === "match"),
-                  Stream.map((item) => row(item.data)),
-                  Stream.runCollect,
-                  Effect.map((chunk) => [...chunk]),
+      const searchEvents: Interface["searchEvents"] = (input) =>
+        Stream.callback<SearchEvent, PlatformError | Error>((queue) =>
+            Effect.gen(function* () {
+              yield* Effect.forkScoped(
+                Effect.gen(function* () {
+                  yield* check(input.cwd)
+                  const handle = yield* spawner.spawn(yield* command(input.cwd, searchArgs(input)))
+                  const stderr = yield* Stream.mkString(Stream.decodeText(handle.stderr)).pipe(Effect.forkScoped)
+                  const stdout = yield* Stream.decodeText(handle.stdout).pipe(
+                    Stream.splitLines,
+                    Stream.filter((line) => line.length > 0),
+                    Stream.mapEffect(parse),
+                    Stream.filter((item): item is Match => item.type === "match"),
+                    // Bounded queue plus suspending offers give the consumer backpressure, so a
+                    // broad search cannot buffer every match in memory.
+                    Stream.runForEach((item) => Queue.offer(queue, { type: "match", item: row(item.data) })),
+                    Effect.forkScoped,
+                  )
+                  const code = yield* raceAbort(handle.exitCode, input.signal)
+                  yield* Fiber.join(stdout)
+                  const message = yield* Fiber.join(stderr)
+                  if (code !== 0 && code !== 1 && code !== 2) {
+                    fail(queue, error(message, code))
+                    return
+                  }
+                  if (code === 2) yield* Queue.offer(queue, { type: "partial" })
+                  Queue.endUnsafe(queue)
+                }).pipe(
+                  Effect.catch((err) =>
+                    Effect.sync(() => {
+                      fail(queue, err)
+                    }),
+                  ),
                 ),
-                Stream.mkString(Stream.decodeText(handle.stderr)),
-                handle.exitCode,
-              ],
-              { concurrency: "unbounded" },
-            )
-
-            if (code !== 0 && code !== 1 && code !== 2) {
-              return yield* Effect.fail(error(stderr, code))
-            }
-
-            return {
-              items: code === 1 ? [] : items,
-              partial: code === 2,
-            }
-          }),
+              )
+            }),
+          { bufferSize: 16 },
         )
 
-        return yield* raceAbort(program, input.signal)
+      const search: Interface["search"] = Effect.fn("Ripgrep.search")(function* (input: SearchInput) {
+        const events = Array.from(yield* searchEvents(input).pipe(Stream.runCollect))
+        return {
+          items: events.flatMap((event) => (event.type === "match" ? [event.item] : [])),
+          partial: events.some((event) => event.type === "partial"),
+        }
       })
 
       const tree: Interface["tree"] = Effect.fn("Ripgrep.tree")(function* (input: TreeInput) {
@@ -470,7 +490,7 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | ChildPro
         return lines.join("\n")
       })
 
-      return Service.of({ files, tree, search })
+      return Service.of({ files, tree, search, searchEvents })
     }),
   )
 

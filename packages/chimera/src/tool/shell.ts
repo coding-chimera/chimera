@@ -675,6 +675,10 @@ export const ShellTool = Tool.define(
           exit: code,
           description: input.description,
           truncated: cut,
+          // The tail above is already bounded to the configured output limits and
+          // the full text is saved to `outputPath`; skipping the unified limit keeps
+          // the `Full output saved to` header from being truncated a second time.
+          ...(cut && { outputTruncated: true }),
           ...(cut && file ? { outputPath: file } : {}),
         },
         output,
