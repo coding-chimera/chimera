@@ -444,6 +444,138 @@ describe("orchestrate host bindings", () => {
     }),
   )
 
+  it.instance("passes an exact model and variant through dispatch and authorizes the model", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const sessions = yield* Session.Service
+      const orche = yield* bind(parent, { maxTotalAgents: 4, maxConcurrent: 2 })
+
+      const result = yield* callAgent(orche.bindings.orche.agent, {
+        prompt: "variant task",
+        model: "test/test-model",
+        variant: "max",
+      })
+
+      expect(result).toEqual({ text: "done" })
+      const children = yield* sessions.children(parent.chat.id)
+      expect(children).toHaveLength(1)
+      expect(children[0].model?.providerID).toBe(ref.providerID)
+      expect(children[0].model?.id).toBe(ref.modelID)
+      expect(children[0].model?.variant).toBe("max")
+      expect(promptInputs).toHaveLength(1)
+      expect(promptInputs[0].variant).toBe("max")
+      expect(asks.map((ask) => ask.permission)).toEqual(["task", "task_model"])
+      expect(asks[1].patterns).toEqual(["test/test-model"])
+      expect(asks[1].always).toEqual(["test/test-model"])
+      expect(asks[1].metadata.model).toBe("test/test-model")
+      yield* orche.disposeAll()
+    }),
+  )
+
+  it.instance("rejects ultra and unadvertised variants before creating a child", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const sessions = yield* Session.Service
+      const orche = yield* bind(parent, { maxTotalAgents: 4, maxConcurrent: 2 })
+      const failureMessage = (args: JsonValue) =>
+        callAgent(orche.bindings.orche.agent, args).pipe(
+          Effect.exit,
+          Effect.map((exit) => {
+            if (Exit.isSuccess(exit)) return "resolved"
+            return exit.cause.reasons.map((reason) => String(reason)).join(" ")
+          }),
+        )
+
+      const ultra = yield* failureMessage({
+        prompt: "ultra task",
+        model: "test/test-model",
+        variant: "ultra",
+      })
+      expect(ultra).toContain("Subagents do not support the ultra variant")
+
+      const unadvertised = yield* failureMessage({
+        prompt: "unadvertised variant",
+        model: "test/test-model",
+        variant: "high",
+      })
+      expect(unadvertised).toContain('does not advertise variant "high"')
+
+      const workloadVariant = yield* failureMessage({
+        prompt: "workload-only variant",
+        workload: "scout",
+        variant: "max",
+      })
+      expect(workloadVariant).toContain("variant requires model or model_identity")
+
+      const children = yield* sessions.children(parent.chat.id)
+      expect(children).toHaveLength(0)
+      // Ultra and workload-only variants are rejected pre-flight (no ask); the
+      // unadvertised variant still reaches dispatch model validation after its ask.
+      expect(asks.map((ask) => ask.permission)).toEqual(["task"])
+      yield* orche.disposeAll()
+    }),
+  )
+
+  it.instance("selects a model and variant for a workload-only dispatch", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const sessions = yield* Session.Service
+      const orche = yield* bind(parent, { maxTotalAgents: 4, maxConcurrent: 2 })
+
+      const result = yield* callAgent(orche.bindings.orche.agent, {
+        prompt: "scout task",
+        workload: "scout",
+      })
+
+      expect(result).toEqual({ text: "done" })
+      const children = yield* sessions.children(parent.chat.id)
+      expect(children).toHaveLength(1)
+      expect(children[0].model?.providerID).toBe(ref.providerID)
+      expect(children[0].model?.id).toBe(ref.modelID)
+      expect(promptInputs).toHaveLength(1)
+      expect(promptInputs[0].variant).toBe("max")
+      expect(asks.map((ask) => ask.permission)).toEqual(["task", "task_model"])
+      expect(asks[0].metadata.workload).toBe("scout")
+      expect(asks[1].patterns).toEqual(["test/test-model"])
+      yield* orche.disposeAll()
+    }),
+  )
+
+  it.instance("keeps an explicit model when a workload is present and rejects unknown workloads", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const sessions = yield* Session.Service
+      const orche = yield* bind(parent, { maxTotalAgents: 4, maxConcurrent: 2 })
+
+      const result = yield* callAgent(orche.bindings.orche.agent, {
+        prompt: "builder task",
+        model: "test/test-model",
+        workload: "builder",
+      })
+
+      expect(result).toEqual({ text: "done" })
+      const children = yield* sessions.children(parent.chat.id)
+      expect(children).toHaveLength(1)
+      expect(children[0].model?.providerID).toBe(ref.providerID)
+      expect(children[0].model?.id).toBe(ref.modelID)
+      expect(asks.map((ask) => ask.permission)).toEqual(["task", "task_model"])
+      expect(asks[0].metadata.workload).toBe("builder")
+      expect(asks[1].patterns).toEqual(["test/test-model"])
+
+      const exit = yield* callAgent(orche.bindings.orche.agent, {
+        prompt: "unknown workload",
+        workload: "no-such-workload",
+      }).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const message = exit.cause.reasons.map((reason) => String(reason)).join(" ")
+        expect(message).toContain("Unknown workload")
+      }
+      expect(yield* sessions.children(parent.chat.id)).toHaveLength(1)
+      yield* orche.disposeAll()
+    }),
+  )
+
   it.instance(
     "denies orchestrate on children created at the depth cap",
     () =>

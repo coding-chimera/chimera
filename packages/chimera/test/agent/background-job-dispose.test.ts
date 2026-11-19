@@ -57,6 +57,35 @@ describe("agent.background-job dispose matrix (F4-P2)", () => {
     }),
   )
 
+  it.live("instance dispose leaves a terminal, delivered durable row for a running job", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* provideInstance(dir)(
+        Effect.gen(function* () {
+          const jobs = yield* BackgroundJob.Service
+          yield* jobs.start({
+            id: "ses_dispose_delivery",
+            ownerSessionId: "ses_dispose_delivery_owner",
+            run: Effect.never,
+          })
+          expect((yield* jobs.get("ses_dispose_delivery"))?.delivery).toBe("pending")
+        }),
+      )
+      yield* Effect.promise(() => disposeAllInstances())
+      // The finalizer runs while the job fiber is still running, so its durable row
+      // must already be terminal AND delivered: a delivery-pending row would be
+      // served as pending after a reload and park the owner a second time.
+      yield* provideInstance(dir)(
+        Effect.gen(function* () {
+          const jobs = yield* BackgroundJob.Service
+          const recovered = yield* jobs.get("ses_dispose_delivery")
+          expect(recovered?.status).toBe("cancelled")
+          expect(recovered?.delivery).toBe("delivered")
+        }),
+      )
+    }),
+  )
+
   // The runner's work fiber is forked into the startShell CALLER's scope, and the
   // fixture's disposeAllInstances() only disposes instances loaded through the
   // shared test instance store — so the shell is started under an explicit

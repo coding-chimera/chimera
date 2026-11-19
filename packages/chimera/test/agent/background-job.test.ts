@@ -94,6 +94,10 @@ describe("agent.background-job", () => {
         expect(cancelled?.status).toBe("cancelled")
         expect(cancelled?.completed_at).toBeDefined()
         expect(cancelled?.error).toBeUndefined()
+        // Cancellation is a terminal delivery: no notify fiber will ever inject
+        // this job's result, so the entry must not stay delivery-pending.
+        expect(cancelled?.delivery).toBe("delivered")
+        expect(cancelled?.generation).toBe(1)
         const second = yield* jobs.cancel("ses_cx")
         expect(second?.status).toBe("cancelled")
       }),
@@ -343,20 +347,89 @@ describe("agent.background-job", () => {
   )
 
   it.instance(
-    "a cancelled job still blocks quiescence until markDelivered",
+    "cancel terminates delivery so quiescence resolves without a delivery mark",
     () =>
       Effect.gen(function* () {
         const jobs = yield* BackgroundJob.Service
         const gate = yield* Deferred.make<void>()
         yield* jobs.start({ id: "q_cx", ownerSessionId: "owner", run: blocked(gate) })
         yield* Effect.sleep(20)
-        yield* jobs.cancel("q_cx")
         const waiter = yield* jobs.waitOwnerQuiescent("owner").pipe(Effect.forkScoped)
         const blockedProbe = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("60 millis"))
-        expect(blockedProbe._tag).toBe("None")
-        yield* jobs.markDelivered("q_cx")
+        expect(blockedProbe._tag).toBe("None") // still running
+        yield* jobs.cancel("q_cx")
+        const cancelled = yield* jobs.get("q_cx")
+        expect(cancelled?.status).toBe("cancelled")
+        expect(cancelled?.delivery).toBe("delivered")
+        // Cancellation itself releases the owner's park; no markDelivered needed.
         const settled = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
         expect(settled?._tag).toBe("Some")
+        // markDelivered stays a safe no-op for an already-delivered entry.
+        yield* jobs.markDelivered("q_cx")
+        expect((yield* jobs.get("q_cx"))?.delivery).toBe("delivered")
+      }),
+  )
+
+  it.instance(
+    "an interrupt-only settle terminates delivery without a notify mark",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        yield* jobs.start({ id: "q_int", ownerSessionId: "int-owner", run: Effect.interrupt })
+        const settled = yield* jobs.wait({ id: "q_int" })
+        expect(settled.info?.status).toBe("cancelled")
+        // No notify fiber exists for an interrupted run: the settle path itself
+        // terminates delivery, so the owner's park cannot hang on it.
+        expect(settled.info?.delivery).toBe("delivered")
+        expect((yield* jobs.get("q_int"))?.delivery).toBe("delivered")
+        const quiet = yield* jobs
+          .waitOwnerQuiescent("int-owner")
+          .pipe(Effect.as("ok"), Effect.timeoutOption("100 millis"))
+        expect(quiet._tag).toBe("Some")
+        // A normal completion still waits for the consumer's delivery mark.
+        yield* jobs.start({ id: "q_norm", ownerSessionId: "int-owner", run: Effect.succeed("done") })
+        yield* jobs.wait({ id: "q_norm" })
+        expect((yield* jobs.get("q_norm"))?.delivery).toBe("pending")
+      }),
+  )
+
+  it.instance(
+    "cancel terminates delivery before returning and never exposes an intermediate entry to a parked owner",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        const order: string[] = []
+        const seen: string[] = []
+        yield* jobs.start({
+          id: "q_order",
+          ownerSessionId: "order-owner",
+          onInterrupt: Effect.sync(() => {
+            order.push("interrupt")
+          }),
+          run: blocked(gate),
+        })
+        yield* Effect.sleep(20)
+        const waiter = yield* jobs.waitOwnerQuiescent("order-owner").pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              const current = yield* jobs.get("q_order")
+              seen.push(`${current?.status}:${current?.delivery}`)
+            }),
+          ),
+          Effect.forkScoped,
+        )
+        yield* Effect.sleep(20)
+        yield* jobs.cancel("q_order")
+        // The interrupt hook has completed by the time cancel returns: deliveryDone
+        // is only succeeded after onInterrupt and Scope.close, so a delivery waiter
+        // can never be woken into the pre-cancel window.
+        expect(order).toEqual(["interrupt"])
+        const settled = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("100 millis"))
+        expect(settled._tag).toBe("Some")
+        // Whatever signal woke the parked owner, it only ever sees the terminal
+        // cancelled+delivered entry, never a half-applied cancel.
+        expect(seen).toEqual(["cancelled:delivered"])
       }),
   )
 

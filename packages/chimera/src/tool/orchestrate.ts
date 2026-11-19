@@ -1,9 +1,12 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./orchestrate.txt"
 import { SubagentDispatch, type SubagentPromptOps } from "../agent/subagent-dispatch"
+import { Agent } from "../agent/agent"
+import { SubagentModelSchedulingRuntime } from "../agent/subagent-model-scheduling-runtime"
 import { BackgroundJob } from "../agent/background-job"
 import { Config } from "@/config/config"
 import { ConfigDelegation } from "@/config/delegation"
+import { Session } from "@/session/session"
 import {
   makeOrchestrationBindingsFrom,
   type OrchestrationAgentEvent,
@@ -175,6 +178,9 @@ export const OrchestrateTool = Tool.define(
   id,
   Effect.gen(function* () {
     const dispatch = yield* SubagentDispatch
+    const sessions = yield* Session.Service
+    const agents = yield* Agent.Service
+    const scheduling = yield* SubagentModelSchedulingRuntime.make
     const config = yield* Config.Service
     const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
     const scope = yield* Scope.Scope
@@ -287,10 +293,13 @@ export const OrchestrateTool = Tool.define(
         ...(onSettled ? { onSettled } : {}),
       }
 
-      const bindings = yield* makeOrchestrationBindingsFrom(dispatch, promptOps, host, {
-        maxTotalAgents,
-        maxConcurrent: MAX_CONCURRENT,
-      })
+      const bindings = yield* makeOrchestrationBindingsFrom(
+        dispatch,
+        promptOps,
+        host,
+        { maxTotalAgents, maxConcurrent: MAX_CONCURRENT },
+        { sessions, agents, scheduling },
+      )
 
       const program = Effect.gen(function* () {
         const runtime = yield* OrchestrateRuntime.Service

@@ -53,7 +53,7 @@ describe("builtin skills", () => {
     ),
   )
 
-  it.live("pins the task/swarm/orchestrate selection guidance", () =>
+  it.live("pins the task/swarm/orchestrate selection guidance and the agent selector API", () =>
     provideTmpdirInstance(
       () =>
         Effect.gen(function* () {
@@ -66,6 +66,7 @@ describe("builtin skills", () => {
           expect(content).toContain("plan the whole program up front")
           expect(content).toContain("Prefer `background: true` for any dispatch that supports it")
           expect(content).toContain("never sleep, poll, or busy-wait")
+          expect(content).toContain("orche.agent({ prompt, agent?, model?, variant?, workload?, label?, schema? })")
           expect(content).not.toContain("default execution surface")
           expect(content).not.toContain("Only two shapes")
         }),

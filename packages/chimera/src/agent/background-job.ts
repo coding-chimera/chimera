@@ -21,8 +21,9 @@ export type Info = {
    * is session-agnostic. */
   ownerSessionId?: string
   /** Delivery state machine: "pending" from start until the notify fiber finishes
-   * injecting the result (markDelivered). Quiescence requires no running job and no
-   * delivery-pending job for an owner. */
+   * injecting the result (markDelivered), or until cancel() finalizes it directly
+   * (a cancelled job has no result to inject). Quiescence requires no running job
+   * and no delivery-pending job for an owner. */
   delivery: "pending" | "delivered"
   /** Run generation on this id: incremented each time start() creates a new run.
    * start()'s running short-circuit returns the existing snapshot with the generation
@@ -69,6 +70,8 @@ type State = {
 type FinishResult = {
   info?: Info
   done?: Deferred.Deferred<Info>
+  /** Succeeded when cancellation terminates delivery (see cancel). */
+  deliveryDone?: Deferred.Deferred<void>
   scope?: Scope.Closeable
   onInterrupt?: Effect.Effect<void>
 }
@@ -320,9 +323,16 @@ function pruneDurableJobs(directory: string) {
  * Because waitOwnerQuiescent treats delivery-pending jobs as active, EVERY
  * inline consumer of a job result must mark delivery: a missed mark would park
  * the owner (or the run-mode drain) forever on a result that was already
- * consumed. Cancellation is the exception: a cancelled job's notify fiber (if
- * any) still runs its ensuring-markDelivered, and interrupt paths tear down the
- * owner's turn alongside the job, so no park survives to observe the gap.
+ * consumed. Cancellation is the exception, and it is terminated on EVERY
+ * terminal path: cancel() finalizes delivery itself, settle() does the same when
+ * an interrupt-only exit classifies the run as cancelled, and the instance
+ * dispose finalizer does it for the jobs it tears down. Each path succeeds
+ * deliveryDone and sets delivery: "delivered" because no notify fiber will inject
+ * a cancelled result — a delivery-pending cancelled entry would otherwise park
+ * the owner forever, leave a durable pending row, and stay out of the settled
+ * eviction set. Any notify fiber still alive from an earlier generation is
+ * generation-gated, so its later ensuring-markDelivered is a no-op. A normal
+ * completion keeps delivery pending until the consumer or notify fiber marks it.
  */
 export const make = (config: Config.Interface, directory?: string, options?: { settledLiveMax?: number }) =>
   Effect.gen(function* () {
@@ -392,6 +402,12 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
         : Cause.hasInterruptsOnly(exit.cause)
           ? "cancelled"
           : "error"
+      // Cancellation terminates delivery on this path too: an interrupt-only fiber
+      // (scope close, external interrupt) has no notify fiber that will ever inject
+      // its result, so leaving delivery pending would park the owner forever and
+      // keep the entry out of the settled eviction set. A normal completion keeps
+      // delivery pending — the consumer/notify fiber marks it after injection.
+      const cancelled = status === "cancelled"
       const next = {
         ...job,
         onInterrupt: undefined,
@@ -403,6 +419,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
           ...job.info,
           status,
           completed_at,
+          ...(cancelled ? { delivery: "delivered" as const } : {}),
           ...(output ? { output: output.text } : {}),
           ...(Exit.isFailure(exit) ? { error: errorText(Cause.squash(exit.cause)) } : {}),
         },
@@ -411,8 +428,9 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
         {
           info: snapshot(next),
           done: job.done,
+          deliveryDone: cancelled ? job.deliveryDone : undefined,
           scope: job.scope,
-          onInterrupt: status === "cancelled" ? job.onInterrupt : undefined,
+          onInterrupt: cancelled ? job.onInterrupt : undefined,
         },
         new Map(jobs).set(id, next),
       ]
@@ -425,6 +443,10 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     if (result.scope) {
       yield* Scope.close(result.scope, Exit.void).pipe(Effect.forkIn(state.scope, { startImmediately: true }))
     }
+    // Delivery termination wakes only after the interrupt hook and scope close, so
+    // an owner woken by deliveryDone never observes the pre-cancel intermediate state.
+    if (result.deliveryDone) yield* Deferred.succeed(result.deliveryDone, undefined).pipe(Effect.ignore)
+    if (result.info) yield* evictSettled()
     return result.info
   })
 
@@ -711,10 +733,20 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
           ...job.info,
           status: "cancelled" as const,
           completed_at,
+          // Cancellation terminates delivery: nothing will ever inject this
+          // job's result, so a delivery-pending entry would park
+          // waitOwnerQuiescent forever and stay out of the settled eviction set.
+          delivery: "delivered" as const,
         },
       }
       return [
-        { info: snapshot(next), done: job.done, scope: job.scope, onInterrupt: job.onInterrupt },
+        {
+          info: snapshot(next),
+          done: job.done,
+          deliveryDone: job.deliveryDone,
+          scope: job.scope,
+          onInterrupt: job.onInterrupt,
+        },
         new Map(jobs).set(id, next),
       ]
     })
@@ -722,8 +754,13 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
       yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
       yield* persist(result.info)
     }
+    // Wake delivery waiters only after the interrupt hook and job-scope close have
+    // run: a parent aggregation woken by deliveryDone must never observe the
+    // pre-cancel intermediate state (entry terminal, child session still live).
     if (result.onInterrupt) yield* result.onInterrupt.pipe(Effect.ignore)
     if (result.scope) yield* Scope.close(result.scope, Exit.void)
+    if (result.deliveryDone) yield* Deferred.succeed(result.deliveryDone, undefined).pipe(Effect.ignore)
+    if (result.info) yield* evictSettled()
     return result.info
   })
 
@@ -736,9 +773,11 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
   // on a child job scope is unsafe and ambient services may already be unavailable.
   // Instead it performs the same
   // terminal transition with finalizer-safe primitives only: status cancelled,
-  // done Deferred succeeded, onInterrupt hook fired (phase 2 binds it to the bound
-  // child session's cancel), so no orphaned subagent run keeps burning tokens or
-  // permits after the owning instance is disposed.
+  // done Deferred succeeded, delivery terminated (delivery: "delivered" +
+  // deliveryDone, so no durable pending row and no second park survives), and the
+  // onInterrupt hook fired (phase 2 binds it to the bound child session's cancel),
+  // so no orphaned subagent run keeps burning tokens or permits after the owning
+  // instance is disposed.
   yield* Effect.addFinalizer(
     Effect.fnUntraced(function* () {
       const now = Date.now()
@@ -760,10 +799,23 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
                   onPromote: undefined,
                   fiber: undefined,
                   pending: 0,
-                  info: { ...current.info, status: "cancelled" as const, completed_at: now },
+                  info: {
+                    ...current.info,
+                    status: "cancelled" as const,
+                    completed_at: now,
+                    // Same invariant as cancel()/settle(): a cancelled job has no
+                    // result to inject, so it must not stay delivery-pending (that
+                    // would leave a durable pending row and a second park).
+                    delivery: "delivered" as const,
+                  },
                 }
                 return [
-                  { info: snapshot(next), done: current.done, onInterrupt: current.onInterrupt },
+                  {
+                    info: snapshot(next),
+                    done: current.done,
+                    deliveryDone: current.deliveryDone,
+                    onInterrupt: current.onInterrupt,
+                  },
                   new Map(jobs).set(current.info.id, next),
                 ]
               },
@@ -773,6 +825,9 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
               yield* persist(result.info)
             }
             if (result.onInterrupt) yield* result.onInterrupt.pipe(Effect.ignoreCause({ log: true }))
+            // Delivery terminates only after the interrupt hook ran; a cancelled job
+            // has no injection to wait for.
+            if (result.deliveryDone) yield* Deferred.succeed(result.deliveryDone, undefined).pipe(Effect.ignore)
           }),
         { discard: true },
       )

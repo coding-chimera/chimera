@@ -166,7 +166,7 @@ export const layer = Layer.effect(
           },
           general: {
             name: "general",
-            description: `General-purpose agent for researching complex questions and executing multi-step tasks, including delegating further within delegation depth and concurrency limits. Use this agent to execute multiple units of work in parallel.`,
+            description: `General-purpose agent for researching complex questions and executing multi-step tasks. It executes its dispatch prompt directly and delegates further only when that prompt explicitly requires it and delegation depth and permissions allow; use this agent to execute multiple units of work in parallel.`,
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({

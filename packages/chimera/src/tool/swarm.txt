@@ -1,8 +1,8 @@
 Run a bounded set of subagent tasks from one worker prompt shape.
 
-Hard boundary: use `chimera_swarm` only when the fan-out consumes a preset or `from` audit-evidence source. Every other multi-agent task runs through one `orchestrate` program.
+Use `chimera_swarm` for a homogeneous single-layer bounded fan-out: every worker renders from one prompt shape, either an explicit `items` + `prompt_template` pair or a preset/`from` audit-evidence source. Reach for `task` for one single delegation, and `orchestrate` when the work needs multiple stages, heterogeneous prompts/agents, dynamic control flow, or in-program synthesis.
 
-Use this tool only when the active multi-agent policy permits delegation and you already have at least two genuinely independent, non-overlapping work items that benefit from parallel execution. For foreground programmatic fan-out, use `orchestrate` instead. Common Chimera v1 flow is audit evidence -> preset/template + items -> bounded subagent fan-out:
+Use this tool only when the active multi-agent policy permits delegation and you already have at least two genuinely independent, non-overlapping work items that share one prompt shape and benefit from parallel execution. For a multi-stage or heterogeneous fan-out that needs program control flow, use `orchestrate` instead. Common Chimera v1 flow is audit evidence -> preset/template + items -> bounded subagent fan-out:
 1. Gather evidence with `chimera_audit_recent`, `chimera_audit`, `chimera_obligations_list`, or `chimera_oracle_recent`.
 2. Call this tool with either explicit `items` or a supported `from` source.
 3. Prefer a `preset` for common Chimera work; use raw `prompt_template` only when the preset shape does not fit.

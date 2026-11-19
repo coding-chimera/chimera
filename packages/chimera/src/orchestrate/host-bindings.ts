@@ -1,7 +1,7 @@
 /**
  * Host-side bindings for the orchestrate worker's `orche` namespace.
  *
- * The worker program calls `orche.agent({ prompt, agent?, model?, label?, schema? })`
+ * The worker program calls `orche.agent({ prompt, agent?, model?, variant?, workload?, label?, schema? })`
  * or `orche.batch({ items?, from?, preset?, concurrency?, scope? })`. Each call
  * becomes a real subagent dispatch through `SubagentDispatch`, so the
  * child gets its own session/UI/persistence and its intermediate work never
@@ -22,11 +22,16 @@ import { BatchPreset, type ExplicitItem, type PresetName } from "@/agent/batch-p
 import { BatchSource, type SourceName } from "@/agent/batch-source"
 import { WorkerBatch } from "@/agent/worker-batch"
 import { SubagentDispatch, type SubagentPromptOps } from "@/agent/subagent-dispatch"
+import { validateSubagentModelSelection } from "@/agent/subagent-execution"
+import { SubagentModelSchedulingRuntime } from "@/agent/subagent-model-scheduling-runtime"
+import { Agent } from "@/agent/agent"
 import { EffectBridge } from "@/effect/bridge"
+import { Permission } from "@/permission"
+import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { Truncate } from "@/tool/truncate"
 import type { MessageID, SessionID } from "@/contracts/session-ids"
-import type { MessageV2 } from "@/session/message-v2"
+import { MessageV2 } from "@/session/message-v2"
 import { Cause, Effect, Exit, Option, Schema } from "effect"
 import { checkLosslessJson, type JsonValue } from "@/orchestrate/protocol"
 import type { Bindings } from "@/orchestrate/runtime"
@@ -81,7 +86,7 @@ export interface OrchestrationBindings {
   readonly disposeAll: () => Effect.Effect<void>
 }
 
-const AGENT_FIELDS = new Set(["prompt", "agent", "model", "label", "schema"])
+const AGENT_FIELDS = new Set(["prompt", "agent", "model", "variant", "workload", "label", "schema"])
 const DEFAULT_AGENT = "general"
 const DEFAULT_MAX_CONCURRENT = 16
 const BATCH_FIELDS = new Set(["items", "from", "preset", "concurrency", "scope"])
@@ -96,6 +101,8 @@ type AgentRequest = {
   readonly prompt: string
   readonly agent: string
   readonly model?: string
+  readonly variant?: string
+  readonly workload?: string
   readonly label: string
   readonly schema?: Record<string, JsonValue>
 }
@@ -124,6 +131,12 @@ function parseAgentRequest(args: JsonValue): AgentRequest {
   if (args.model !== undefined && typeof args.model !== "string") {
     throw new Error("orche.agent.model must be a string")
   }
+  if (args.variant !== undefined && (typeof args.variant !== "string" || args.variant.length === 0)) {
+    throw new Error("orche.agent.variant must be a non-empty string")
+  }
+  if (args.workload !== undefined && (typeof args.workload !== "string" || args.workload.length === 0)) {
+    throw new Error("orche.agent.workload must be a non-empty string")
+  }
   if (args.label !== undefined && typeof args.label !== "string") {
     throw new Error("orche.agent.label must be a string")
   }
@@ -140,6 +153,8 @@ function parseAgentRequest(args: JsonValue): AgentRequest {
     prompt,
     agent,
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.variant === undefined ? {} : { variant: args.variant }),
+    ...(args.workload === undefined ? {} : { workload: args.workload }),
     label: args.label && args.label.length > 0 ? args.label : deriveLabel(prompt),
     ...(args.schema === undefined ? {} : { schema: args.schema as Record<string, JsonValue> }),
   }
@@ -284,15 +299,27 @@ type Waiter = {
 
 type SubagentDispatchService = Effect.Success<typeof SubagentDispatch>
 
+/**
+ * Services resolved by the caller's initialization Effect (see `tool/task.ts`):
+ * `execute` must not yield services, so they are captured once and passed in.
+ */
+export interface OrchestrationServices {
+  readonly sessions: Session.Interface
+  readonly agents: Agent.Interface
+  readonly scheduling: Effect.Success<typeof SubagentModelSchedulingRuntime.make>
+}
+
 export const makeOrchestrationBindingsFrom = (
   dispatch: SubagentDispatchService,
   promptOps: SubagentPromptOps,
   host: OrchestrationHost,
   limits: OrchestrationLimits,
+  services: OrchestrationServices,
 ) =>
   Effect.gen(function* () {
     const bridge = yield* EffectBridge.make()
     const truncate = Option.getOrUndefined(yield* Effect.serviceOption(Truncate.Service))
+    const { sessions, agents, scheduling } = services
 
     const maxTotalAgents = Number.isFinite(limits.maxTotalAgents)
       ? Math.max(1, Math.trunc(limits.maxTotalAgents))
@@ -353,6 +380,28 @@ export const makeOrchestrationBindingsFrom = (
     const settle = (event: OrchestrationSettledEvent) =>
       host.onSettled ? bridge.promise(host.onSettled(event).pipe(Effect.ignore)) : Promise.resolve()
 
+    /**
+     * Workload routing mirrors `task`/`chimera_swarm`: a workload without an
+     * explicit model selects one (and its variant) through the scheduling
+     * runtime; with an explicit model it only validates/attributes the workload.
+     */
+    const resolveWorkload = (workload: string, select: boolean) =>
+      Effect.gen(function* () {
+        const parent = yield* sessions.get(host.parentSessionID)
+        const message = yield* Effect.sync(() =>
+          MessageV2.get({ sessionID: host.parentSessionID, messageID: host.parentMessageID }),
+        )
+        if (message.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
+        const caller = yield* agents.get(message.info.agent)
+        if (!caller) return yield* Effect.fail(new Error(`Unknown parent agent: ${message.info.agent}`))
+        return yield* scheduling.resolveWorkload({
+          workload,
+          select,
+          ruleset: Permission.merge(caller.permission, parent.permission ?? []),
+          projectID: parent.projectID,
+        })
+      })
+
     const agent = async (args: JsonValue): Promise<JsonValue> => {
       const request = parseAgentRequest(args)
       total += 1
@@ -373,8 +422,29 @@ export const makeOrchestrationBindingsFrom = (
         const acquired = await acquire(controller.signal)
         if (!acquired) return null
         try {
+          // Same pre-flight selector check as `task`/`chimera_swarm`: reject an
+          // unsupported variant before any workload routing, approval, or child.
           await bridge.promise(
-            host.ask({ permission: "task", patterns: [request.agent], always: ["*"], metadata: {} }),
+            validateSubagentModelSelection({ model: request.model, variant: request.variant }),
+          )
+          const workload =
+            request.workload === undefined
+              ? undefined
+              : await bridge.promise(resolveWorkload(request.workload, request.model === undefined))
+          const model = workload?.selection?.model ?? request.model
+          const variant = workload?.selection?.variant ?? request.variant
+
+          await bridge.promise(
+            host.ask({
+              permission: "task",
+              patterns: [request.agent],
+              always: ["*"],
+              metadata: {
+                description: request.label,
+                subagent_type: request.agent,
+                ...(request.workload === undefined ? {} : { workload: request.workload }),
+              },
+            }),
           )
           if (controller.signal.aborted) return null
 
@@ -384,7 +454,16 @@ export const makeOrchestrationBindingsFrom = (
               parentSessionID: host.parentSessionID,
               parentMessageID: host.parentMessageID,
               subagentType: request.agent,
-              ...(request.model === undefined ? {} : { model: request.model }),
+              ...(model === undefined ? {} : { model }),
+              ...(variant === undefined ? {} : { variant }),
+              ...(request.workload === undefined ? {} : { workload: request.workload }),
+              authorizeModel: ({ providerID, modelID }) =>
+                host.ask({
+                  permission: "task_model",
+                  patterns: [`${providerID}/${modelID}`],
+                  always: [`${providerID}/${modelID}`],
+                  metadata: { description: request.label, model: `${providerID}/${modelID}` },
+                }),
             }),
           )
           const materialized = await bridge.promise(dispatch.materialize(prepared, request.label))
@@ -548,6 +627,9 @@ export const makeOrchestrationBindingsFrom = (
 export const makeOrchestrationBindings = (host: OrchestrationHost, limits: OrchestrationLimits) =>
   Effect.gen(function* () {
     const dispatch = yield* SubagentDispatch
+    const sessions = yield* Session.Service
+    const agents = yield* Agent.Service
+    const scheduling = yield* SubagentModelSchedulingRuntime.make
     const prompt = host.promptOps
       ? undefined
       : Option.getOrUndefined(yield* Effect.serviceOption(SessionPrompt.Service))
@@ -561,7 +643,11 @@ export const makeOrchestrationBindings = (host: OrchestrationHost, limits: Orche
             injectSynthetic: (input) => prompt.injectSynthetic(input),
           }
         : yield* Effect.die(new Error("orchestrate requires host.promptOps or SessionPrompt")))
-    return yield* makeOrchestrationBindingsFrom(dispatch, promptOps, host, limits)
+    return yield* makeOrchestrationBindingsFrom(dispatch, promptOps, host, limits, {
+      sessions,
+      agents,
+      scheduling,
+    })
   })
 
 export * as OrchestrateHostBindings from "./host-bindings"

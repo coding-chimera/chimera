@@ -127,6 +127,37 @@ describe("agent.background-job durable registry (R1 A3)", () => {
     }),
   )
 
+  it.instance("cancelled entries terminate delivery and are evictable past settledLiveMax", () =>
+    Effect.gen(function* () {
+      const config = yield* Config.Service
+      const jobs = yield* BackgroundJob.make(config, undefined, { settledLiveMax: 1 })
+      const gate = yield* Deferred.make<void>()
+      yield* jobs.start({
+        id: "ses_a3_cancel_0",
+        ownerSessionId: "ses_a3_cancel_owner",
+        run: Deferred.await(gate).pipe(Effect.as("a")),
+      })
+      yield* jobs.cancel("ses_a3_cancel_0")
+      // Cancellation finalizes delivery without any markDelivered call, so the
+      // entry leaves the delivery-pending set that both waitOwnerQuiescent and
+      // the eviction filter key off.
+      expect((yield* jobs.get("ses_a3_cancel_0"))?.delivery).toBe("delivered")
+      const quiet = yield* jobs
+        .waitOwnerQuiescent("ses_a3_cancel_owner")
+        .pipe(Effect.as("ok"), Effect.timeoutOption("200 millis"))
+      expect(quiet._tag).toBe("Some")
+
+      yield* jobs.start({ id: "ses_a3_cancel_1", ownerSessionId: "ses_a3_cancel_owner", run: Effect.succeed("b") })
+      yield* jobs.wait({ id: "ses_a3_cancel_1" })
+      yield* jobs.markDelivered("ses_a3_cancel_1")
+
+      // Two settled+delivered entries exceed settledLiveMax=1: the cancelled one
+      // (oldest completed_at) is evicted, the newer completed one survives.
+      expect(yield* jobs.get("ses_a3_cancel_0")).toBeUndefined()
+      expect((yield* jobs.get("ses_a3_cancel_1"))?.status).toBe("completed")
+    }),
+  )
+
   it.instance("evicted entries keep serving from the durable table", () =>
     Effect.gen(function* () {
       const config = yield* Config.Service
