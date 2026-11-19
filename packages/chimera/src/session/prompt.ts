@@ -3063,12 +3063,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           yield* status.set(sessionID, { type: "busy" })
           yield* slog.info("loop", { step })
 
-          // (P1-5) One session read per step. Both compaction views (local and
-          // remote-text) are derived in memory from the same pruned
-          // newest-first snapshot; the text view used to re-read the whole
-          // session whenever the replay mode was "text".
-          const rawMessages = yield* MessageV2.streamCompactedEffect(sessionID)
-          let msgs = MessageV2.filterCompacted(rawMessages)
+          // One bounded session scan per step: the boundary scan stops pulling
+          // from the pruned newest-first stream at the first valid compaction
+          // boundary instead of materializing the whole session.
+          const scan = yield* MessageV2.scanCompactedEffect(sessionID)
+          let msgs = scan.messages
           let loopState = inspectLoopMessages(msgs)
 
           if (!loopState.lastUser) throw new Error("No user message found in stream. This should never happen.")
@@ -3077,13 +3076,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             loopState.lastUser.model.modelID,
             sessionID,
           )
-          // A remote part anywhere in the session is the only thing that can
+          // A remote part inside the consumed prefix is the only thing that can
           // make replay resolve to "encoded"; without one the lock is absent
           // and replay is "text" by definition, so the targeted lock scan (a
-          // second session read) is skipped entirely.
-          const hasRemoteCompaction = rawMessages.some((msg) =>
-            msg.parts.some((part) => part.type === "compaction" && part.remote !== undefined),
-          )
+          // second session read) is skipped entirely. Parts below the active
+          // boundary cannot affect either view.
+          const hasRemoteCompaction = scan.hasRemoteCompaction
           const remoteCompactionTurnKey = loopState.lastUser.id
           const cachedRemoteCompaction =
             remoteCompactionCache?.turnKey === remoteCompactionTurnKey ? remoteCompactionCache.value : undefined
@@ -3093,10 +3091,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           if (cachedRemoteCompaction === undefined)
             remoteCompactionCache = { turnKey: remoteCompactionTurnKey, value: remoteCompaction }
           // The text view differs from the local view only by remote compaction
-          // boundaries; with none in the snapshot it is identical, so keep the
-          // first filter result instead of re-running it.
+          // boundaries: a remote pair is skipped instead of ending the scan, so
+          // the text view must keep reading past it. Re-run the same scan in
+          // text mode only in that case; with no remote pair the views match.
           if (remoteCompaction === "text" && hasRemoteCompaction) {
-            msgs = MessageV2.filterCompacted(rawMessages, { remoteCompaction })
+            msgs = (yield* MessageV2.scanCompactedEffect(sessionID, { remoteCompaction })).messages
             loopState = inspectLoopMessages(msgs)
           }
           const { lastUser, lastAssistant, lastFinished, tasks } = loopState

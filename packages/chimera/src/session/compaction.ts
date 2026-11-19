@@ -713,12 +713,12 @@ export const layer: Layer.Layer<
 
       if (processor.message.error) return "stop"
       if (result === "continue") {
-        const summary = summaryText(
-          (yield* session.messages({ sessionID: input.sessionID })).find((item) => item.info.id === msg.id) ?? {
-            info: msg,
-            parts: [],
-          },
-        )
+        // Single-message read: the summary message was just created above, so
+        // there is no reason to hydrate the whole session to find it.
+        const summaryMessage = yield* Effect.sync(() =>
+          MessageV2.get({ sessionID: input.sessionID, messageID: msg.id }),
+        ).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed({ info: msg, parts: [] })))
+        const summary = summaryText(summaryMessage)
         yield* EventV2.run(sync, SessionEvent.Compaction.Ended.Sync, {
           sessionID: input.sessionID,
           messageID: SessionEvent.messageID(input.parentID),

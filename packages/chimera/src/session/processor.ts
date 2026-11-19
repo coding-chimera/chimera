@@ -78,6 +78,14 @@ function stringifyToolOutput(output: unknown) {
   return JSON.stringify(jsonSafe(output))
 }
 
+// Streaming accumulators buffer chunks instead of re-concatenating the whole
+// text per delta; the joined string is materialized once when a consumer needs
+// it (text-end plugin/persistence, cleanup, preview finalize).
+function joined(chunks: readonly string[], length = chunks.reduce((sum, chunk) => sum + chunk.length, 0)) {
+  if (length === 0) return ""
+  return chunks.length === 1 ? chunks[0] : chunks.join("")
+}
+
 export function serializeLength(input: unknown): number {
   if (input === undefined) return 0
   if (typeof input === "string") return input.length
@@ -218,7 +226,10 @@ type ToolCall = {
   messageID: MessageV2.ToolPart["messageID"]
   sessionID: MessageV2.ToolPart["sessionID"]
   done: Deferred.Deferred<void>
-  raw: string
+  // Raw argument chunks, joined only when the live edit/apply_patch preview
+  // needs the full text; tools without a preview tracker never read this.
+  rawChunks: string[]
+  rawLength: number
   preview: StreamingPreview.Tracker | undefined
 }
 // Temporary bridge: Copilot billing survives only in raw provider chunks here.
@@ -243,8 +254,15 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   estimatedInputTokens: number
   currentText: MessageV2.TextPart | undefined
+  // Default text path: deltas are buffered as chunks and joined once at
+  // text-end/cleanup instead of re-copying the full text per delta.
+  currentTextChunks: string[]
+  currentTextLength: number
+  // Memory citations must be stripped from every delta, which needs the full
+  // raw answer each time — a deliberate slow path used only when memory is on.
   currentTextRaw: string | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
+  reasoningChunks: Record<string, string[]>
   copilotTotalNanoAiu: number | undefined
 }
 
@@ -305,8 +323,11 @@ export const layer: Layer.Layer<
         needsCompaction: false,
         estimatedInputTokens: 0,
         currentText: undefined,
+        currentTextChunks: [],
+        currentTextLength: 0,
         currentTextRaw: undefined,
         reasoningMap: {},
+        reasoningChunks: {},
         copilotTotalNanoAiu: undefined,
       }
       let aborted = false
@@ -407,7 +428,11 @@ export const layer: Layer.Layer<
         const tracker = call.preview
         if (!tracker) return
         if (force) call.preview = undefined
-        const hunks = yield* (force ? StreamingPreview.finalize(tracker, call.raw) : StreamingPreview.update(tracker, call.raw))
+        // StreamingPreview only reparses after PARSE_MIN_GROWTH (256) new chars;
+        // skip materializing the full raw text for deltas it would ignore.
+        if (!force && call.rawLength - tracker.parsedLength < 256) return
+        const raw = joined(call.rawChunks, call.rawLength)
+        const hunks = yield* (force ? StreamingPreview.finalize(tracker, raw) : StreamingPreview.update(tracker, raw))
         for (const hunk of hunks) {
           yield* session.updatePartDelta({
             sessionID: call.sessionID,
@@ -443,12 +468,13 @@ export const layer: Layer.Layer<
               time: { start: Date.now() },
               metadata: reasoningPartMetadata(value.providerMetadata, ctx.model),
             }
+            ctx.reasoningChunks[value.id] = []
             yield* session.updatePart(ctx.reasoningMap[value.id])
             return
 
           case "reasoning-delta":
             if (!(value.id in ctx.reasoningMap)) return
-            ctx.reasoningMap[value.id].text += value.text
+            ctx.reasoningChunks[value.id]?.push(value.text)
             if (value.providerMetadata)
               ctx.reasoningMap[value.id].metadata = reasoningPartMetadata(
                 value.providerMetadata,
@@ -466,6 +492,10 @@ export const layer: Layer.Layer<
 
           case "reasoning-end":
             if (!(value.id in ctx.reasoningMap)) return
+            // Materialize the buffered deltas once; this replaces the previous
+            // reactivity self-assign (the part text is only read here, in the
+            // Ended event, and in cleanup — all after the last delta).
+            ctx.reasoningMap[value.id].text = joined(ctx.reasoningChunks[value.id] ?? [])
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Reasoning.Ended.Sync, {
               sessionID: ctx.sessionID,
@@ -474,8 +504,6 @@ export const layer: Layer.Layer<
               text: ctx.reasoningMap[value.id].text,
               timestamp: DateTime.makeUnsafe(Date.now()),
             })
-            // oxlint-disable-next-line no-self-assign -- reactivity trigger
-            ctx.reasoningMap[value.id].text = ctx.reasoningMap[value.id].text
             ctx.reasoningMap[value.id].time = { ...ctx.reasoningMap[value.id].time, end: Date.now() }
             if (value.providerMetadata)
               ctx.reasoningMap[value.id].metadata = reasoningPartMetadata(
@@ -485,6 +513,7 @@ export const layer: Layer.Layer<
               )
             yield* session.updatePart(ctx.reasoningMap[value.id])
             delete ctx.reasoningMap[value.id]
+            delete ctx.reasoningChunks[value.id]
             return
 
           case "tool-input-start":
@@ -520,7 +549,8 @@ export const layer: Layer.Layer<
               partID: part.id,
               messageID: part.messageID,
               sessionID: part.sessionID,
-              raw: "",
+              rawChunks: [],
+              rawLength: 0,
               preview: StreamingPreview.create(value.toolName, ctx.assistantMessage.path.cwd),
             }
             return
@@ -528,7 +558,12 @@ export const layer: Layer.Layer<
           case "tool-input-delta": {
             const call = ctx.toolcalls[value.id]
             if (!call) return
-            call.raw += value.delta
+            // Only the edit/apply_patch live preview reads the raw arguments,
+            // so other tools skip the per-delta full-string accumulation.
+            if (call.preview && value.delta) {
+              call.rawChunks.push(value.delta)
+              call.rawLength += value.delta.length
+            }
             yield* session.updatePartDelta({
               sessionID: call.sessionID,
               messageID: call.messageID,
@@ -851,35 +886,59 @@ export const layer: Layer.Layer<
               metadata: value.providerMetadata,
             }
             yield* session.updatePart(ctx.currentText)
-            ctx.currentTextRaw = ""
+            ctx.currentTextChunks = []
+            ctx.currentTextLength = 0
+            ctx.currentTextRaw = ctx.memory ? "" : undefined
             return
           }
 
           case "text-delta": {
             if (!ctx.currentText) return
-            const raw = (ctx.currentTextRaw ?? ctx.currentText.text) + value.text
-            const text = ctx.memory ? MemoryCitation.visibleText(raw).trimEnd() : raw
-            const delta = text.slice(ctx.currentText.text.length)
-            ctx.currentTextRaw = raw
-            ctx.currentText.text = text
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
-            if (!delta) return
+            if (ctx.memory) {
+              // Citation markup can be split across deltas, so hiding it needs
+              // the full raw answer on every delta. Memory is off by default and
+              // this is the only path that keeps re-deriving the whole text.
+              const raw = (ctx.currentTextRaw ?? ctx.currentText.text) + value.text
+              const text = MemoryCitation.visibleText(raw).trimEnd()
+              const delta = text.slice(ctx.currentText.text.length)
+              ctx.currentTextRaw = raw
+              ctx.currentText.text = text
+              if (!delta) return
+              yield* session.updatePartDelta({
+                sessionID: ctx.currentText.sessionID,
+                messageID: ctx.currentText.messageID,
+                partID: ctx.currentText.id,
+                field: "text",
+                delta,
+              })
+              return
+            }
+            // Default path: the delta is published as-is and buffered for the
+            // single join at text-end, so no full-text string is built per delta.
+            if (!value.text) return
+            ctx.currentTextChunks.push(value.text)
+            ctx.currentTextLength += value.text.length
             yield* session.updatePartDelta({
               sessionID: ctx.currentText.sessionID,
               messageID: ctx.currentText.messageID,
               partID: ctx.currentText.id,
               field: "text",
-              delta,
+              delta: value.text,
             })
             return
           }
 
           case "text-end":
             if (!ctx.currentText) return
-            // oxlint-disable-next-line no-self-assign -- reactivity trigger
-            ctx.currentText.text = ctx.currentText.text
             {
-              const raw = ctx.currentTextRaw ?? ctx.currentText.text
+              const raw = ctx.memory
+                ? (ctx.currentTextRaw ?? ctx.currentText.text)
+                : joined(ctx.currentTextChunks, ctx.currentTextLength)
+              // Materialize the buffered deltas into the part. This replaces the
+              // previous reactivity self-assign: the part text is only read
+              // here and in cleanup, both of which persist it.
+              ctx.currentText.text = raw
               const citation = ctx.memory ? MemoryCitation.strip(raw) : undefined
               const completed = (yield* plugin.trigger(
                 "experimental.text.complete",
@@ -926,6 +985,8 @@ export const layer: Layer.Layer<
             }
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
             yield* session.updatePart(ctx.currentText)
+            ctx.currentTextChunks = []
+            ctx.currentTextLength = 0
             ctx.currentTextRaw = undefined
             ctx.currentText = undefined
             return
@@ -965,21 +1026,27 @@ export const layer: Layer.Layer<
             ctx.currentText.text = MemoryCitation.visibleText(
               MemoryCitation.strip(ctx.currentTextRaw ?? ctx.currentText.text).text,
             )
+          } else {
+            ctx.currentText.text = joined(ctx.currentTextChunks, ctx.currentTextLength)
           }
           ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
           yield* session.updatePart(ctx.currentText)
           ctx.currentText = undefined
+          ctx.currentTextChunks = []
+          ctx.currentTextLength = 0
           ctx.currentTextRaw = undefined
         }
 
-        for (const part of Object.values(ctx.reasoningMap)) {
+        for (const [id, part] of Object.entries(ctx.reasoningMap)) {
           const end = Date.now()
           yield* session.updatePart({
             ...part,
+            text: joined(ctx.reasoningChunks[id] ?? []),
             time: { start: part.time.start ?? end, end },
           })
         }
         ctx.reasoningMap = {}
+        ctx.reasoningChunks = {}
 
         yield* Effect.forEach(
           Object.values(ctx.toolcalls),
@@ -1037,8 +1104,11 @@ export const layer: Layer.Layer<
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
+            ctx.currentTextChunks = []
+            ctx.currentTextLength = 0
             ctx.currentTextRaw = undefined
             ctx.reasoningMap = {}
+            ctx.reasoningChunks = {}
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(

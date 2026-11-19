@@ -121,7 +121,12 @@ async function addToolPart(
   return id
 }
 
-async function addCompactionPart(sessionID: SessionID, messageID: MessageID, tailStartID: MessageID) {
+async function addCompactionPart(
+  sessionID: SessionID,
+  messageID: MessageID,
+  tailStartID: MessageID,
+  remote = false,
+) {
   const id = PartID.ascending()
   await svc.updatePart({
     id,
@@ -130,6 +135,17 @@ async function addCompactionPart(sessionID: SessionID, messageID: MessageID, tai
     type: "compaction",
     auto: true,
     tail_start_id: tailStartID,
+    ...(remote
+      ? {
+          remote: {
+            providerID: "openai",
+            endpoint: "codex" as const,
+            implementation: "responses_compaction_v2" as const,
+            modelID: "gpt-5.2",
+            output: [{ type: "compaction" as const, encrypted_content: "encrypted" }],
+          },
+        }
+      : {}),
   } as MessageV2.CompactionPart)
   return id
 }
@@ -305,6 +321,100 @@ describe("B4 bounded reads", () => {
         const leaf = await svc.childrenIDs(childA.id)
         expect(leaf).toEqual([])
         await svc.remove(parent.id)
+      },
+    })
+  })
+
+  test("scanCompactedEffect returns a bounded raw prefix instead of materializing the session", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const base = Date.now() - 1_000_000
+        // 80 pre-tail messages: more than one 50-message page, so a full read
+        // would hydrate every one of them.
+        for (let i = 0; i < 80; i++) await addUser(session.id, base + i * 2)
+        const ut = await addUser(session.id, base + 1000)
+        const at = await addAssistant(session.id, ut, base + 1001)
+        const uc = await addUser(session.id, base + 1002)
+        await addCompactionPart(session.id, uc, ut)
+        const asst = await addAssistant(session.id, uc, base + 1003, { summary: true, finish: "stop" })
+        const u3 = await addUser(session.id, base + 1004)
+
+        const full = MessageV2.filterCompacted(Array.from(MessageV2.stream(session.id)))
+        const scan = await Effect.runPromise(MessageV2.scanCompactedEffect(session.id))
+
+        // Same view as the full-read filter.
+        expect(scan.messages.map((msg) => [msg.info.id, msg.info.role])).toEqual(
+          full.map((msg) => [msg.info.id, msg.info.role]),
+        )
+        expect(scan.messages.map((msg) => msg.info.id)).toEqual([uc, asst, ut, at, u3])
+        expect(scan.hasRemoteCompaction).toBe(false)
+        // Consumed newest-first until the active tail: u3, summary, compaction
+        // user, tail assistant, tail user. The 80 pre-tail messages were never
+        // hydrated even though the session has 85.
+        expect(scan.raw.map((msg) => msg.info.id)).toEqual([u3, asst, uc, at, ut])
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("scanCompactedEffect remote-text view skips the remote pair and keeps reading", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const base = Date.now() - 1_000_000
+        const pre: MessageID[] = []
+        for (let i = 0; i < 60; i++) pre.push(await addUser(session.id, base + i * 2))
+        const ut = await addUser(session.id, base + 1000)
+        const at = await addAssistant(session.id, ut, base + 1001)
+        const uc = await addUser(session.id, base + 1002)
+        await addCompactionPart(session.id, uc, ut, true)
+        const asst = await addAssistant(session.id, uc, base + 1003, { summary: true, finish: "stop" })
+        const u3 = await addUser(session.id, base + 1004)
+
+        // Local (encoded) view: bounded at the remote boundary.
+        const encoded = await Effect.runPromise(MessageV2.scanCompactedEffect(session.id))
+        expect(encoded.hasRemoteCompaction).toBe(true)
+        expect(encoded.messages.map((msg) => msg.info.id)).toEqual([uc, asst, ut, at, u3])
+        expect(encoded.raw).toHaveLength(5)
+
+        // Text view: the remote pair is skipped instead of ending the scan, so
+        // the read continues past the tail into the pre-tail history.
+        const text = await Effect.runPromise(
+          MessageV2.scanCompactedEffect(session.id, { remoteCompaction: "text" }),
+        )
+        const full = MessageV2.filterCompacted(Array.from(MessageV2.stream(session.id)), {
+          remoteCompaction: "text",
+        })
+        expect(text.messages.map((msg) => msg.info.id)).toEqual(full.map((msg) => msg.info.id))
+        expect(text.messages.map((msg) => msg.info.id)).toEqual([...pre, ut, at, u3])
+        expect(text.hasRemoteCompaction).toBe(true)
+        // It consumed the 60 pre-tail messages the encoded view never read.
+        expect(text.raw.length).toBeGreaterThan(60)
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("scanCompactedEffect without compaction consumes the whole history", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const base = Date.now() - 100_000
+        const ids: MessageID[] = []
+        for (let i = 0; i < 55; i++) ids.push(await addUser(session.id, base + i))
+
+        const scan = await Effect.runPromise(MessageV2.scanCompactedEffect(session.id))
+        expect(scan.hasRemoteCompaction).toBe(false)
+        expect(scan.messages.map((msg) => msg.info.id)).toEqual(ids)
+        expect(scan.raw).toHaveLength(ids.length)
+
+        await svc.remove(session.id)
       },
     })
   })

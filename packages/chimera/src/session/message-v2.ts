@@ -1463,12 +1463,45 @@ export function messageThread(sessionID: SessionID, messageID: MessageID): WithP
   return hydrate(rows)
 }
 
-export function filterCompacted(msgs: Iterable<WithParts>, options?: { remoteCompaction?: RemoteCompactionReplay }) {
+export type CompactedScan = {
+  /** filterCompacted's chronological view. */
+  messages: WithParts[]
+  /**
+   * The newest-first messages actually consumed from the source before the
+   * boundary stop. Bounded by the compaction boundary; only an unbounded
+   * session (no compaction) consumes everything, which is the normal case.
+   *
+   * This is only the bounded prefix consumed for THIS scan. Do not reuse it to
+   * run a second `remoteCompaction: "text"` filter over the same array: that
+   * view can need to keep reading past the remote pair, which this scan already
+   * stopped short of. Re-scan the source for a different view.
+   */
+  raw: WithParts[]
+  /** Whether a remote compaction part appeared inside `raw`. */
+  hasRemoteCompaction: boolean
+}
+
+/**
+ * The single boundary scan behind both compaction views. Consuming lazily is
+ * the point: the loop stops pulling from the source at the first valid
+ * compaction boundary, so `raw` (and the parts hydrated for it) stays bounded
+ * instead of materializing the whole session per step. `filterCompacted` is
+ * the view-only wrapper, so local and remote-text mode share one stop rule.
+ */
+export function scanCompacted(
+  msgs: Iterable<WithParts>,
+  options?: { remoteCompaction?: RemoteCompactionReplay },
+): CompactedScan {
+  const raw = [] as WithParts[]
   const result = [] as WithParts[]
   const completed = new Map<MessageID, MessageID>()
   const skipped = new Set<MessageID>()
+  let hasRemoteCompaction = false
   let retain: MessageID | undefined
   for (const msg of msgs) {
+    raw.push(msg)
+    if (!hasRemoteCompaction && msg.parts.some((item) => item.type === "compaction" && item.remote !== undefined))
+      hasRemoteCompaction = true
     result.push(msg)
     if (retain) {
       if (msg.info.id === retain) break
@@ -1513,31 +1546,35 @@ export function filterCompacted(msgs: Iterable<WithParts>, options?: { remoteCom
     : -1
   const tailIndex = part?.tail_start_id ? filtered.findIndex((msg) => msg.info.id === part.tail_start_id) : -1
   if (tailIndex >= 0 && tailIndex < compactionIndex && summaryIndex > compactionIndex) {
-    return [
-      ...filtered.slice(compactionIndex, summaryIndex + 1),
-      ...filtered.slice(tailIndex, compactionIndex),
-      ...filtered.slice(summaryIndex + 1),
-    ]
+    return {
+      messages: [
+        ...filtered.slice(compactionIndex, summaryIndex + 1),
+        ...filtered.slice(tailIndex, compactionIndex),
+        ...filtered.slice(summaryIndex + 1),
+      ],
+      raw,
+      hasRemoteCompaction,
+    }
   }
-  return filtered
+  return { messages: filtered, raw, hasRemoteCompaction }
 }
+
+export function filterCompacted(msgs: Iterable<WithParts>, options?: { remoteCompaction?: RemoteCompactionReplay }) {
+  return scanCompacted(msgs, options).messages
+}
+
+export const scanCompactedEffect = Effect.fnUntraced(function* (
+  sessionID: SessionID,
+  options?: { remoteCompaction?: RemoteCompactionReplay },
+) {
+  return scanCompacted(streamCompactionPruned(sessionID), options)
+})
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (
   sessionID: SessionID,
   options?: { remoteCompaction?: RemoteCompactionReplay },
 ) {
-  return filterCompacted(streamCompactionPruned(sessionID), options)
-})
-
-/**
- * (P1-5) Materialized form of the filterCompactedEffect read chain: the same
- * pruned newest-first stream, returned unfiltered. A caller that needs more
- * than one compaction view of the same step (local + remote-text) reads once
- * and runs filterCompacted over the array in memory instead of re-reading the
- * whole session.
- */
-export const streamCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
-  return Array.from(streamCompactionPruned(sessionID))
+  return (yield* scanCompactedEffect(sessionID, options)).messages
 })
 
 function codexResponsesMetadata(value: unknown) {

@@ -101,14 +101,14 @@ function agent(): Agent.Info {
   }
 }
 
-// The stub LLM below replays `toolEvents`, so each test sets its stream right
+// The stub LLM below replays `streamEvents`, so each test sets its stream right
 // before handle.process() reads it (streams are consumed sequentially).
-let toolEvents: LLM.Event[] = []
+let streamEvents: LLM.Event[] = []
 
 const stubLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
-    stream: () => Stream.fromIterable(toolEvents),
+    stream: () => Stream.fromIterable(streamEvents),
   }),
 )
 
@@ -221,7 +221,7 @@ const runStream = Effect.fn("test.runStream")(function* (input: {
     id: "call_preview",
     delta,
   }))
-  toolEvents = [
+  streamEvents = [
     { type: "start" },
     { type: "tool-input-start", id: "call_preview", toolName: input.tool },
     ...deltas,
@@ -258,6 +258,89 @@ const runStream = Effect.fn("test.runStream")(function* (input: {
     .filter((item) => item.field === "hunk")
     .map((item) => JSON.parse(item.delta) as StreamingPreview.StreamingHunk)
   return { chat, msg, events, raws, hunks, value }
+})
+
+// Streams a text answer (and optional reasoning) in fixed-size chunks through
+// the stub LLM, capturing every published text delta and the persisted parts.
+const runText = Effect.fn("test.runText")(function* (input: {
+  dir: string
+  text: string
+  chunk: number
+  reasoning?: string
+  memory?: boolean
+  textEnd?: boolean
+}) {
+  const { processors, session, provider } = yield* boot()
+  const bus = yield* Bus.Service
+  const chat = yield* session.create({})
+  const parent = yield* user(chat.id, "text")
+  const msg = yield* assistant(chat.id, parent.id, path.resolve(input.dir))
+  const deltas: string[] = []
+  const off = yield* bus.subscribeCallback(MessageV2.Event.PartDelta, (event) => {
+    if (event.properties.messageID !== msg.id) return
+    if (event.properties.field !== "text") return
+    deltas.push(event.properties.delta)
+  })
+  const chunks = chunkSize(input.text, input.chunk)
+  streamEvents = [
+    { type: "start" },
+    ...(input.reasoning === undefined
+      ? []
+      : [
+          { type: "reasoning-start", id: "reason_1" },
+          ...chunkSize(input.reasoning, input.chunk).map((delta) => ({
+            type: "reasoning-delta",
+            id: "reason_1",
+            delta,
+            text: delta,
+          })),
+          { type: "reasoning-end", id: "reason_1" },
+        ]),
+    { type: "text-start", id: "text_1" },
+    ...chunks.map((delta) => ({ type: "text-delta", id: "text_1", delta, text: delta })),
+    ...(input.textEnd === false ? [] : [{ type: "text-end", id: "text_1" }]),
+    { type: "finish" },
+  ] as LLM.Event[]
+  const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+  const handle = yield* processors.create({
+    assistantMessage: msg,
+    sessionID: chat.id,
+    model: mdl,
+    ...(input.memory
+      ? { memory: { projectID: chat.projectID, allowedAliases: new Map([["project/MEMORY.md", 1]]) } }
+      : {}),
+  })
+  let value: SessionProcessor.Result | undefined
+  try {
+    value = yield* handle.process({
+      user: {
+        id: parent.id,
+        sessionID: chat.id,
+        role: "user",
+        time: parent.time,
+        agent: parent.agent,
+        model: { providerID: ref.providerID, modelID: ref.modelID },
+      } satisfies MessageV2.User,
+      sessionID: chat.id,
+      model: mdl,
+      agent: agent(),
+      system: [],
+      messages: [{ role: "user", content: "text" }],
+      tools: {},
+    })
+  } finally {
+    off()
+  }
+  const parts = MessageV2.parts(msg.id)
+  return {
+    chat,
+    msg,
+    chunks,
+    deltas,
+    value,
+    text: parts.find((part): part is MessageV2.TextPart => part.type === "text"),
+    reasoning: parts.find((part): part is MessageV2.ReasoningPart => part.type === "reasoning"),
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -399,4 +482,102 @@ it.live("unanchored append to a missing file previews as a pure addition", () =>
     )
     expect(hunks).toEqual([{ index: 0, op: "append", filePath: target, before: "", after: "hi\nthere" }])
   }),
+)
+
+// ---------------------------------------------------------------------------
+// Text streaming
+// ---------------------------------------------------------------------------
+
+it.live("publishes each text delta verbatim and materializes the full text once", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const text = "alpha beta gamma delta ".repeat(40).trimEnd()
+        const run = yield* runText({ dir, text, chunk: 7 })
+
+        expect(run.value).toBe("continue")
+        expect(run.deltas).toEqual(run.chunks)
+        expect(run.deltas.join("")).toBe(text)
+        expect(run.text?.text).toBe(text)
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+it.live("keeps a large multi-delta text byte-identical", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const text = "0123456789abcdef".repeat(12_000)
+        const run = yield* runText({ dir, text, chunk: 64 })
+
+        expect(run.deltas.length).toBe(Math.ceil(text.length / 64))
+        expect(run.deltas.join("")).toBe(text)
+        expect(run.text?.text).toBe(text)
+        expect(run.text?.text.length).toBe(text.length)
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+it.live("materializes buffered text in cleanup when the stream ends without text-end", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const text = "partial answer ".repeat(50).trimEnd()
+        const run = yield* runText({ dir, text, chunk: 11, textEnd: false })
+
+        expect(run.value).toBe("continue")
+        expect(run.deltas.join("")).toBe(text)
+        expect(run.text?.text).toBe(text)
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+it.live("buffers reasoning deltas and materializes the reasoning text once", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const reasoning = "step one. step two. step three. ".repeat(60)
+        const run = yield* runText({ dir, text: "done", chunk: 9, reasoning })
+
+        expect(run.value).toBe("continue")
+        expect(run.reasoning?.text).toBe(reasoning)
+        expect(run.text?.text).toBe("done")
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+it.live("keeps the visible text and memory metadata for a citation streamed in many deltas", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const answer = "remembered answer"
+        const citation = [
+          '<chimera-memory-citation version="1">',
+          "<entries>project/MEMORY.md:1-1|note=[used]</entries>",
+          "</chimera-memory-citation>",
+        ].join("\n")
+        const run = yield* runText({ dir, text: `${answer}\n${citation}`, chunk: 5, memory: true })
+
+        expect(run.value).toBe("continue")
+        // Memory streaming re-derives visible text from the whole raw answer on
+        // every delta. A partial open tag with attributes can still slip into an
+        // intermediate delta (pre-existing slow-path behavior); the completed
+        // part text and citation metadata stay clean.
+        expect(run.deltas.join("")).toContain(answer)
+        expect(run.deltas.join("")).not.toContain("</chimera-memory-citation>")
+        expect(run.text?.text).toBe(answer)
+        expect(run.msg.memory).toEqual({
+          version: 1,
+          entries: [{ path: "project/MEMORY.md", lineStart: 1, lineEnd: 1, note: "used" }],
+          rolloutIDs: [],
+          sessionIDs: [],
+          noteIDs: [],
+        })
+      }),
+    { git: true, config: { ...providerCfg("http://localhost:1/v1"), memories: { enabled: true } } },
+  ),
 )
