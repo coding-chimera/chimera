@@ -20,12 +20,12 @@ export type Event =
   | EventMessagePartDelta
   | EventPermissionAsked
   | EventPermissionReplied
+  | EventSessionStatus
+  | EventSessionIdle
   | EventSessionDiff
   | EventSessionError
   | EventInstallationUpdated
   | EventInstallationUpdateAvailable
-  | EventSessionStatus
-  | EventSessionIdle
   | EventQuestionAsked
   | EventQuestionReplied
   | EventQuestionRejected
@@ -139,6 +139,20 @@ export type PermissionRequest = {
   }
 }
 
+export type SessionStatus =
+  | {
+      type: "idle"
+    }
+  | {
+      type: "retry"
+      attempt: number
+      message: string
+      next: number
+    }
+  | {
+      type: "busy"
+    }
+
 export type SnapshotFileDiff = {
   file: string
   patch: string
@@ -207,20 +221,6 @@ export type ApiError = {
     }
   }
 }
-
-export type SessionStatus =
-  | {
-      type: "idle"
-    }
-  | {
-      type: "retry"
-      attempt: number
-      message: string
-      next: number
-    }
-  | {
-      type: "busy"
-    }
 
 export type QuestionOption = {
   /**
@@ -804,6 +804,7 @@ export type Session = {
   }
   title: string
   agent?: string
+  client?: "webui" | "tui" | "cli" | "acp" | "desktop"
   model?: {
     id: string
     providerID: string
@@ -887,12 +888,12 @@ export type GlobalEvent = {
     | EventMessagePartDelta
     | EventPermissionAsked
     | EventPermissionReplied
+    | EventSessionStatus
+    | EventSessionIdle
     | EventSessionDiff
     | EventSessionError
     | EventInstallationUpdated
     | EventInstallationUpdateAvailable
-    | EventSessionStatus
-    | EventSessionIdle
     | EventQuestionAsked
     | EventQuestionReplied
     | EventQuestionRejected
@@ -1922,6 +1923,7 @@ export type GlobalSession = {
   }
   title: string
   agent?: string
+  client?: "webui" | "tui" | "cli" | "acp" | "desktop"
   model?: {
     id: string
     providerID: string
@@ -3384,6 +3386,23 @@ export type EventPermissionReplied = {
   }
 }
 
+export type EventSessionStatus = {
+  id: string
+  type: "session.status"
+  properties: {
+    sessionID: string
+    status: SessionStatus
+  }
+}
+
+export type EventSessionIdle = {
+  id: string
+  type: "session.idle"
+  properties: {
+    sessionID: string
+  }
+}
+
 export type EventSessionDiff = {
   id: string
   type: "session.diff"
@@ -3422,23 +3441,6 @@ export type EventInstallationUpdateAvailable = {
   type: "installation.update-available"
   properties: {
     version: string
-  }
-}
-
-export type EventSessionStatus = {
-  id: string
-  type: "session.status"
-  properties: {
-    sessionID: string
-    status: SessionStatus
-  }
-}
-
-export type EventSessionIdle = {
-  id: string
-  type: "session.idle"
-  properties: {
-    sessionID: string
   }
 }
 
@@ -7327,6 +7329,7 @@ export type SessionCreateData = {
     }
     permission?: PermissionRuleset
     workspaceID?: string
+    client?: "webui" | "tui" | "cli" | "acp" | "desktop"
   }
   path?: never
   query?: {

@@ -228,8 +228,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const createRaw = Effect.fn("SessionHttpApi.createRaw")(function* (ctx: {
       request: HttpServerRequest.HttpServerRequest
     }) {
+      // Effective client: a body value wins over the header; an unrecognized
+      // header value is ignored rather than rejected.
+      const headerClient = ctx.request.headers["x-chimera-client"] ?? undefined
+      const client = Session.isClient(headerClient) ? headerClient : undefined
       const body = yield* Effect.orDie(ctx.request.text)
-      if (body.trim().length === 0) return yield* create({})
+      if (body.trim().length === 0) return yield* create({ payload: { client } })
 
       const json = yield* Effect.try({
         try: () => JSON.parse(body) as unknown,
@@ -238,7 +242,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       const payload = yield* Schema.decodeUnknownEffect(Session.CreateInput)(json).pipe(
         Effect.mapError(() => new HttpApiError.BadRequest({})),
       )
-      return yield* create({ payload })
+      return yield* create({ payload: { ...payload, client: payload?.client ?? client } })
     })
 
     const remove = Effect.fn("SessionHttpApi.remove")(function* (ctx: { params: { sessionID: SessionID } }) {

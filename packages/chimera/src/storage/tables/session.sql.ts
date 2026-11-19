@@ -38,6 +38,9 @@ export const SessionTable = sqliteTable(
     revert: text({ mode: "json" }).$type<{ messageID: MessageID; partID?: PartID; snapshot?: string; diff?: string }>(),
     permission: text({ mode: "json" }).$type<Permission.Ruleset>(),
     agent: text(),
+    // Frozen at creation: the client environment that owns this session's
+    // conversation. Never patched afterwards (see src/session/session.ts).
+    client: text().$type<Session.Client>(),
     model: text({ mode: "json" }).$type<{
       id: string
       providerID: string

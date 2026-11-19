@@ -474,6 +474,41 @@ describe("session.system", () => {
     }),
   )
 
+  it.instance("environment renders the WebUI client line and render guide", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const joined = (yield* prompt.environment(
+        { providerID: "test", api: { id: "test-model" } } as unknown as Parameters<
+          SystemPrompt.Interface["environment"]
+        >[0],
+        "webui",
+      )).join("\n")
+
+      expect(joined).toContain("  Client: Chimera WebUI (graphical chat interface)")
+      expect(joined).toContain("Your output renders in the Chimera WebUI")
+      expect(joined).toContain("HTML files and fenced html code blocks can be previewed visually")
+      expect(joined).not.toContain("renders in a CLI")
+    }),
+  )
+
+  it.instance("environment keeps terminal wording for unknown and non-WebUI clients", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      for (const client of [undefined, "tui", "cli", "acp", "desktop"] as const) {
+        const joined = (yield* prompt.environment(
+          { providerID: "test", api: { id: "test-model" } } as unknown as Parameters<
+            SystemPrompt.Interface["environment"]
+          >[0],
+          client,
+        )).join("\n")
+
+        expect(joined).toContain("  Client: terminal (CLI/TUI)")
+        expect(joined).toContain("Your output renders in a CLI, so use GitHub-flavored Markdown when it helps.")
+        expect(joined).not.toContain("Chimera WebUI")
+      }
+    }),
+  )
+
   it.effect("skills output is a sorted name-only index and stable across calls", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service

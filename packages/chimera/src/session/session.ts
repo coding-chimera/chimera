@@ -89,6 +89,7 @@ export function fromRow(row: SessionRow): Info {
     parentID: row.parent_id ?? undefined,
     title: row.title,
     agent: row.agent ?? undefined,
+    client: row.client ?? undefined,
     model: row.model
       ? {
           id: ModelID.make(row.model.id),
@@ -122,6 +123,7 @@ export function toRow(info: Info) {
     path: info.path,
     title: info.title,
     agent: info.agent,
+    client: info.client,
     model: info.model,
     usage: info.usage,
     version: info.version,
@@ -188,6 +190,15 @@ const Model = Schema.Struct({
   variant: optionalOmitUndefined(Schema.String),
 })
 
+// Client environment that owns a session's conversation. Frozen at creation
+// (`createNext`), inherited by child sessions and forks, and never patched.
+// Unknown/legacy sessions have no value and keep the terminal wording.
+export const Client = Schema.Literals(["webui", "tui", "cli", "acp", "desktop"])
+export type Client = Types.DeepMutable<Schema.Schema.Type<typeof Client>>
+export function isClient(value: string | undefined): value is Client {
+  return value !== undefined && Schema.is(Client)(value)
+}
+
 const UsageCost = Schema.Struct({
   total: Schema.Finite,
   last: Schema.Finite,
@@ -236,6 +247,7 @@ export const Info = Schema.Struct({
   share: optionalOmitUndefined(Share),
   title: Schema.String,
   agent: optionalOmitUndefined(Schema.String),
+  client: optionalOmitUndefined(Client),
   model: optionalOmitUndefined(Model),
   version: Schema.String,
   usage: optionalOmitUndefined(Usage),
@@ -272,6 +284,7 @@ export const CreateInput = Schema.optional(
     model: Schema.optional(Model),
     permission: Schema.optional(Permission.Ruleset),
     workspaceID: Schema.optional(WorkspaceID),
+    client: Schema.optional(Client),
   }),
 ).pipe(withStatics((s) => ({ zod: zod(s) })))
 export type CreateInput = Types.DeepMutable<Schema.Schema.Type<typeof CreateInput>>
@@ -707,8 +720,23 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       directory: string
       path?: string
       permission?: Permission.Ruleset
+      client?: Client
     }) {
       const ctx = yield* InstanceState.context
+      // Freeze the owning client environment: an explicit value wins, a child
+      // session inherits its parent's value, and an unknown/legacy session
+      // stays undefined (terminal wording). Never patched afterwards.
+      const client =
+        input.client ??
+        (input.parentID
+          ? (yield* db((d) =>
+              d
+                .select({ client: SessionTable.client })
+                .from(SessionTable)
+                .where(eq(SessionTable.id, input.parentID!))
+                .get(),
+            ))?.client ?? undefined
+          : undefined)
       const result: Info = {
         id: SessionID.descending(input.id),
         slug: Slug.create(),
@@ -720,6 +748,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         parentID: input.parentID,
         title: input.title ?? createDefaultTitle(!!input.parentID),
         agent: input.agent,
+        client,
         model: input.model,
         permission: input.permission,
         time: {
@@ -1021,6 +1050,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       model?: Schema.Schema.Type<typeof Model>
       permission?: Permission.Ruleset
       workspaceID?: WorkspaceID
+      client?: Client
     }) {
       const ctx = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
@@ -1032,6 +1062,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         agent: input?.agent,
         model: input?.model,
         permission: input?.permission,
+        client: input?.client,
         workspaceID: input?.workspaceID ?? workspace,
       })
     })
@@ -1045,6 +1076,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         path: sessionPath(ctx.worktree, ctx.directory),
         workspaceID: original.workspaceID,
         title,
+        client: original.client,
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()

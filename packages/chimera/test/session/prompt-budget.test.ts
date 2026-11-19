@@ -18,13 +18,17 @@ import { ToolSearch } from "../../src/session/tool-search"
 // runtime state and intentionally out of scope.
 
 const BASELINE = {
-  generic: 25888,
-  deepseek: 28528,
-  deepseekUltra: 34974, // 2026-11-18 re-record #2 (plan-and-handoff gate + background-first dispatch)
-  kimi: 27905,
-  gpt55: 30900,
-  claude: 30008,
-  gemini: 27246,
+  // 2026-11-19 re-record (client-neutral identity prompt): default.txt line 1
+  // drops "CLI" from the identity and line 15 drops the CLI render claim (the
+  // render surface now lives in the environment block). Re-recorded from the
+  // live tree for every variant.
+  generic: 23251,
+  deepseek: 25859,
+  deepseekUltra: 34937,
+  kimi: 25226,
+  gpt55: 28263,
+  claude: 27326,
+  gemini: 24609,
 } as const
 
 // Per-tool description budgets for the top offenders; the total budget below

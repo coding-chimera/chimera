@@ -796,7 +796,10 @@ export const RunCommand = effectCmd({
       }
 
       if (args.attach) {
-        const headers = ServerAuth.headers({ password: args.password, username: args.username })
+        const headers = {
+          ...ServerAuth.headers({ password: args.password, username: args.username }),
+          "x-chimera-client": "cli",
+        }
         const sdk = createOpencodeClient({ baseUrl: args.attach, directory, headers })
         return await execute(sdk)
       }
@@ -805,7 +808,11 @@ export const RunCommand = effectCmd({
         const request = new Request(input, init)
         return Server.Default().app.fetch(request)
       }) as typeof globalThis.fetch
-      const sdk = createOpencodeClient({ baseUrl: "http://opencode.internal", fetch: fetchFn })
+      const sdk = createOpencodeClient({
+        baseUrl: "http://opencode.internal",
+        fetch: fetchFn,
+        headers: { "x-chimera-client": "cli" },
+      })
       await execute(sdk)
     })
   }),

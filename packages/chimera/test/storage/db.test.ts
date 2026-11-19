@@ -39,6 +39,13 @@ describe("Database migrations", () => {
     }[]
     expect(columns.some((column) => column.name === "share_url")).toBe(true)
   })
+
+  test("fresh database has the frozen session client column", () => {
+    const columns = Database.Client().$client.prepare("SELECT name FROM pragma_table_info('session')").all() as {
+      name: string
+    }[]
+    expect(columns.some((column) => column.name === "client")).toBe(true)
+  })
 })
 
 describe("Database WAL governance", () => {

@@ -3301,7 +3301,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             const cachedInstructions = instructionsCache?.turnKey === turnKey ? instructionsCache.value : undefined
             const [skills, env, instructions, mcpInstructions] = yield* Effect.all([
               sys.skills(agent),
-              sys.environment(model),
+              sys.environment(model, session.client),
               cachedInstructions !== undefined
                 ? Effect.succeed(cachedInstructions)
                 : instruction.system().pipe(

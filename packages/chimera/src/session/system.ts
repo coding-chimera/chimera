@@ -55,6 +55,13 @@ type LayerEntry = {
   match?: (ids: ModelIDs) => boolean
 }
 
+// Render-surface guidance appended after the <env> block. The client value is
+// frozen per session, so a WebUI session keeps its rich-Markdown/file-link
+// guidance even if another client later takes over the conversation.
+const WEBUI_RENDER_GUIDE =
+  "Your output renders in the Chimera WebUI, a graphical chat interface with rich GitHub-flavored Markdown (code blocks, tables, inline images). File paths you mention — in plain text, inline code, or markdown links, relative or absolute, optionally with a :line suffix — become clickable links that open the file in the right-side panel, so when you produce artifacts, state their paths clearly. HTML files and fenced html code blocks can be previewed visually, making HTML a useful artifact format."
+const TERMINAL_RENDER_GUIDE = "Your output renders in a CLI, so use GitHub-flavored Markdown when it helps."
+
 const SPECIALIZATIONS: LayerEntry[] = [
   { key: "model/gpt-4", keys: ["gpt-4", "o1", "o3"], content: PROMPT_GPT4 },
   { key: "model/gpt-5.5", keys: ["gpt-5.5"], content: PROMPT_GPT55, exact: true },
@@ -199,7 +206,7 @@ export function ultraVariant(model: Provider.Model, variant: string | undefined)
 }
 
 export interface Interface {
-  readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
+  readonly environment: (model: Provider.Model, client?: string) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
   readonly mcp: (agent: Agent.Info, permission?: Permission.Ruleset) => Effect.Effect<string | undefined>
 }
@@ -213,8 +220,9 @@ export const layer = Layer.effect(
     const mcp = yield* MCP.Service
 
     return Service.of({
-      environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
+      environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model, client?: string) {
         const ctx = yield* InstanceState.context
+        const webui = client === "webui"
         return [
           [
             `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
@@ -225,7 +233,9 @@ export const layer = Layer.effect(
             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
             `  Platform: ${process.platform}`,
             `  Today's date: ${new Date().toDateString()}`,
+            `  Client: ${webui ? "Chimera WebUI (graphical chat interface)" : "terminal (CLI/TUI)"}`,
             `</env>`,
+            webui ? WEBUI_RENDER_GUIDE : TERMINAL_RENDER_GUIDE,
           ].join("\n"),
         ]
       }),

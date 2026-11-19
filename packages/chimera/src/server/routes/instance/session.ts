@@ -469,8 +469,12 @@ export const SessionRoutes = lazy(() =>
       async (c) =>
         jsonRequest("SessionRoutes.create", c, function* () {
           const body = c.req.valid("json") ?? {}
+          // Effective client: an explicit body value wins over the header; an
+          // unrecognized header value is ignored rather than rejected.
+          const headerClient = c.req.header("x-chimera-client")
+          const client = body.client ?? (Session.isClient(headerClient) ? headerClient : undefined)
           const svc = yield* SessionShare.Service
-          return yield* svc.create(body)
+          return yield* svc.create({ ...body, client })
         }),
     )
     .delete(

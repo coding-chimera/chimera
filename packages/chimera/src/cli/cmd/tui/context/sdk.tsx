@@ -27,7 +27,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         signal: abort.signal,
         directory: props.directory,
         fetch: props.fetch,
-        headers: props.headers,
+        headers: { ...props.headers, "x-chimera-client": "tui" },
       })
     }
 

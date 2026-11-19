@@ -29,7 +29,7 @@ export const AcpCommand = effectCmd({
 
     const sdk = createOpencodeClient({
       baseUrl: `http://${server.hostname}:${server.port}`,
-      headers: ServerAuth.headers(),
+      headers: { ...ServerAuth.headers(), "x-chimera-client": "acp" },
     })
 
     const input = new WritableStream<Uint8Array>({
