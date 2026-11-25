@@ -1084,6 +1084,7 @@ export class Config2 extends HeyApiClient {
     parameters?: {
       directory?: string
       workspace?: string
+      include_experimental?: "true" | "false"
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1094,6 +1095,7 @@ export class Config2 extends HeyApiClient {
           args: [
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
+            { in: "query", key: "include_experimental" },
           ],
         },
       ],

@@ -19,6 +19,7 @@ import { iife } from "@/util/iife"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
 import { pathToFileURL } from "url"
+import * as fs from "fs"
 import { Effect, Layer, Context, Schema, Types, Option, Semaphore } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -31,14 +32,23 @@ import { ModelID, ProviderID } from "./schema"
 import { CodexModel } from "./codex-model"
 import { ModelDefaults } from "./model-defaults"
 import { ResponsesTransport } from "./responses-transport"
+import { HttpLimit, type HttpLimitOptions } from "./http-limit"
+import { ConfigDelegation } from "@/config/delegation"
+import { NativeTransport, type ConfigureTlsProfile } from "./sdk/native-transport"
+import { NativeTransportGating } from "./sdk/native-transport/gating"
+import { CAPABILITY } from "./sdk/native-transport/layout"
 import {
   bindingFromTransportIdentity,
   inspectRemoteCompactionRequest,
   rewriteRemoteCompactionRequest,
 } from "@/session/remote-compaction-codec"
-import * as ProviderError from "./error"
+import { ResponseMetadata } from "./response-metadata"
+import { wrapSSE } from "./sse"
 
 const log = Log.create({ service: "provider" })
+// One warning per distinct gate conflict per process (limit / config), so a
+// conflicting wrapper does not spam the log on every request.
+const httpGateConflictWarned = new Set<string>()
 const KIMI_FOR_CODING_ID = "kimi-for-coding"
 const KIMI_FOR_CODING_NAME = "kimi-for-coding（Kimi-K2.7）"
 const KIMI_FOR_CODING_FAST_ID = "kimi-for-coding-fast"
@@ -57,62 +67,9 @@ function shouldUseCopilotResponsesApi(modelID: string): boolean {
   return Number(match[1]) >= 5 && !modelID.startsWith("gpt-5-mini")
 }
 
-function wrapSSE(res: Response, ms: number, ctl: AbortController) {
-  if (typeof ms !== "number" || ms <= 0) return res
-  if (!res.body) return res
-  if (!res.headers.get("content-type")?.includes("text/event-stream")) return res
-
-  const reader = res.body.getReader()
-  const body = new ReadableStream<Uint8Array>({
-    async pull(ctrl) {
-      const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
-        const id = setTimeout(() => {
-          // @ai-sdk/openai-compatible >= 2.0.70 flags a stream that ends with
-          // no finish reason as truncated and enqueues InvalidResponseDataError
-          // at flush. Its response-body wrapper also rewraps non-abort read
-          // errors into APICallError("Failed to process successful response"),
-          // masking the timeout identity. Naming the error TimeoutError (a real
-          // timeout, not a user abort) makes the wrapper rethrow it unchanged,
-          // so the consumer sees "SSE read timed out" while genuine truncation
-          // still hits the SDK check.
-          const err = new Error("SSE read timed out")
-          err.name = "TimeoutError"
-          ctl.abort(err)
-          reader.cancel(err).catch(() => {})
-          reject(err)
-        }, ms)
-
-        reader.read().then(
-          (part) => {
-            clearTimeout(id)
-            resolve(part)
-          },
-          (err) => {
-            clearTimeout(id)
-            reject(err)
-          },
-        )
-      })
-
-      if (part.done) {
-        ctrl.close()
-        return
-      }
-
-      ctrl.enqueue(part.value)
-    },
-    async cancel(reason) {
-      ctl.abort(reason)
-      await reader.cancel(reason)
-    },
-  })
-
-  return new Response(body, {
-    headers: new Headers(res.headers),
-    status: res.status,
-    statusText: res.statusText,
-  })
-}
+// wrapSSE lives in ./sse (verbatim move); re-exported so Provider.wrapSSE
+// remains part of the public namespace and resolveSDK keeps calling it.
+export { wrapSSE }
 
 // W6 (responses-wire): relays may emit the standard OpenAI Responses
 // "response.reasoning_text.delta"/".done" events. @ai-sdk/openai 3.0.88 has
@@ -190,23 +147,33 @@ export function rewriteRelayReasoningEvents(res: Response): Response {
     }),
   )
 
-  return new Response(body, {
-    headers: new Headers(res.headers),
-    status: res.status,
-    statusText: res.statusText,
-  })
+  return ResponseMetadata.carry(res, new Response(body, { headers: new Headers(res.headers), status: res.status, statusText: res.statusText }))
 }
 
 function shouldRewriteRelayReasoningEvents(model: Model, wireAPI: string | undefined) {
   return wireAPI === "responses" && model.providerID !== "openai"
 }
 
-function timeoutController(ms: number) {
-  const ctl = new AbortController()
-  const id = setTimeout(() => ctl.abort(new ProviderError.HeaderTimeoutError(ms)), ms)
+/** Normalize experimental.http_scheduler (snake_case) into HttpLimitOptions.
+ *  CFS is the default even when the section is absent; raw.mode only overrides
+ *  explicitly ("fifo" is the documented downgrade). */
+function schedulerOptionsFromConfig(
+  raw: NonNullable<Config.Info["experimental"]>["http_scheduler"],
+): HttpLimitOptions {
   return {
-    signal: ctl.signal,
-    clear: () => clearTimeout(id),
+    mode: raw?.mode ?? "cfs",
+    defaultWeight: raw?.default_weight,
+    weights: raw?.weights,
+    admissionGranularityMs: raw?.admission_granularity_ms,
+    wakeupCreditMs: raw?.wakeup_credit_ms,
+    maxDebtMs: raw?.max_debt_ms,
+    tickMs: raw?.tick_ms,
+    maxQueueLength: raw?.max_queue_length,
+    maxQueueBytes: raw?.max_queue_bytes,
+    perFlowQueueBytes: raw?.per_flow_queue_bytes,
+    queueWaitTimeoutMs: raw?.queue_wait_timeout_ms,
+    permitLeaseMs: raw?.permit_lease_ms,
+    flowRetentionMs: raw?.flow_retention_ms,
   }
 }
 
@@ -1285,7 +1252,7 @@ export function defaultModelIDs<T extends { models: Record<string, { id: string 
 }
 
 export interface Interface {
-  readonly list: () => Effect.Effect<Record<ProviderID, Info>>
+  readonly list: (options?: { includeExperimental?: boolean }) => Effect.Effect<Record<ProviderID, Info>>
   readonly invalidate: () => Effect.Effect<void>
   readonly getProvider: (providerID: ProviderID) => Effect.Effect<Info>
   readonly getModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<Model>
@@ -1315,9 +1282,21 @@ export interface Interface {
   readonly defaultModel: () => Effect.Effect<{ providerID: ProviderID; modelID: ModelID }>
 }
 
+/** Immutable native-transport profile resolved for one provider option set. */
+type TransportProfile = {
+  readonly profileId: number
+  readonly httpVersion: "auto" | "http1"
+  readonly usable: boolean
+}
+
 interface State {
   models: Map<string, LanguageModelV3>
   providers: Record<ProviderID, Info>
+  experimentalProviders: Record<ProviderID, Info>
+  rustTransportEnabled: boolean
+  maxConnectionsDefault: number
+  schedulerOptions: HttpLimitOptions | undefined
+  transportProfiles: Map<string, TransportProfile>
   sdk: Map<string, BundledSDK>
   modelLoaders: Record<string, CustomModelLoader>
   varsLoaders: Record<string, CustomVarsLoader>
@@ -1328,6 +1307,55 @@ interface State {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
+
+/** Read a TLS option that may be inline PEM or a filesystem path. */
+function pemValue(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() === "") return null
+  return value.includes("-----BEGIN ") ? value : fs.readFileSync(value, "utf8")
+}
+
+/** Resolve provider-level tls/proxy/httpVersion into one immutable addon
+ *  profile, cached per fingerprint so configureTls runs once per distinct
+ *  configuration. `usable` is false when the loaded addon cannot honor the
+ *  configuration (pinned proxy or custom trust), so the provider stays on the
+ *  fallback fetch instead of silently bypassing it. */
+function transportProfileFor(providerID: ProviderID, options: Record<string, any>, s: State): TransportProfile {
+  const httpVersion: "auto" | "http1" = options["httpVersion"] === "http1" ? "http1" : "auto"
+  const tls = isRecord(options["tls"]) ? options["tls"] : undefined
+  const proxy = typeof options["proxy"] === "string" && options["proxy"].trim() !== "" ? options["proxy"].trim() : null
+  if (tls === undefined && proxy === null) return { profileId: 0, httpVersion, usable: true }
+
+  const profile: ConfigureTlsProfile = {
+    caPem: pemValue(tls?.ca),
+    certPem: pemValue(tls?.cert),
+    keyPem: pemValue(tls?.key),
+    rejectUnauthorized: typeof tls?.rejectUnauthorized === "boolean" ? tls.rejectUnauthorized : null,
+    serverName: typeof tls?.serverName === "string" && tls.serverName !== "" ? tls.serverName : null,
+    proxy,
+  }
+  const fingerprint = JSON.stringify({ profile, httpVersion })
+  const cached = s.transportProfiles.get(fingerprint)
+  if (cached) return cached
+
+  const capabilities = NativeTransport.capabilities() ?? []
+  const has = (capability: string) => capabilities.includes(capability)
+  const usable =
+    (proxy === null || has(CAPABILITY.proxySystem)) &&
+    (profile.caPem === null || has(CAPABILITY.tlsCustomCa)) &&
+    (profile.certPem === null || has(CAPABILITY.mtls)) &&
+    (profile.keyPem === null || has(CAPABILITY.mtls))
+  const result = usable ? NativeTransport.configureTls(profile) : null
+  if (!usable || result === null) {
+    log.warn("native transport cannot honor the configured tls/proxy profile; keeping the fallback fetch", {
+      providerID,
+      pinnedProxy: proxy !== null,
+      registrationFailed: usable && result === null,
+    })
+  }
+  const resolved: TransportProfile = { profileId: result?.profileId ?? 0, httpVersion, usable: usable && result !== null }
+  s.transportProfiles.set(fingerprint, resolved)
+  return resolved
+}
 
 function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
   const result: Model["cost"] = {
@@ -1641,10 +1669,14 @@ const layer: Layer.Layer<
         using _ = log.time("state")
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
+        const rustTransportEnabled = cfg.experimental?.rust_transport === true
+        const maxConnectionsDefault = cfg.delegation?.max_concurrent ?? ConfigDelegation.DEFAULT_MAX_CONCURRENT
+        const schedulerOptions = schedulerOptionsFromConfig(cfg.experimental?.http_scheduler)
         const modelsDev = yield* modelsDevSvc.get()
         const database = mapValues(modelsDev, fromModelsDevProvider)
 
         const providers: Record<ProviderID, Info> = {} as Record<ProviderID, Info>
+        const experimentalProviders: Record<ProviderID, Info> = {} as Record<ProviderID, Info>
         const languages = new Map<string, LanguageModelV3>()
         const modelLoaders: {
           [providerID: string]: CustomModelLoader
@@ -2109,18 +2141,21 @@ const layer: Layer.Layer<
 
           for (const [modelID, model] of Object.entries(provider.models)) {
             model.api.id = model.api.id ?? model.id ?? modelID
-            if (
+            const removed =
               modelID === "gpt-5-chat-latest" ||
-              (providerID === ProviderID.openrouter && modelID === "openai/gpt-5-chat")
-            )
-              delete provider.models[modelID]
-            if (model.status === "alpha" && !Flag.OPENCODE_ENABLE_EXPERIMENTAL_MODELS) delete provider.models[modelID]
-            if (model.status === "deprecated") delete provider.models[modelID]
-            if (
+              (providerID === ProviderID.openrouter && modelID === "openai/gpt-5-chat") ||
+              model.status === "deprecated" ||
               (configProvider?.blacklist && configProvider.blacklist.includes(modelID)) ||
               (configProvider?.whitelist && !configProvider.whitelist.includes(modelID))
-            )
-              delete provider.models[modelID]
+            if (removed) delete provider.models[modelID]
+            if (model.status === "alpha") {
+              if (!removed) {
+                const experimental = experimentalProviders[providerID] ?? { ...provider, models: {} }
+                experimental.models[modelID] = model
+                experimentalProviders[providerID] = experimental
+              }
+              if (!Flag.OPENCODE_ENABLE_EXPERIMENTAL_MODELS) delete provider.models[modelID]
+            }
 
             const configModel = configProvider?.models?.[modelID]
             const configuredBackendSemantics = configModel?.backend_semantics ?? configProvider?.backend_semantics
@@ -2191,10 +2226,15 @@ const layer: Layer.Layer<
         return {
           models: languages,
           providers,
+          experimentalProviders,
           sdk,
           modelLoaders,
           varsLoaders,
           sourceRevisions,
+          rustTransportEnabled,
+          maxConnectionsDefault,
+          transportProfiles: new Map(),
+          schedulerOptions,
         }
       }),
     )
@@ -2223,8 +2263,18 @@ const layer: Layer.Layer<
       return yield* freshness.withPermits(1)(resolveFreshState())
     })
 
-    const list = Effect.fn("Provider.list")(function* () {
-      return (yield* freshState()).providers
+    const list = Effect.fn("Provider.list")(function* (options?: { includeExperimental?: boolean }) {
+      const current = yield* freshState()
+      if (!options?.includeExperimental) return current.providers
+      const providers = { ...current.providers }
+      for (const [providerID, experimental] of Object.entries(current.experimentalProviders)) {
+        const id = ProviderID.make(providerID)
+        const provider = providers[id]
+        providers[id] = provider
+          ? { ...provider, models: { ...provider.models, ...experimental.models } }
+          : experimental
+      }
+      return providers
     })
     const invalidate = Effect.fn("Provider.invalidate")(() => InstanceState.invalidate(state))
 
@@ -2269,21 +2319,114 @@ const layer: Layer.Layer<
         })
         const { provider, options } = resolveProviderRequestOptions(model, s, envs)
 
+        // Native Rust transport (experimental.rust_transport). Every provider
+        // is eligible; a provider custom fetch always keeps its exact
+        // HttpLimit-wrapped path — never the addon. Per-request Bun extensions
+        // (tls/proxy/unix/verbose and unknown keys) still delegate inside the
+        // adapter; provider-level tls/proxy options map to an immutable addon
+        // profile instead. The off path never constructs the addon.
+        const providerFetch: typeof fetch | undefined =
+          typeof options["fetch"] === "function" ? options["fetch"] : undefined
+        const nativeEligible =
+          providerFetch === undefined && NativeTransportGating.eligible({ enabled: s.rustTransportEnabled })
+        const profile = nativeEligible ? transportProfileFor(model.providerID, options, s) : undefined
+        // A pinned proxy must never be silently bypassed. When the addon cannot
+        // register the profile (an old addon without configureTls) the request falls
+        // back to Bun fetch, and delegated requests (FormData/Request inputs) always
+        // do; inject the pinned proxy into that fallback so every path honors it.
+        // Bun fetch supports init.proxy for http and https (CONNECT).
+        const pinnedProxy =
+          nativeEligible && typeof options["proxy"] === "string" && options["proxy"].trim() !== ""
+            ? options["proxy"].trim()
+            : null
+        const fallbackFetch: typeof fetch = (() => {
+          if (pinnedProxy === null) return fetch
+          const wrapped = (input: RequestInfo | URL, init?: RequestInit) =>
+            fetch(input, { ...init, proxy: pinnedProxy } as RequestInit)
+          const preconnect = (fetch as unknown as { preconnect?: unknown }).preconnect
+          if (typeof preconnect === "function") Object.assign(wrapped, { preconnect: preconnect.bind(fetch) })
+          return wrapped as typeof fetch
+        })()
+        const baseFetch =
+          providerFetch ??
+          NativeTransport.resolveFetch({
+            enabled: profile?.usable ?? false,
+            fallback: fallbackFetch,
+            tlsProfile: profile?.profileId,
+            httpVersion: profile?.httpVersion,
+          })
+        // Provider-level transport options are consumed here; never leak them
+        // into an SDK factory that does not understand them.
+        delete options["tls"]
+        delete options["proxy"]
+        delete options["httpVersion"]
+
+        // The channel marker rides the SDK cache key so a rust-backed SDK is
+        // never reused for the Bun/custom path (or vice versa) across flag or
+        // addon-state flips; the tls profile, http version and pinned proxy ride it too so
+        // distinct transport configurations never share an SDK.
+        const transport = providerFetch !== undefined ? "custom" : profile?.usable === true ? "rust" : pinnedProxy !== null ? "bun-proxy" : "bun"
+
+        // One shared default for every channel: delegation.max_concurrent
+        // (128). An explicit provider option or the env flag still wins.
+        const maxConnections = HttpLimit.resolveMaxConnections(options["maxConnections"], s.maxConnectionsDefault)
+        delete options["maxConnections"]
+
         const key = Hash.fast(
           JSON.stringify({
             providerID: model.providerID,
             npm: model.api.npm,
             options,
+            transport,
+            tlsProfile: profile?.profileId ?? 0,
+            httpVersion: profile?.httpVersion ?? "auto",
+            pinnedProxy,
           }),
         )
         const existing = s.sdk.get(key)
         if (existing) return existing
 
-        const customFetch = options["fetch"]
         const chunkTimeout = options["chunkTimeout"] ?? 300_000
-        const headerTimeout = options["headerTimeout"] ?? 300_000
+        const rawHeaderTimeout = options["headerTimeout"]
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
+        // G1: the header deadline now lives INSIDE HttpLimit.wrapFetch, after
+        // permit grant — queue wait no longer consumes the header budget.
+        const headerTimeoutMs: number | false | undefined =
+          rawHeaderTimeout === false
+            ? false
+            : typeof rawHeaderTimeout === "number"
+              ? rawHeaderTimeout
+              : rawHeaderTimeout == null
+                ? 300_000
+                : undefined
+        const customFetch = HttpLimit.wrapFetch(baseFetch, maxConnections, {
+          ...s.schedulerOptions,
+          headerTimeoutMs,
+          hooks: {
+            onLimitConflict: (kept, requested) => {
+              const key = `limit\0${kept}\0${requested}`
+              if (httpGateConflictWarned.has(key)) return
+              httpGateConflictWarned.add(key)
+              log.warn("http gate limit conflict: keeping the creation-time limit", {
+                providerID: model.providerID,
+                kept,
+                requested,
+              })
+            },
+            onConfigConflict: (origin, kept, requested) => {
+              const key = `config\0${origin}\0${kept}\0${requested}`
+              if (httpGateConflictWarned.has(key)) return
+              httpGateConflictWarned.add(key)
+              log.warn("http gate config conflict: keeping the creation-time scheduler config; restart to change it", {
+                providerID: model.providerID,
+                origin,
+                kept,
+                requested,
+              })
+            },
+          },
+        })
         const replayTransport = () =>
           ResponsesTransport.make({
             providerID: model.providerID,
@@ -2292,7 +2435,12 @@ const layer: Layer.Layer<
             baseURL: options["baseURL"],
             apiKey: options["apiKey"],
             headers: options["headers"],
-            fetch: customFetch,
+            // Replay keeps the PRE-GATE fetch: HttpLimit.wrapFetch is always a
+            // function and ResponsesTransport structurally rejects any custom
+            // fetch for provider-v2 replay. The gate bounds the main model path;
+            // replay preserves its pre-gate semantics (chimera deviation from
+            // alchimia, which wired the wrapped fetch here).
+            fetch: providerFetch,
             timeout: options["timeout"],
             chunkTimeout,
           })
@@ -2301,13 +2449,12 @@ const layer: Layer.Layer<
           const fetchFn = customFetch ?? fetch
           const opts = init ?? {}
           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
-          const headerTimeoutMs = headerTimeout === false ? undefined : headerTimeout
-          const headerTimeoutCtl = typeof headerTimeoutMs === "number" ? timeoutController(headerTimeoutMs) : undefined
+
           const signals: AbortSignal[] = []
 
           if (opts.signal) signals.push(opts.signal)
           if (chunkAbortCtl) signals.push(chunkAbortCtl.signal)
-          if (headerTimeoutCtl) signals.push(headerTimeoutCtl.signal)
+
           if (options["timeout"] !== undefined && options["timeout"] !== null && options["timeout"] !== false)
             signals.push(AbortSignal.timeout(options["timeout"]))
 
@@ -2318,7 +2465,6 @@ const layer: Layer.Layer<
               ? inspectRemoteCompactionRequest(opts.body)
               : "none"
           if (remoteCompaction !== "none" && (model.wire_api ?? provider.wire_api) !== "responses") {
-            headerTimeoutCtl?.clear()
             throw new Error("Remote compaction replay requires the Responses wire API")
           }
           if (remoteCompaction !== "none" && typeof opts.body === "string") {
@@ -2328,7 +2474,6 @@ const layer: Layer.Layer<
               bindingFromTransportIdentity(transport.identity),
             )
             if (rewritten.envelope === "provider-v2" && !transport.identity.replay.eligible) {
-              headerTimeoutCtl?.clear()
               throw new Error(`Remote compaction replay is unavailable: ${transport.identity.replay.reason}`)
             }
             opts.body = rewritten.body
@@ -2368,7 +2513,7 @@ const layer: Layer.Layer<
             ...opts,
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
-          }).finally(() => headerTimeoutCtl?.clear())
+          })
 
           const rewrittenRes = shouldRewriteRelayReasoningEvents(model, model.wire_api ?? provider.wire_api)
             ? rewriteRelayReasoningEvents(res)

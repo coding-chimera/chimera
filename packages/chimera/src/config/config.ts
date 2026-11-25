@@ -370,6 +370,10 @@ export const Info = Schema.Struct({
         description:
           "Route eligible providers through the native @coding-chimera/llm route runtime instead of the AI SDK HTTP transport. Currently piloted for DeepSeek on the openai-compatible chat wire with API-key auth only; every other provider keeps the AI SDK path. When off, the default path is byte-identical and the llm package runtime is never constructed.",
       }),
+      rust_transport: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Route model requests through the native HTTP transport (the chimera-transport addon) instead of Bun fetch. Applies to every provider without a custom fetch; https is carried when the addon advertises the tls capability, otherwise https requests delegate to Bun fetch. Defaults to off; OPENCODE_RUST_TRANSPORT=0 is a process-wide kill switch. When off, or when the addon is missing/incompatible, the existing Bun fetch path is kept unchanged. The HTTP gate defaults to delegation.max_concurrent (128) concurrent requests per origin for every channel; an explicit provider maxConnections option or OPENCODE_PROVIDER_HTTP_MAX_CONNECTIONS always takes priority.",
+      }),
       read_dedup: Schema.optional(
         Schema.Struct({
           gpt_6_astra: Schema.optional(Schema.Boolean).annotate({
@@ -381,6 +385,61 @@ export const Info = Schema.Struct({
       astra_shell_guard: Schema.optional(Schema.Boolean).annotate({
         description:
           "Enable the shell worker rollback guard for GPT-6 Astra models. Omit to keep the guard enabled; set false to roll it back.",
+      }),
+      http_scheduler: Schema.optional(
+        Schema.Struct({
+          mode: Schema.optional(Schema.Literals(["fifo", "cfs"])).annotate({
+            description:
+              "Queue discipline for the per-origin HTTP permit gate. cfs (default) schedules per session flow with permit-time fairness; fifo is an explicit downgrade to the historical single queue.",
+          }),
+          default_weight: Schema.optional(PositiveInt).annotate({
+            description: "CFS weight for flows absent from weights (default 1024).",
+          }),
+          weights: Schema.optional(Schema.Record(Schema.String, PositiveInt)).annotate({
+            description:
+              "Management-plane flow weights keyed by session flow id (from x-parent-session-id / x-session-affinity request headers).",
+          }),
+          admission_granularity_ms: Schema.optional(PositiveInt).annotate({
+            description:
+              "Virtual-time charge per admission (ms at weight 1024) that rotates same-wall-clock batch grants across flows. Default 1.",
+          }),
+          wakeup_credit_ms: Schema.optional(NonNegativeInt).annotate({
+            description:
+              "Bounded head start for a waking flow: its vruntime is clamped to at least min_vruntime - credit. Default 50.",
+          }),
+          max_debt_ms: Schema.optional(NonNegativeInt).annotate({
+            description:
+              "Bounded lag for a waking flow: its vruntime is clamped to at most min_vruntime + max_debt, so a long-idle flow is never parked far behind. Default 500.",
+          }),
+          tick_ms: Schema.optional(NonNegativeInt).annotate({
+            description: "Periodic CFS accounting settle interval in ms; 0 disables the tick. Default 50.",
+          }),
+          max_queue_length: Schema.optional(PositiveInt).annotate({
+            description:
+              "Global queued-request ceiling; overflow rejects pre-send with QueueOverflowError (fetch is never called).",
+          }),
+          max_queue_bytes: Schema.optional(PositiveInt).annotate({
+            description: "Global queued-body byte ceiling (strings counted as UTF-8).",
+          }),
+          per_flow_queue_bytes: Schema.optional(PositiveInt).annotate({
+            description: "Per-flow queued-body byte ceiling.",
+          }),
+          queue_wait_timeout_ms: Schema.optional(PositiveInt).annotate({
+            description:
+              "Maximum queue wait before a pre-send QueueWaitTimeoutError; the timed-out request never reaches fetch.",
+          }),
+          permit_lease_ms: Schema.optional(NonNegativeInt).annotate({
+            description:
+              "Hard permit hold limit: on expiry the upstream request is cancelled and the JS permit freed (covers abandoned response bodies). 0 (default) disables the lease.",
+          }),
+          flow_retention_ms: Schema.optional(NonNegativeInt).annotate({
+            description:
+              "Idle-flow reclamation delay in ms (CFS): a flow with no queued requests and no active permits is dropped after this long idle, freeing its accounting. 0 disables reclamation. A key returning after reclamation starts as a new flow at min_vruntime. Default 30000.",
+          }),
+        }),
+      ).annotate({
+        description:
+          "Per-origin HTTP permit scheduler for model requests. Defaults to CFS per-session-flow permit-time fairness (vruntime accounting, weighted admission, bounded wakeup credit/debt) plus queue ceilings, wait timeouts and an optional permit lease; set mode fifo to explicitly downgrade to the historical single queue. Flow identity comes from x-parent-session-id / x-session-affinity request headers.",
       }),
     }),
   ),

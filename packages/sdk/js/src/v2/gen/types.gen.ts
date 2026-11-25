@@ -1149,6 +1149,19 @@ export type ProviderConfig = {
      * Timeout in milliseconds between streamed SSE chunks for this provider (default: 300000). If no chunk arrives within this window, the request is aborted. Set to false to disable timeout.
      */
     chunkTimeout?: number | false
+    /**
+     * TLS profile for this provider's native-transport requests (requires experimental.rust_transport). Profiles are immutable; a changed fingerprint creates a new profile.
+     */
+    tls?: {
+      ca?: string
+      cert?: string
+      key?: string
+      rejectUnauthorized?: boolean
+      serverName?: string
+    }
+    proxy?: string
+    httpVersion?: "auto" | "http1"
+    maxConnections?: number
     [key: string]: unknown
   }
   models?: {
@@ -1559,6 +1572,7 @@ export type Config = {
     mcp_timeout?: number
     system_context?: boolean
     llm_runtime?: boolean
+    rust_transport?: boolean
     /**
      * Read deduplication behavior for models that support it.
      */
@@ -1566,6 +1580,23 @@ export type Config = {
       gpt_6_astra?: boolean
     }
     astra_shell_guard?: boolean
+    http_scheduler?: {
+      mode?: "fifo" | "cfs"
+      default_weight?: number
+      weights?: {
+        [key: string]: number
+      }
+      admission_granularity_ms?: number
+      wakeup_credit_ms?: number
+      max_debt_ms?: number
+      tick_ms?: number
+      max_queue_length?: number
+      max_queue_bytes?: number
+      per_flow_queue_bytes?: number
+      queue_wait_timeout_ms?: number
+      permit_lease_ms?: number
+      flow_retention_ms?: number
+    }
   }
 }
 
@@ -2096,6 +2127,10 @@ export type McpStatusConnected = {
   status: "connected"
 }
 
+export type McpStatusConnecting = {
+  status: "connecting"
+}
+
 export type McpStatusDisabled = {
   status: "disabled"
 }
@@ -2116,6 +2151,7 @@ export type McpStatusNeedsClientRegistration = {
 
 export type McpStatus =
   | McpStatusConnected
+  | McpStatusConnecting
   | McpStatusDisabled
   | McpStatusFailed
   | McpStatusNeedsAuth
@@ -5286,6 +5322,7 @@ export type ConfigProvidersData = {
   query?: {
     directory?: string
     workspace?: string
+    include_experimental?: "true" | "false"
   }
   url: "/config/providers"
 }

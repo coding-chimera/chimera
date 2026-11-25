@@ -3,13 +3,9 @@ import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
 import type { ProviderID } from "./schema"
 
-export class HeaderTimeoutError extends Error {
-  public override readonly name = "ProviderHeaderTimeoutError"
-
-  constructor(public readonly ms: number) {
-    super(`Provider response headers timed out after ${ms}ms`)
-  }
-}
+// HeaderTimeoutError now lives in header-timeout.ts (so that module avoids the
+// `ai` dependency); re-exported here to keep the public ProviderError identity.
+export { HeaderTimeoutError } from "./header-timeout"
 
 // Adapted from overflow detection patterns in:
 // https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/utils/overflow.ts

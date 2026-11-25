@@ -256,6 +256,44 @@ export const Info = Schema.Struct({
           description:
             "Timeout in milliseconds between streamed SSE chunks for this provider (default: 300000). If no chunk arrives within this window, the request is aborted. Set to false to disable timeout.",
         }),
+        tls: Schema.optional(
+          Schema.Struct({
+            ca: Schema.optional(Schema.String).annotate({
+              description:
+                "Custom CA certificate for native-transport requests: inline PEM or a path to a PEM file. Requires the addon tls-custom-ca capability. Trusted additively alongside OS platform trust; a chain anchored at this CA is verified against it even when OS policy (e.g. macOS leaf-validity limits) would reject it.",
+            }),
+            cert: Schema.optional(Schema.String).annotate({
+              description:
+                "Client certificate for mTLS on native-transport requests: inline PEM or a path to a PEM file. Requires the addon mtls capability.",
+            }),
+            key: Schema.optional(Schema.String).annotate({
+              description:
+                "Client private key for mTLS on native-transport requests: inline PEM or a path to a PEM file. Requires the addon mtls capability.",
+            }),
+            rejectUnauthorized: Schema.optional(Schema.Boolean).annotate({
+              description:
+                "Set false to disable TLS certificate verification for this provider. Only honored through an explicit immutable native-transport profile — never via env or global settings.",
+            }),
+            serverName: Schema.optional(Schema.String).annotate({
+              description: "Override the TLS certificate verification server name for this provider (SNI still follows the request URL; reqwest exposes no SNI override). This path trusts bundled webpki + env + provided CA roots rather than the OS store, so an OS-only enterprise CA must be supplied via ca.",
+            }),
+          }).annotate({
+            description:
+              "TLS profile for this provider's native-transport requests (requires experimental.rust_transport). Profiles are immutable; a changed fingerprint creates a new profile.",
+          }),
+        ),
+        proxy: Schema.optional(Schema.String).annotate({
+          description:
+            "Explicit proxy URL for this provider's native-transport requests. Pinned: route fallback never bypasses an explicitly configured proxy. Env proxies are discovered by the addon when it advertises proxy-system.",
+        }),
+        httpVersion: Schema.optional(Schema.Literals(["auto", "http1"])).annotate({
+          description:
+            'HTTP protocol preference for the native transport: "auto" (ALPN-negotiated h2 with http1 fallback, default) or "http1".',
+        }),
+        maxConnections: Schema.optional(PositiveInt).annotate({
+          description:
+            "Maximum number of concurrent HTTP requests to a single origin for this provider's model calls (default: delegation.max_concurrent, 128). Requests beyond the cap are queued (per-flow CFS by default), never rejected; queue ceilings are opt-in. A queued request aborts with its caller.",
+        }),
       }),
       [Schema.Record(Schema.String, Schema.Any)],
     ),

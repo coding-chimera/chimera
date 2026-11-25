@@ -4544,6 +4544,60 @@ test("model capability layers merge: built-in table < provider config < global m
   })
 })
 
+test("provider.list includes alpha models only when explicitly requested", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "mixed-status": {
+              name: "Mixed Status",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "active-model": { name: "Active" },
+                "beta-model": { name: "Beta", status: "beta" },
+                "alpha-model": { name: "Alpha", status: "alpha" },
+                "deprecated-model": { name: "Deprecated", status: "deprecated" },
+              },
+              options: { baseURL: "https://api.custom.com/v1" },
+            },
+            "alpha-only": {
+              name: "Alpha Only",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "alpha-only-model": { name: "Alpha Only Model", status: "alpha" },
+              },
+              options: { baseURL: "https://api.custom.com/v1" },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const standard = await list()
+      expect(Object.keys(standard[ProviderID.make("mixed-status")].models).sort()).toEqual(["active-model", "beta-model"])
+      expect(standard[ProviderID.make("alpha-only")]).toBeUndefined()
+
+      const experimental = await run((provider) => provider.list({ includeExperimental: true }))
+      expect(Object.keys(experimental[ProviderID.make("mixed-status")].models).sort()).toEqual([
+        "active-model",
+        "alpha-model",
+        "beta-model",
+      ])
+      expect(experimental[ProviderID.make("mixed-status")].models["deprecated-model"]).toBeUndefined()
+      expect(experimental[ProviderID.make("alpha-only")].models["alpha-only-model"]).toBeDefined()
+    },
+  })
+})
+
+
 test("defaultModelIDs skips providers with empty models instead of throwing", () => {
   const result = Provider.defaultModelIDs({
     openai: { models: { "gpt-4.1": { id: "gpt-4.1" }, "gpt-4o": { id: "gpt-4o" } } },

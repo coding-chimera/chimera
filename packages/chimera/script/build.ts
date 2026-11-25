@@ -130,6 +130,36 @@ async function copyKernelPrebuild(targetBinDir: string, target: NpmPlatformTarge
   console.log(`kernel: bundled ${path.relative(dir, source)} -> ${path.relative(dir, kernelDir)}/codegraph-kernel.node`)
 }
 
+/**
+ * Copy the native chimera-transport addon (when prebuilt for this target)
+ * into the platform package at bin/transport/chimera-transport.node — the
+ * loader's execPath-adjacent search candidate
+ * (src/provider/sdk/native-transport/loader.ts, candidate 2: <dir of
+ * binary>/transport/chimera-transport.node), same asset convention as
+ * copyKernelPrebuild above.
+ *
+ * A MISSING prebuild is a warning, not a build failure: the transport is
+ * optional and every load failure degrades to Bun fetch. Reuses
+ * kernelPrebuildPlatformDir's (os, arch, libc) axis — the transport crate
+ * also compiles with no target-cpu flags, so baseline packages share the
+ * non-baseline artifact. Stage legs locally with
+ * packages/chimera/script/build-transport.sh --target …
+ */
+async function copyTransportPrebuild(targetBinDir: string, target: NpmPlatformTarget) {
+  const platformDir = kernelPrebuildPlatformDir(target)
+  const source = path.join(dir, "..", "..", "chimera-transport", "prebuilds", platformDir, "chimera-transport.node")
+  if (!fs.existsSync(source)) {
+    console.warn(
+      `transport: no prebuild for ${platformDir} (${path.relative(dir, source)}) — shipping without the native transport; Bun fetch fallback applies`,
+    )
+    return
+  }
+  const transportDir = path.join(targetBinDir, "transport")
+  await fs.promises.mkdir(transportDir, { recursive: true })
+  await fs.promises.copyFile(source, path.join(transportDir, "chimera-transport.node"))
+  console.log(`transport: bundled ${path.relative(dir, source)} -> ${path.relative(dir, transportDir)}/chimera-transport.node`)
+}
+
 const singleFlag = process.argv.includes("--single")
 // Cross-leg local builds: --platform=<leg> restricts the matrix to exactly one
 // npm platform target ("linux-x64" or the full platform package name). Host-only
@@ -321,6 +351,9 @@ for (const item of targets) {
   const parserWorker = fs.realpathSync(fs.existsSync(localPath) ? localPath : rootPath)
   const workerPath = "./src/cli/cmd/tui/worker.ts"
   const parseWorkerPath = "./src/graph/extraction/parse-worker.ts"
+  // The graph writer worker entry is embedded like the parse worker; source
+  // runs keep the literal new URL fallback in src/graph/worker/index.ts.
+  const graphWriterWorkerPath = "./src/graph/worker/graph-writer.worker.ts"
 
   // Use platform-specific bunfs root path based on target OS
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
@@ -359,6 +392,7 @@ for (const item of targets) {
       parserWorker,
       workerPath,
       parseWorkerPath,
+      graphWriterWorkerPath,
       ...(embeddedWebUIFileMap ? [embeddedWebUIEntrypoint] : []),
       ...(embeddedNewWebUIFileMap ? [embeddedNewWebUIEntrypoint] : []),
     ],
@@ -370,6 +404,7 @@ for (const item of targets) {
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
       CHIMERA_PARSE_WORKER_PATH: parseWorkerPath,
+      CHIMERA_GRAPH_WRITER_WORKER_PATH: graphWriterWorkerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
     },
@@ -398,6 +433,7 @@ for (const item of targets) {
   await copyGraphGrammarWasms(path.join(dir, "dist", name, "bin"))
   await copyWebTreeSitterRuntime(path.join(dir, "dist", name, "bin"))
   await copyKernelPrebuild(path.join(dir, "dist", name, "bin"), item)
+  await copyTransportPrebuild(path.join(dir, "dist", name, "bin"), item)
 
   // Smoke test: only run if binary is for current platform. Set
   // CHIMERA_BUILD_SKIP_SMOKE=1 to skip it where executing a freshly built

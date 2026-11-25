@@ -1,0 +1,64 @@
+[package]
+name = "chimera-transport"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Private native HTTP/1.1+HTTP/2 + TLS + SSE transport for the Chimera runtime (napi-rs cdylib, one shared Tokio runtime, bounded per-stream buffers)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# N-API 8 stable surface only. `async` is what turns `async fn` exports into
+# JS Promises and provides `create_custom_tokio_runtime`, which is how the one
+# process-wide multi-thread runtime below gets installed.
+napi = { version = "3", default-features = false, features = ["napi8", "async"] }
+napi-derive = "3"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+# TLS backend: rustls via reqwest's `rustls` feature (aws-lc-rs provider +
+# rustls-platform-verifier trust). `http2` enables h2 through ALPN (plaintext
+# http:// stays HTTP/1.1 — h2c is never negotiated). `system-proxy` honors
+# env-discovered proxies so the TS delegation whitelist can lift its proxy
+# fallback. Still no `charset`/`json`/`cookies`.
+reqwest = { version = "0.13", default-features = false, features = [
+  "stream",
+  "gzip",
+  "brotli",
+  "deflate",
+  "http2",
+  "system-proxy",
+  "rustls",
+] }
+# Direct rustls dep for the crypto-provider install (module_init) and the
+# webpki-roots fallback ClientConfig built when the platform verifier cannot
+# be constructed. Features stay aligned with reqwest's `rustls` (aws-lc-rs).
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
+# Bundled Mozilla roots, used ONLY when platform-verifier construction fails.
+webpki-roots = "1"
+# Direct dependency (reqwest's `rustls` feature already pulls it in) so the
+# crate can build the additive OS-trust + extra-roots verifier itself and
+# keep platform policy as the primary decision.
+rustls-platform-verifier = "0.7"
+# Env extra-root harvesting: SSL_CERT_FILE / SSL_CERT_DIR.
+rustls-native-certs = "0.8"
+# PEM parsing (NODE_EXTRA_CA_CERTS / OPENCODE_RUST_TRANSPORT_CA_FILE),
+# including OpenSSL TRUSTED CERTIFICATE normalization.
+rustls-pki-types = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+bytes = "1"
+
+[build-dependencies]
+napi-build = "2"
+
+# `cargo test` links the harness as an executable, which cannot defer the
+# libnode napi_* symbols the shipped cdylib does. napi's `noop` feature stubs
+# the JS registration layer for exactly this; as a dev-dependency it applies to
+# test/bench profiles only (resolver v2), so release cdylib builds are unaffected.
+[dev-dependencies]
+napi = { version = "3", default-features = false, features = ["napi8", "noop"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

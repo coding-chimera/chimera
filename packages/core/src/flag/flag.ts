@@ -27,6 +27,7 @@ const CHIMERA_OPENCODE_ENV_ALIASES = [
   "SERVER_PASSWORD",
   "SERVER_USERNAME",
   "GLOBAL_SSE_MAX_CONNECTIONS",
+  "PROVIDER_HTTP_MAX_CONNECTIONS",
   "SERVER_HONO",
   "ENABLE_QUESTION_TOOL",
   "EXPERIMENTAL",
@@ -183,6 +184,12 @@ export const Flag = {
   // unset or invalid values fall back to the server-side default.
   get OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS() {
     return number("OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS")
+  },
+  // Per-origin cap on concurrent model HTTP requests (provider SDK fetch wrapper).
+  // Evaluated at access time so operators and tests can change it without a rebuild;
+  // unset or invalid values fall back to the provider default (64).
+  get OPENCODE_PROVIDER_HTTP_MAX_CONNECTIONS() {
+    return number("OPENCODE_PROVIDER_HTTP_MAX_CONNECTIONS")
   },
   get OPENCODE_TUI_CONFIG() {
     return process.env["OPENCODE_TUI_CONFIG"]

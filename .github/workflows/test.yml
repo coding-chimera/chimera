@@ -202,3 +202,28 @@ jobs:
       # regression in the bench surface must not need a full benchmark run.
       - name: Compile host benches
         run: cargo bench --no-run --manifest-path chimera-host/Cargo.toml
+
+  # Rust transport (chimera-transport) coverage: the napi cdylib behind the
+  # provider HTTP seam. Unit tests run on Linux; Windows only needs the release
+  # prebuild leg (publish.yml transport-prebuild), not this test job.
+  transport-rust:
+    name: transport-rust
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: chimera-transport -> target
+
+      - name: Run transport tests
+        working-directory: chimera-transport
+        run: cargo test --locked
