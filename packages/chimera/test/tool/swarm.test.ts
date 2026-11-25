@@ -954,6 +954,42 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
+  it.instance("hides dispatch controls from the kimi-k3.1-pro-prime tool view", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const registry = yield* ToolRegistry.Service
+      const build = yield* agents.get("build")
+      const target = (yield* registry.tools({
+        providerID: ProviderID.make("test"),
+        modelID: ModelID.make("kimi-k3.1-pro-prime"),
+        agent: build,
+      })).find((item) => item.id === "chimera_swarm")!
+      const targetJson = toJsonSchema(target.parameters)
+      const targetSchema = JSON.stringify(targetJson)
+
+      expect(targetSchema).not.toContain("background")
+      expect(targetSchema).not.toContain("block_reason")
+      expect(target.description).not.toContain("background")
+      expect(target.description).not.toContain("block_reason")
+      expect(target.description).toContain("prompt_template")
+      expect(target.description).toContain("chimera_swarm is directly available")
+      expect(targetJson.required).toEqual(["prompt_template", "items"])
+      expect(targetSchema).not.toContain("\"from\"")
+      expect(targetSchema).not.toContain("\"preset\"")
+      expect(targetSchema).not.toContain("\"limit\"")
+      expect(targetSchema).toContain('"enum":["general","explore"]')
+      expect(targetSchema).toContain('"enum":["scout","builder","reviewer"]')
+      expect(target.formatValidationError?.("bad")).not.toContain("background")
+      expect(target.formatValidationError?.("bad")).not.toContain("block_reason")
+
+      const other = (yield* registry.tools({ ...ref, agent: build })).find((item) => item.id === "chimera_swarm")!
+      expect(JSON.stringify(toJsonSchema(other.parameters))).toContain("\"background\"")
+      expect(JSON.stringify(toJsonSchema(other.parameters))).toContain("\"block_reason\"")
+      expect(other.description).toContain("background: true")
+      expect(other.description).toContain("block_reason")
+    }),
+  )
+
   it.instance("is exposed by the registry with audit-evidence guidance", () =>
     Effect.gen(function* () {
       const agent = yield* Agent.Service
@@ -2354,6 +2390,41 @@ describe("tool.chimera_swarm background dispatch", () => {
 
   const swarmJobs = (jobs: BackgroundJob.Interface) =>
     jobs.list().pipe(Effect.map((list) => list.filter((job) => job.type === "swarm")))
+
+  engineIt.instance("defaults kimi-k3.1-pro-prime to background dispatch without a parameter", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const parent = yield* seed()
+      const def = yield* (yield* ChimeraSwarmTool).init()
+      const gate = yield* Deferred.make<void>()
+      const base = ctx(parent, backgroundOps({ gate }))
+
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha"],
+          subagent_type: "general",
+          concurrency: 1,
+        },
+        {
+          ...base,
+          extra: {
+            ...base.extra,
+            model: { providerID: ProviderID.make("test"), api: { id: "kimi-k3.1-pro-prime" } },
+          },
+        },
+      )
+
+      expect(JSON.parse(result.output).background).toBe(true)
+      expect(result.metadata?.background).toBe(true)
+      expect((yield* swarmJobs(jobs)).some((job) => job.status === "running")).toBe(true)
+
+      yield* Deferred.succeed(gate, undefined)
+      yield* waitFor(() =>
+        swarmJobs(jobs).pipe(Effect.map((list) => list.length === 1 && list.every((job) => job.delivery === "delivered"))),
+      )
+    }),
+  )
 
   engineIt.instance("returns a startup receipt before workers settle", () =>
     Effect.gen(function* () {

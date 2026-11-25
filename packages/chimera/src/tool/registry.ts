@@ -10,7 +10,7 @@ import { TaskTool } from "./task"
 import { OrchestrateTool } from "./orchestrate"
 import { TaskCancelTool } from "./task-cancel"
 import { ProcNotifyTool } from "./proc-notify"
-import { ChimeraSwarmTool } from "./swarm"
+import { ChimeraSwarmTool, autoBackgroundView } from "./swarm"
 import { SubagentModelScheduleTool } from "./subagent_model_schedule"
 import { SubagentModelRoutesTool } from "./subagent_model_routes"
 import { SubagentModelPreferTool } from "./subagent_model_prefer"
@@ -529,19 +529,20 @@ export const layer = Layer.effect(
             parameters: tool.parameters,
           }
           yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+          const view = tool.id === ChimeraSwarmTool.id ? autoBackgroundView(input.modelID) : undefined
           return {
             id: tool.id,
             description: [
-              output.description,
+              view?.description ?? output.description,
               tool.id === TaskTool.id || tool.id === ChimeraSwarmTool.id || tool.id === OrchestrateTool.id
                 ? yield* describeTask(input.agent)
                 : undefined,
             ]
               .filter(Boolean)
               .join("\n"),
-            parameters: output.parameters,
+            parameters: view?.parameters ?? output.parameters,
             execute: tool.execute,
-            formatValidationError: tool.formatValidationError,
+            formatValidationError: view?.formatValidationError ?? tool.formatValidationError,
           }
         }),
         { concurrency: "unbounded" },

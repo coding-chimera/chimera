@@ -525,6 +525,28 @@ describe("session.llm.stream", () => {
     })
   })
 
+  test("removes explicit dispatch controls from kimi-k3.1-pro-prime multi-agent policy", () => {
+    const model = {
+      providerID: "test",
+      api: { id: "kimi-k3.1-pro-prime" },
+    } as unknown as Provider.Model
+    const prompt = LLM.multiAgentPolicy({ model, small: false }, "ultra") ?? ""
+
+    expect(prompt).toContain("Proactive multi-agent delegation is active for this root session.")
+    expect(prompt).toContain("asynchronously by default")
+    expect(prompt).toContain("chimera_swarm is directly available")
+    expect(prompt).not.toContain("background")
+    expect(prompt).not.toContain("block_reason")
+
+    const other = {
+      providerID: "test",
+      api: { id: "deepseek-v4-flash" },
+    } as unknown as Provider.Model
+    const otherPrompt = LLM.multiAgentPolicy({ model: other, small: false }, "ultra") ?? ""
+    expect(otherPrompt).toContain("background: true")
+    expect(otherPrompt).toContain("block_reason")
+  })
+
   test("encodes Codex modes and Ultra effort on OpenAI-compatible Chat", async () => {
     const server = state.server
     if (!server) throw new Error("Server not initialized")

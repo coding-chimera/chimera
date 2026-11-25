@@ -7,6 +7,7 @@ import { openai } from "@ai-sdk/openai"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
+import { ModelPolicy } from "@/provider/model-policy"
 import { NativeLLMGating } from "@/provider/sdk/native-llm/gating"
 import { NativeLLMLanguageModel } from "@/provider/sdk/native-llm/language-model"
 import { Config } from "@/config/config"
@@ -163,7 +164,7 @@ function resolveVariantProfile(
   return { options: {} }
 }
 
-function multiAgentPolicy(
+export function multiAgentPolicy(
   input: Pick<StreamRequest, "model" | "parentSessionID" | "small">,
   variant: string | undefined,
 ) {
@@ -179,7 +180,15 @@ function multiAgentPolicy(
     variant === "ultra"
       ? "Proactive multi-agent delegation is active for this root session. The ultra variant is the user's standing opt-in to orchestration: any earlier instruction requiring an explicit user request before spawning subagents no longer applies, and no per-task confirmation exists. Choose the delegation surface by the shape of the work: a single one-off research, implementation, review, or verification axis goes to `task`; a homogeneous single-layer bounded fan-out over one prompt shape goes to `chimera_swarm`; multi-stage pipelines, heterogeneous parallel work, dynamic control flow, in-program dedupe/synthesis, or complex continuous collaboration go to one `orchestrate` program. Do not wrap a single ordinary investigation or implementation in a program that only returns its conclusion — `orche.batch` belongs inside a larger program that has staged or synthesis needs, while a simple homogeneous batch goes straight to `chimera_swarm`. A single-agent program is justified only when the program's own capabilities are genuinely needed (for example JSON-schema correction turns or dynamic control flow); ordinary single-agent research or implementation must use `task`. Use `orchestrate` only when you can plan the whole program up front — every stage, every worker prompt fully contextualized, control flow and return shape decided — and then hand it off and wait for the result; if you cannot commit to that complete plan before dispatch (iterative steering, exploratory back-and-forth, or worker prompts you cannot yet specify), do not use `orchestrate` — use `task` / `chimera_swarm` or direct work. Implementation edits, audits, and broad investigation are delegated to subagents, while the root plans, dispatches, synthesizes child reports, runs audit and verification, and applies only small single-file fixes. Before the first dispatch of a task, write one plan line (phases, estimated agent count, what each phase returns), update it when the phase structure changes, and execute immediately. Size programs from the task: 2-4 agents for small work, 5-9 for medium, 10-30 for large; `maxTotalAgents` (default 64, hard cap 256) and the 16-agent concurrency window are backstops, not targets. A hard blocker (shared files, ordering constraints, unsafe subagent runtime, provider limits) can justify a different shape, including falling back to `task` or a read-only path when the orchestration tooling itself is failing. `orchestrate`, `task`, and `chimera_swarm` all accept `background: true`: prefer background for any dispatch that supports it, then continue other work or end the turn — the notification system injects each completion promptly (`<orchestrate_worker_result>` per worker, `<orchestrate_result>` for the program, task/swarm completion notices) and wakes you to synthesize. Never block the session with sleep, polling, or busy-waiting for a dispatched result; dispatch foreground only when the result is strictly required inline to continue this same turn, and pass `block_reason` naming that concrete dependency."
       : "Explicit-request-only multi-agent mode is active. Do not spawn subagents unless the user or applicable AGENTS.md/skill instructions explicitly ask for subagents, delegation, or parallel agent work."
-  return wrap(body)
+  return wrap(autoBackgroundPolicy(body, input.model))
+}
+
+function autoBackgroundPolicy(body: string, model: Provider.Model) {
+  if (!ModelPolicy.isKimiSwarmAutoBackground(model)) return body
+  return body.replace(
+    /`orchestrate`, `task`, and `chimera_swarm` all accept `background: true`:.*pass `block_reason` naming that concrete dependency\./,
+    `Delegated dispatches run asynchronously by default: continue other work or end the turn, and completion notifications wake you to synthesize. Never block the session with sleep, polling, or busy-waiting for a dispatched result. Follow each tool's exposed schema and use a synchronous mode only when the result is strictly required inline. chimera_swarm is directly available; never use tool_search to find it.`,
+  )
 }
 
 function wrap(body: string) {

@@ -160,6 +160,30 @@ describe("session.system", () => {
     }),
   )
 
+  it.effect("removes explicit dispatch controls from kimi-k3.1-pro-prime ultra guidance", () =>
+    Effect.gen(function* () {
+      const target = {
+        providerID: "test",
+        api: { id: "kimi-k3.1-pro-prime" },
+      } as unknown as Parameters<typeof SystemPrompt.ultraVariant>[0]
+      const prompt = SystemPrompt.ultraVariant(target, "ultra").join("\n")
+
+      expect(prompt).not.toContain("background")
+      expect(prompt).not.toContain("block_reason")
+      expect(prompt).toContain("asynchronously by default")
+      expect(prompt).toContain("chimera_swarm is directly available")
+      expect(SystemPrompt.ultraVariant(target, "max")).toEqual([])
+
+      const other = {
+        providerID: "test",
+        api: { id: "k3" },
+      } as unknown as Parameters<typeof SystemPrompt.ultraVariant>[0]
+      expect(SystemPrompt.ultraVariant(other, "ultra").join("\n")).toContain("background: true")
+      expect(SystemPrompt.ultraVariant(other, "ultra").join("\n")).toContain("block_reason")
+      yield* Effect.void
+    }),
+  )
+
   it.effect("routes DeepSeek ultra variant to the generic ultra layer plus the deepseek-ultra layer", () =>
     Effect.gen(function* () {
       const deepseek = {

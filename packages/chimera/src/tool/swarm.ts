@@ -12,6 +12,7 @@ import { Agent } from "../agent/agent"
 import { Config } from "@/config/config"
 import { ConfigDelegation } from "@/config/delegation"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
+import { ModelPolicy } from "@/provider/model-policy"
 import { Permission } from "@/permission"
 import { Session } from "@/session/session"
 import { Cause, Clock, Effect, Fiber, Option, Ref, Schema, Scope } from "effect"
@@ -88,6 +89,54 @@ export const Parameters = Schema.Struct({
 })
 
 type Params = Schema.Schema.Type<typeof Parameters>
+const AUTO_BACKGROUND_DESCRIPTION = [
+  "Run a homogeneous fan-out of independent subagents from one prompt template.",
+  "chimera_swarm is directly available: never use tool_search to find it and never claim it is unavailable.",
+  "Every call must include BOTH items and prompt_template. items is a non-empty array of strings or objects; prompt_template must contain {{item}}.",
+  "Never call with only description, concurrency, or model selectors: those fields do not specify the work items.",
+  'Minimal call: { prompt_template: "Review {{item}}", items: ["src/a.ts", "src/b.ts"] }',
+  "subagent_type must be general or explore (omit it to use general). workload must be scout, builder, or reviewer; workload names are not agent types.",
+  "Use task for one delegation and orchestrate for multi-stage or heterogeneous work. Worker results arrive through completion notifications.",
+].join("\n")
+
+const AUTO_BACKGROUND_PARAMETERS = Schema.Struct({
+  prompt_template: Schema.String.annotate({
+    description: "Required prompt template for every worker. Must include the {{item}} placeholder.",
+  }),
+  items: Schema.Array(SwarmItem).annotate({
+    description: "Required non-empty work items. Each item is rendered into one child subagent task.",
+  }),
+  subagent_type: Schema.optional(Schema.Literals(["general", "explore"])).annotate({
+    description: "Optional worker agent type: general or explore. Omit to use general. Do not use workload names here.",
+  }),
+  workload: Schema.optional(Schema.Literals(["scout", "builder", "reviewer"])).annotate({
+    description: "Optional delegation workload: scout, builder, or reviewer.",
+  }),
+  model_profile: BaseParameterFields.model_profile,
+  model: BaseParameterFields.model,
+  model_identity: BaseParameterFields.model_identity,
+  provider: BaseParameterFields.provider,
+  variant: BaseParameterFields.variant,
+  description: BaseParameterFields.description,
+  concurrency: BaseParameterFields.concurrency,
+})
+
+function autoBackgroundValidationError(error: unknown) {
+  return [
+    `The ${id} tool was called with invalid arguments: ${error}.`,
+    "Expected shape: { prompt_template: string (required; must include {{item}}), items: (string | object)[] (required), subagent_type?: general | explore, workload?: scout | builder | reviewer, model_profile?: string, model?: string, model_identity?: string, provider?: string, variant?: string, description?: string, concurrency?: number (1-16) }",
+    'Example: { prompt_template: "Review {{item}}", items: ["src/a.ts", "src/b.ts"] }',
+  ].join("\n")
+}
+
+export function autoBackgroundView(modelID: string) {
+  if (!ModelPolicy.isKimiSwarmAutoBackground({ id: modelID })) return undefined
+  return {
+    description: AUTO_BACKGROUND_DESCRIPTION,
+    parameters: AUTO_BACKGROUND_PARAMETERS as unknown as typeof Parameters,
+    formatValidationError: autoBackgroundValidationError,
+  }
+}
 
 type SwarmResult = {
   index: number
@@ -153,6 +202,9 @@ export const ChimeraSwarmTool = Tool.define(
     const scheduling = yield* SubagentModelSchedulingRuntime.make
     const scope = yield* Scope.Scope
     const run = Effect.fn("ChimeraSwarmTool.execute")(function* (params: Params, ctx: Tool.Context) {
+      const autoBackground = ModelPolicy.isKimiSwarmAutoBackground(
+        ctx.extra?.model as ModelPolicy.ModelPolicyRef | undefined,
+      )
       const selectors = normalizeSubagentModelSelection({
         modelProfile: params.model_profile,
         model: params.model,
@@ -444,8 +496,10 @@ export const ChimeraSwarmTool = Tool.define(
       // the shared background_concurrent pool. The tool fiber never binds
       // onInterrupt here: a parent abort must not cascade to detached workers
       // (session.remove / task_cancel reach them through the engine instead).
-      if (params.background === true && engine) {
-        const cfg = yield* config.get()
+      const cfg = yield* config.get()
+      const autoBackgroundEnabled =
+        autoBackground && (cfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS)
+      if ((params.background === true || autoBackgroundEnabled) && engine) {
         const poolLimit = cfg.delegation?.background_concurrent ?? ConfigDelegation.DEFAULT_BACKGROUND_CONCURRENT
         if (!parent.parentID) {
           yield* routing.recordDelegation(parent.projectID).pipe(

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect"
 
+import { ModelPolicy } from "@/provider/model-policy"
 import { InstanceState } from "@/effect/instance-state"
 
 import PROMPT_CLAUDE from "./prompt/claude.txt"
@@ -26,6 +27,13 @@ import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 import { MCP } from "@/mcp"
+
+const PROMPT_ULTRA_AUTO_BACKGROUND = PROMPT_ULTRA.split("\n")
+  .map((line) => {
+    if (!line.startsWith("10. Prefer background for any dispatch")) return line
+    return "10. Delegated dispatches run asynchronously by default: continue other work or end the turn; completion notifications wake you to synthesize. Never block the session with sleep, polling, or busy-waiting. Follow each tool's exposed schema and use a synchronous mode only when the result is strictly required inline. chimera_swarm is directly available; never use tool_search to find it."
+  })
+  .join("\n")
 
 function ids(model: Provider.Model) {
   const apiID = model.api.id.toLowerCase()
@@ -195,7 +203,10 @@ export function ultraVariantSegments(model: Provider.Model, variant: string | un
   return memoSegments(ultraVariantSegmentsMemo, `${modelKey(model)}\u0000ultra`, () => {
     const specific = matchLayer(ULTRA_LAYERS, model)
     return [
-      { key: "variant/ultra", content: PROMPT_ULTRA },
+      {
+        key: "variant/ultra",
+        content: ModelPolicy.isKimiSwarmAutoBackground(model) ? PROMPT_ULTRA_AUTO_BACKGROUND : PROMPT_ULTRA,
+      },
       ...(specific ? [{ key: specific.key, content: specific.content }] : []),
     ]
   })
