@@ -555,6 +555,7 @@ describe("HttpApi SDK", () => {
         const paths = yield* capture(() => sdk.path.get())
         const config = yield* capture(() => sdk.config.get())
         const providers = yield* capture(() => sdk.config.providers())
+        const experimentalProviders = yield* capture(() => sdk.config.providers({ include_experimental: 'true' }))
         const file = yield* capture(() => sdk.file.read({ path: "hello.txt" }))
         const files = yield* capture(() => sdk.file.list({ path: "." }))
         const fileStatus = yield* capture(() => sdk.file.status())
@@ -574,6 +575,7 @@ describe("HttpApi SDK", () => {
             paths,
             config,
             providers,
+            experimentalProviders,
             file,
             files,
             fileStatus,

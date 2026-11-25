@@ -45,7 +45,7 @@ export const McpRoutes = lazy(() =>
       async (c) =>
         jsonRequest("McpRoutes.status", c, function* () {
           const mcp = yield* MCP.Service
-          return yield* mcp.status()
+          return yield* mcp.statusSnapshot()
         }),
     )
     .post(

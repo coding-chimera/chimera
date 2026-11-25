@@ -168,7 +168,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
     })
 
     const resource = Effect.fn("ExperimentalHttpApi.resource")(function* () {
-      return yield* mcp.resources()
+      return yield* mcp.resourcesSnapshot()
     })
 
     return handlers

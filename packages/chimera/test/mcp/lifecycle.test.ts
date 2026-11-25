@@ -6,8 +6,7 @@ import {
   LoggingMessageNotificationSchema,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js"
-import { InstanceRuntime } from "../../src/project/instance-runtime"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 
 // --- Mock infrastructure ---
@@ -16,6 +15,7 @@ import type { MCP as MCPNS } from "../../src/mcp/index"
 interface MockClientState {
   tools: Array<{ name: string; description?: string; inputSchema: object }>
   listToolsCalls: number
+  listPromptsCalls: number
   listToolsShouldFail: boolean
   listToolsError: string
   listPromptsShouldFail: boolean
@@ -48,6 +48,7 @@ function getOrCreateClientState(name?: string): MockClientState {
     state = {
       tools: [{ name: "test_tool", description: "A test tool", inputSchema: { type: "object", properties: {} } }],
       listToolsCalls: 0,
+      listPromptsCalls: 0,
       listToolsShouldFail: false,
       listToolsError: "listTools failed",
       listPromptsShouldFail: false,
@@ -173,6 +174,7 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
     }
 
     async listPrompts() {
+      if (this._state) this._state.listPromptsCalls++
       if (this._state?.listPromptsShouldFail) {
         throw new Error("listPrompts failed")
       }
@@ -209,8 +211,13 @@ beforeEach(() => {
 // Import after mocks
 const { MCP } = await import("../../src/mcp/index")
 const { Instance } = await import("../../src/project/instance")
+const { Command } = await import("../../src/command")
+const { Skill } = await import("../../src/skill")
+const { Config } = await import("../../src/config/config")
+const { InstanceRef } = await import("../../src/effect/instance-ref")
+const { provideTestInstance, tmpdir } = await import("../fixture/fixture")
 const { WithInstance } = await import("../../src/project/with-instance")
-const { tmpdir } = await import("../fixture/fixture")
+const { InstanceRuntime } = await import("../../src/project/instance-runtime")
 
 // --- Helper ---
 
@@ -231,12 +238,13 @@ function withInstance(
       },
     })
 
-    await WithInstance.provide({
+    await provideTestInstance({
       directory: tmp.path,
       fn: async () => {
-        await Effect.runPromise(MCP.Service.use(fn).pipe(Effect.provide(MCP.defaultLayer)))
-        // dispose instance to clean up state between tests
-        await InstanceRuntime.disposeInstance(Instance.current)
+        const ctx = Instance.current
+        await Effect.runPromise(
+          MCP.Service.use(fn).pipe(Effect.provide(MCP.defaultLayer), Effect.provideService(InstanceRef, ctx)),
+        )
       },
     })
   }
@@ -953,4 +961,239 @@ test(
       expect(lastStdioOpts.cwd).toBe(path.sep + "tmp")
     }),
   ),
+)
+
+// ========================================================================
+// Non-blocking snapshots and background initialization
+// ========================================================================
+
+test(
+  "snapshots stay fast and do not connect while a server handshake hangs",
+  withInstance({ "hang-snapshot": { type: "local", command: ["echo", "test"] } }, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "hang-snapshot"
+      getOrCreateClientState("hang-snapshot")
+      connectShouldHang = true
+
+      expect(yield* mcp.statusSnapshot()).toEqual({ "hang-snapshot": { status: "connecting" } })
+      expect(yield* mcp.resourcesSnapshot()).toEqual({})
+      expect(yield* mcp.promptsSnapshot()).toEqual({})
+      // Reading snapshots must never materialize MCP state or open a transport.
+      expect(clientCreateCount).toBe(0)
+    }),
+  ),
+)
+
+test(
+  "ensure() opens a single shared connection and status stays connecting",
+  withInstance({ "bg-once": { type: "local", command: ["echo", "test"] } }, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "bg-once"
+      getOrCreateClientState("bg-once")
+      connectShouldHang = true
+
+      yield* mcp.ensure().pipe(Effect.forkChild({ startImmediately: true }))
+      yield* mcp.ensure().pipe(Effect.forkChild({ startImmediately: true }))
+      yield* Effect.sleep("30 millis")
+
+      expect(clientCreateCount).toBe(1)
+      expect((yield* mcp.statusSnapshot())["bg-once"]?.status).toBe("connecting")
+    }),
+  ),
+)
+
+test(
+  "tools() still waits for the handshake instead of returning the snapshot",
+  withInstance({ "tools-wait": { type: "local", command: ["echo", "test"] } }, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "tools-wait"
+      getOrCreateClientState("tools-wait")
+      connectShouldHang = true
+
+      const outcome = yield* Effect.race(
+        mcp.tools().pipe(Effect.as("tools")),
+        Effect.sleep("50 millis").pipe(Effect.as("timeout")),
+      )
+
+      expect(outcome).toBe("timeout")
+      expect(clientCreateCount).toBe(1)
+    }),
+  ),
+)
+
+test(
+  "snapshots reuse settled state without opening another connection",
+  withInstance({ settled: { type: "local", command: ["echo", "test"] } }, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "settled"
+      const serverState = getOrCreateClientState("settled")
+      serverState.resources = [{ name: "r", uri: "test://r" }]
+      serverState.prompts = [{ name: "p", description: "prompt" }]
+
+      yield* mcp.tools()
+      const creates = clientCreateCount
+
+      expect((yield* mcp.statusSnapshot())["settled"]?.status).toBe("connected")
+      expect(Object.keys(yield* mcp.resourcesSnapshot())).toEqual(["settled:test://r"])
+      expect(Object.keys(yield* mcp.promptsSnapshot()).length).toBe(1)
+      expect(clientCreateCount).toBe(creates)
+    }),
+  ),
+)
+
+test(
+  "Command.list stays local while MCP hangs and does not connect",
+  withInstance({ "cmd-hang": { type: "local", command: ["echo", "test"] } }, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "cmd-hang"
+      getOrCreateClientState("cmd-hang")
+      connectShouldHang = true
+
+      const commandLayer = Command.layer.pipe(
+        Layer.provide(Layer.succeed(MCP.Service, mcp)),
+        Layer.provide(Skill.defaultLayer),
+        Layer.provide(Config.defaultLayer),
+      )
+      const names = yield* Effect.gen(function* () {
+        const command = yield* Command.Service
+        return (yield* command.list()).map((item) => item.name)
+      }).pipe(Effect.provide(commandLayer))
+
+      expect(names).toContain("init")
+      expect(names.some((name) => name.includes("cmd-hang"))).toBe(false)
+      expect(clientCreateCount).toBe(0)
+    }),
+  ),
+)
+
+test(
+  "instance bootstrap warms MCP in the background without any route call",
+  async () => {
+    lastCreatedClientName = "boot-warm"
+    connectShouldHang = true
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          `${dir}/chimera.json`,
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            mcp: { "boot-warm": { type: "local", command: ["echo", "test"] } },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // No MCP service call here: only the bootstrap warm-up can create the client.
+        for (let i = 0; i < 100 && clientCreateCount === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5))
+        await InstanceRuntime.disposeInstance(Instance.current)
+      },
+    })
+
+    expect(clientCreateCount).toBe(1)
+  },
+)
+
+// ========================================================================
+// Command MCP prompt memoization
+// ========================================================================
+
+test(
+  "Command caches MCP prompt commands once per instance and get/list agree",
+  withInstance({ "cmd-settled": { type: "local", command: ["echo", "test"] } }, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "cmd-settled"
+      const serverState = getOrCreateClientState("cmd-settled")
+      serverState.prompts = [{ name: "my-prompt", description: "A prompt" }]
+
+      yield* mcp.ensure()
+
+      const commandLayer = Command.layer.pipe(
+        Layer.provide(Layer.succeed(MCP.Service, mcp)),
+        Layer.provide(Skill.defaultLayer),
+        Layer.provide(Config.defaultLayer),
+      )
+      const result = yield* Effect.gen(function* () {
+        const command = yield* Command.Service
+        const first = yield* command.list()
+        const second = yield* command.list()
+        const promptName = first.find((item) => item.source === "mcp")?.name
+        const got = promptName ? yield* command.get(promptName) : undefined
+        return { first, second, promptName, got }
+      }).pipe(Effect.provide(commandLayer))
+
+      expect(result.promptName).toBeDefined()
+      expect(result.first.find((item) => item.name === result.promptName)?.source).toBe("mcp")
+      expect(result.second.find((item) => item.name === result.promptName)?.source).toBe("mcp")
+      expect(result.got?.name).toBe(result.promptName)
+      expect(result.got?.source).toBe("mcp")
+      // Two list calls + get share one memo: exactly one wire-level listPrompts.
+      expect(serverState.listPromptsCalls).toBe(1)
+      expect(clientCreateCount).toBe(1)
+    }),
+  ),
+)
+
+test(
+  "Command.list stays local and skips prompt listing while MCP hangs",
+  withInstance({ "cmd-hang2": { type: "local", command: ["echo", "test"] } }, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "cmd-hang2"
+      const serverState = getOrCreateClientState("cmd-hang2")
+      serverState.prompts = [{ name: "hidden-prompt", description: "hidden" }]
+      connectShouldHang = true
+
+      yield* mcp.ensure().pipe(Effect.forkChild({ startImmediately: true }))
+      yield* Effect.sleep("20 millis")
+
+      const commandLayer = Command.layer.pipe(
+        Layer.provide(Layer.succeed(MCP.Service, mcp)),
+        Layer.provide(Skill.defaultLayer),
+        Layer.provide(Config.defaultLayer),
+      )
+      const names = yield* Effect.gen(function* () {
+        const command = yield* Command.Service
+        return (yield* command.list()).map((item) => item.name)
+      }).pipe(Effect.provide(commandLayer))
+
+      expect(names).toContain("init")
+      expect(names.some((name) => name.includes("hidden-prompt"))).toBe(false)
+      expect(serverState.listPromptsCalls).toBe(0)
+    }),
+  ),
+)
+
+test(
+  "disposing the instance interrupts the MCP warm-up without late creates",
+  async () => {
+    lastCreatedClientName = "boot-dispose"
+    connectShouldHang = true
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          `${dir}/chimera.json`,
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            mcp: { "boot-dispose": { type: "local", command: ["echo", "test"] } },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        for (let i = 0; i < 100 && clientCreateCount === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5))
+        expect(clientCreateCount).toBe(1)
+        await InstanceRuntime.disposeInstance(Instance.current)
+        const afterDispose = clientCreateCount
+        await new Promise((resolve) => setTimeout(resolve, 80))
+        // The warm-up fiber is interrupted with the instance; no late lookup connects.
+        expect(clientCreateCount).toBe(afterDispose)
+        expect(transportCloseCount).toBeGreaterThanOrEqual(1)
+      },
+    })
+  },
 )

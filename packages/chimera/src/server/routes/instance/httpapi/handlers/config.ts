@@ -115,8 +115,8 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
       return next
     })
 
-    const providers = Effect.fn("ConfigHttpApi.providers")(function* () {
-      const providers = yield* providerSvc.list()
+    const providers = Effect.fn("ConfigHttpApi.providers")(function* (ctx) {
+      const providers = yield* providerSvc.list({ includeExperimental: ctx.query.include_experimental })
       return {
         providers: Object.values(providers),
         default: Provider.defaultModelIDs(providers),

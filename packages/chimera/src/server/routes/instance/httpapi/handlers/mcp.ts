@@ -9,7 +9,7 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
     const mcp = yield* MCP.Service
 
     const status = Effect.fn("McpHttpApi.status")(function* () {
-      return yield* mcp.status()
+      return yield* mcp.statusSnapshot()
     })
 
     const add = Effect.fn("McpHttpApi.add")(function* (ctx: { payload: typeof AddPayload.Type }) {

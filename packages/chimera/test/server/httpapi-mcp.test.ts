@@ -165,6 +165,22 @@ describe("mcp HttpApi", () => {
   })
 
   it.live(
+    "serves the same non-blocking status snapshot on legacy and HttpApi",
+    withMcpProject((dir) =>
+      Effect.gen(function* () {
+        const headers = { "x-chimera-directory": dir }
+        const legacy = yield* Effect.promise(() => Promise.resolve(app(false).request("/mcp", { headers })))
+        const httpapi = yield* Effect.promise(() => Promise.resolve(app(true).request("/mcp", { headers })))
+
+        expect(legacy.status).toBe(200)
+        expect(httpapi.status).toBe(200)
+        expect(yield* Effect.promise(() => legacy.json())).toEqual({ demo: { status: "disabled" } })
+        expect(yield* Effect.promise(() => httpapi.json())).toEqual({ demo: { status: "disabled" } })
+      }),
+    ),
+  )
+
+  it.live(
     "matches legacy unsupported OAuth error responses",
     withMcpProject((dir) =>
       Effect.gen(function* () {

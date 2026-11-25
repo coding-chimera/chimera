@@ -1,4 +1,5 @@
 import { Hono } from "hono"
+import z from "zod"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import { Bus } from "@/bus"
 import { Config } from "@/config/config"
@@ -337,10 +338,11 @@ export const ConfigRoutes = lazy(() =>
           },
         },
       }),
+      validator("query", z.object({ include_experimental: z.enum(["true", "false"]).optional() })),
       async (c) =>
         jsonRequest("ConfigRoutes.providers", c, function* () {
           const svc = yield* Provider.Service
-          const providers = yield* svc.list()
+          const providers = yield* svc.list({ includeExperimental: c.req.valid("query").include_experimental === "true" })
           return {
             providers: Object.values(providers),
             default: Provider.defaultModelIDs(providers),

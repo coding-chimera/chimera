@@ -3,11 +3,21 @@ import { ConfigModelSelection } from "@/config/model-selection"
 import { Provider } from "@/provider/provider"
 import { RemoteCompaction } from "@/session/remote-compaction"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { Schema, SchemaGetter } from "effect"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 
 const root = "/config"
+const QueryBoolean = Schema.Literals(["true", "false"]).pipe(
+  Schema.decodeTo(Schema.Boolean, {
+    decode: SchemaGetter.transform((value) => value === "true"),
+    encode: SchemaGetter.transform((value) => (value ? "true" : "false")),
+  }),
+)
+const ProvidersQuery = Schema.Struct({
+  include_experimental: Schema.optional(QueryBoolean)
+})
 
 export const ConfigApi = HttpApi.make("config")
   .add(
@@ -105,6 +115,7 @@ export const ConfigApi = HttpApi.make("config")
           }),
         ),
         HttpApiEndpoint.get("providers", `${root}/providers`, {
+          query: ProvidersQuery,
           success: described(Provider.ConfigProvidersResult, "List of providers"),
         }).annotateMerge(
           OpenApi.annotations({

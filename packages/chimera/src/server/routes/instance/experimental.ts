@@ -496,7 +496,7 @@ export const ExperimentalRoutes = lazy(() =>
       async (c) =>
         jsonRequest("ExperimentalRoutes.resource.list", c, function* () {
           const mcp = yield* MCP.Service
-          return yield* mcp.resources()
+          return yield* mcp.resourcesSnapshot()
         }),
     ),
 )

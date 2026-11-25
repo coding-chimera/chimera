@@ -15,6 +15,8 @@ import PROMPT_REVIEW from "./template/review.txt"
 
 type State = {
   commands: Record<string, Info>
+  /** Per-instance memo of MCP prompt commands; first evaluation lists prompts once. */
+  mcpCommands: Effect.Effect<Record<string, Info>>
 }
 
 export const Event = {
@@ -98,9 +100,47 @@ export const layer = Layer.effect(
     const mcp = yield* MCP.Service
     const skill = yield* Skill.Service
 
+    type McpPrompt = Effect.Success<ReturnType<MCP.Interface["prompts"]>>[string]
+
+    const promptCommand = (bridge: EffectBridge.Shape, name: string, prompt: McpPrompt): Info => ({
+      name,
+      source: "mcp",
+      description: prompt.description,
+      get template() {
+        return bridge.promise(
+          mcp
+            .getPrompt(
+              prompt.client,
+              prompt.name,
+              prompt.arguments
+                ? Object.fromEntries(prompt.arguments.map((argument, i) => [argument.name, `$${i + 1}`]))
+                : {},
+            )
+            .pipe(
+              Effect.map(
+                (template) =>
+                  template?.messages
+                    .map((message) => (message.content.type === "text" ? message.content.text : ""))
+                    .join("\n") || "",
+              ),
+            ),
+        )
+      },
+      hints: prompt.arguments?.map((_, i) => `$${i + 1}`) ?? [],
+    })
+
+    const mcpPromptCommands = Effect.fnUntraced(function* (prompts: Record<string, McpPrompt>) {
+      const entries = Object.entries(prompts)
+      if (entries.length === 0) return {} as Record<string, Info>
+      const bridge = yield* EffectBridge.make()
+      return Object.fromEntries(entries.map(([name, prompt]) => [name, promptCommand(bridge, name, prompt)])) as Record<
+        string,
+        Info
+      >
+    })
+
     const init = Effect.fn("Command.state")(function* (ctx: InstanceContext) {
       const cfg = yield* config.get()
-      const bridge = yield* EffectBridge.make()
       const commands: Record<string, Info> = {}
 
       commands[Default.INIT] = {
@@ -153,36 +193,6 @@ export const layer = Layer.effect(
           hints: hints(command.template),
         }
       }
-
-      for (const [name, prompt] of Object.entries(yield* mcp.prompts())) {
-        commands[name] = {
-          name,
-          source: "mcp",
-          description: prompt.description,
-          get template() {
-            return bridge.promise(
-              mcp
-                .getPrompt(
-                  prompt.client,
-                  prompt.name,
-                  prompt.arguments
-                    ? Object.fromEntries(prompt.arguments.map((argument, i) => [argument.name, `$${i + 1}`]))
-                    : {},
-                )
-                .pipe(
-                  Effect.map(
-                    (template) =>
-                      template?.messages
-                        .map((message) => (message.content.type === "text" ? message.content.text : ""))
-                        .join("\n") || "",
-                  ),
-                ),
-            )
-          },
-          hints: prompt.arguments?.map((_, i) => `$${i + 1}`) ?? [],
-        }
-      }
-
       for (const item of yield* skill.all()) {
         if (commands[item.name]) continue
         commands[item.name] = {
@@ -198,19 +208,34 @@ export const layer = Layer.effect(
 
       return {
         commands,
+        // One blocking prompts fetch per instance; list/get share this memo.
+        mcpCommands: yield* Effect.cached(
+          mcp.prompts().pipe(Effect.flatMap((prompts) => mcpPromptCommands(prompts))),
+        ),
       }
     })
 
     const state = yield* InstanceState.make<State>((ctx) => init(ctx))
+    const isMcpSettled = Effect.map(mcp.statusSnapshot(), (statuses) =>
+      Object.values(statuses).every((status) => status.status !== "connecting"),
+    )
 
     const get = Effect.fn("Command.get")(function* (name: string) {
       const s = yield* InstanceState.get(state)
-      return s.commands[name]
+      if (s.commands[name]) return s.commands[name]
+      // Execution paths keep the blocking lookup (through the shared memo) so a lazily
+      // connected MCP server is fully materialized before its prompt command runs.
+      const mcpCommands = yield* s.mcpCommands
+      return mcpCommands[name]
     })
 
     const list = Effect.fn("Command.list")(function* () {
       const s = yield* InstanceState.get(state)
-      return Object.values(s.commands)
+      // While MCP is still connecting, return local commands immediately without
+      // evaluating the memo (which would block on the handshake).
+      if (!(yield* isMcpSettled)) return Object.values(s.commands)
+      // MCP overrides config/skill commands, matching the pre-snapshot merge order.
+      return Object.values({ ...s.commands, ...(yield* s.mcpCommands) })
     })
 
     return Service.of({ get, list })

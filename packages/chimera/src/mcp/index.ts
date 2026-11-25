@@ -29,7 +29,7 @@ import { BusEvent } from "../bus/bus-event"
 import { Bus } from "@/bus"
 import { TuiEvent } from "@/cli/cmd/tui/event"
 import { openUrl } from "@/util/open-url"
-import { Cause, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, Context, Option, Schema, ScopedCache, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -100,6 +100,9 @@ type MCPClient = Client
 const StatusConnected = Schema.Struct({ status: Schema.Literal("connected") }).annotate({
   identifier: "MCPStatusConnected",
 })
+const StatusConnecting = Schema.Struct({ status: Schema.Literal("connecting") }).annotate({
+  identifier: "MCPStatusConnecting",
+})
 const StatusDisabled = Schema.Struct({ status: Schema.Literal("disabled") }).annotate({
   identifier: "MCPStatusDisabled",
 })
@@ -116,6 +119,7 @@ const StatusNeedsClientRegistration = Schema.Struct({
 
 export const Status = Schema.Union([
   StatusConnected,
+  StatusConnecting,
   StatusDisabled,
   StatusFailed,
   StatusNeedsAuth,
@@ -182,11 +186,21 @@ export interface ServerInstructions {
 
 export interface Interface {
   readonly status: () => Effect.Effect<Record<string, Status>>
+  /** Non-blocking status: never triggers MCP initialization, reports `connecting` until settled. */
+  readonly statusSnapshot: () => Effect.Effect<Record<string, Status>>
+  /** Materializes the per-instance MCP state; used as the background warm-up entry point. */
+  readonly ensure: () => Effect.Effect<void>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
   readonly tools: () => Effect.Effect<Record<string, Tool>>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
+  /** Non-blocking prompts: returns `{}` until MCP state has settled. */
+  readonly promptsSnapshot: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: (clientName?: string) => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
+  /** Non-blocking resources: returns `{}` until MCP state has settled. */
+  readonly resourcesSnapshot: (
+    clientName?: string,
+  ) => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly resourceTemplates: (
     clientName?: string,
   ) => Effect.Effect<Record<string, ResourceTemplateInfo & { client: string }>>
@@ -636,9 +650,33 @@ export const layer = Layer.effect(
       return result
     })
 
+    /**
+     * Non-blocking read of the settled per-directory state. `InstanceState.has` is true even
+     * while the lookup is in flight, so it cannot separate "connecting" from "ready"; the
+     * cache's `getSuccess` returns `None` until the lookup has settled, and never starts one.
+     */
+    const settledState = Effect.gen(function* () {
+      return yield* ScopedCache.getSuccess(state.cache, yield* InstanceState.directory)
+    })
+
+    const statusSnapshot = Effect.fn("MCP.statusSnapshot")(function* () {
+      if (Option.isSome(yield* settledState)) return yield* status()
+
+      const cfg = yield* cfgSvc.get()
+      const result: Record<string, Status> = {}
+      for (const [key, mcp] of Object.entries(cfg.mcp ?? {})) {
+        if (!isMcpConfigured(mcp)) continue
+        result[key] = mcp.enabled === false ? { status: "disabled" } : { status: "connecting" }
+      }
+      return result
+    })
+
     const clients = Effect.fn("MCP.clients")(function* () {
       const s = yield* InstanceState.get(state)
       return s.clients
+    })
+    const ensure = Effect.fn("MCP.ensure")(function* () {
+      yield* InstanceState.get(state)
     })
 
     const instructions = Effect.fn("MCP.instructions")(function* () {
@@ -746,8 +784,18 @@ export const layer = Layer.effect(
       return yield* collectFromConnected(McpCatalog.prompts, "prompts")
     })
 
+    const promptsSnapshot = Effect.fn("MCP.promptsSnapshot")(function* () {
+      if (Option.isNone(yield* settledState)) return {} as Record<string, PromptInfo & { client: string }>
+      return yield* prompts()
+    })
+
     const resources = Effect.fn("MCP.resources")(function* (clientName?: string) {
       return yield* collectFromConnected(McpCatalog.resources, "resources", (resource) => resource.uri, clientName)
+    })
+
+    const resourcesSnapshot = Effect.fn("MCP.resourcesSnapshot")(function* (clientName?: string) {
+      if (Option.isNone(yield* settledState)) return {} as Record<string, ResourceInfo & { client: string }>
+      return yield* resources(clientName)
     })
 
     const resourceTemplates = Effect.fn("MCP.resourceTemplates")(function* (clientName?: string) {
@@ -1002,11 +1050,15 @@ export const layer = Layer.effect(
 
     return Service.of({
       status,
+      statusSnapshot,
       clients,
+      ensure,
       instructions,
       tools,
       prompts,
+      promptsSnapshot,
       resources,
+      resourcesSnapshot,
       resourceTemplates,
       add,
       connect,
