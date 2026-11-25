@@ -152,7 +152,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_audit 1`] = `
       "type": "string",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
+      "description": "Read the existing graph snapshot by default; no implicit sync. Set to true to sync this project's CodeGraph first (empty index, pending watcher files, or dirty git sources). Cross-project targets are always read-only and never sync. Defaults to false.",
       "type": "boolean",
     },
     "symbol": {
@@ -173,7 +173,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_audit_recent 1`] = `
       "type": "number",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
+      "description": "Read the existing graph snapshot by default; no implicit sync. Set to true to sync this project's CodeGraph first (empty index, pending watcher files, or dirty git sources). Cross-project targets are always read-only and never sync. Defaults to false.",
       "type": "boolean",
     },
   },
@@ -253,7 +253,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_file_symbols 1`] = `
       "type": "object",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
+      "description": "Read the existing graph snapshot by default; no implicit sync. Set to true to sync this project's CodeGraph first (empty index, pending watcher files, or dirty git sources). Cross-project targets are always read-only and never sync. Defaults to false.",
       "type": "boolean",
     },
   },
@@ -296,7 +296,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_predesign 1`] = `
       "type": "array",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
+      "description": "Read the existing graph snapshot by default; no implicit sync. Set to true to sync this project's CodeGraph first (empty index, pending watcher files, or dirty git sources). Cross-project targets are always read-only and never sync. Defaults to false.",
       "type": "boolean",
     },
     "refs": {
@@ -396,7 +396,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_obligations_list 1`] =
       "type": "number",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
+      "description": "Read the existing graph snapshot by default; no implicit sync. Set to true to sync this project's CodeGraph first (empty index, pending watcher files, or dirty git sources). Cross-project targets are always read-only and never sync. Defaults to false.",
       "type": "boolean",
     },
     "status": {
@@ -583,7 +583,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_search 1`] = `
       "type": "string",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
+      "description": "Compatibility-only flag for a strict read-only probe: it never syncs, repairs, migrates, or creates graph data and always reads the existing snapshot. Use \`chimera_file_symbols\` with \`refresh: true\` or \`chimera graph sync\` when you need to sync this project first. Defaults to false.",
       "type": "boolean",
     },
   },
@@ -603,7 +603,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_status 1`] = `
       "type": "string",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
+      "description": "Compatibility-only flag for a strict read-only probe: it never syncs, repairs, migrates, or creates graph data and always reads the existing snapshot. Use \`chimera_file_symbols\` with \`refresh: true\` or \`chimera graph sync\` when you need to sync this project first. Defaults to false.",
       "type": "boolean",
     },
   },

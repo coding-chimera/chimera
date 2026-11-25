@@ -104,6 +104,16 @@ const Range = Schema.Struct({
 
 const RefreshDescription =
   "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true."
+// Read-only graph/audit/context/obligation tools read the existing snapshot by
+// default and never sync implicitly: an explicit `refresh: true` opts into a
+// local sync, while cross-project targets stay read-only regardless.
+const ReadOnlyRefreshDescription =
+  "Read the existing graph snapshot by default; no implicit sync. Set to true to sync this project's CodeGraph first (empty index, pending watcher files, or dirty git sources). Cross-project targets are always read-only and never sync. Defaults to false."
+// Status/search are strict read-only probes: they must never open a writer
+// graph (no repair, migration, or stale-index rebuild), so their `refresh`
+// flag is compatibility-only and never triggers a sync.
+const StrictReadOnlyRefreshDescription =
+  "Compatibility-only flag for a strict read-only probe: it never syncs, repairs, migrates, or creates graph data and always reads the existing snapshot. Use `chimera_file_symbols` with `refresh: true` or `chimera graph sync` when you need to sync this project first. Defaults to false."
 const ChimeraRefDescription =
   "Typed Chimera ref from a previous tool output, formatted like `node:<id>`, `audit:<id>`, `predesign:<id>`, `oracle:<id>`, `obligation:<id>`, or `change:<id>`."
 const ChimeraRefsDescription =
@@ -119,7 +129,7 @@ export const StatusParameters = Schema.Struct({
     description: "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
+    description: StrictReadOnlyRefreshDescription,
   }),
 })
 
@@ -137,7 +147,7 @@ export const SearchParameters = Schema.Struct({
     description: "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
+    description: StrictReadOnlyRefreshDescription,
   }),
 })
 
@@ -158,7 +168,7 @@ export const FileSymbolsParameters = Schema.Struct({
     description: "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
+    description: ReadOnlyRefreshDescription,
   }),
 })
 
@@ -185,7 +195,7 @@ export const PredesignParameters = Schema.Struct({
     description: "Maximum seeds, impacted symbols, and evidence items to return. Defaults to 30, capped at 100.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
+    description: ReadOnlyRefreshDescription,
   }),
 }).annotate({
   description: "Record pre-edit Chimera evidence before a risky mutation.",
@@ -220,7 +230,7 @@ export const ContextParameters = Schema.Struct({
     description: "Maximum code blocks in context. Defaults to 8.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
+    description: ReadOnlyRefreshDescription,
   }),
 }).annotate({
   description: "Provide query, symbol, ref, nodeID, filePath, or mode=arch.",
@@ -231,7 +241,7 @@ export const RecentAuditParameters = Schema.Struct({
     description: "Maximum propagation findings to return. Defaults to 10, capped at 100."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
+    description: ReadOnlyRefreshDescription,
   }),
 })
 
@@ -285,7 +295,7 @@ export const AuditParameters = Schema.Struct({
     description: "Maximum propagation findings to return. Defaults to 10, capped at 100."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
+    description: ReadOnlyRefreshDescription,
   }),
 }).annotate({
   description: "Provide at least one explicit audit seed: files, filePath, symbol, ref, or nodeID."
@@ -299,7 +309,7 @@ export const ObligationsListParameters = Schema.Struct({
     description: "Maximum obligations to list. Defaults to 20, capped at 100."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
+    description: ReadOnlyRefreshDescription,
   }),
 })
 
@@ -1983,6 +1993,9 @@ type BuildAuditParams = AuditParams & RecentAuditParams & { recent?: boolean }
 type BuildAuditOptions = {
   ctx?: Tool.Context
   state?: ProjectGraphState
+  // Callers resolve their own default: read-only audit tools pass `params.refresh === true`
+  // (opt-in sync), while the write flow (obligations_sync) keeps `params.refresh !== false`.
+  refresh?: boolean
 }
 
 type ObligationsListParams = Schema.Schema.Type<typeof ObligationsListParameters>
@@ -2470,7 +2483,8 @@ function hasExplicitAuditSeed(params: AuditParams) {
 
 const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildAuditParams, options: BuildAuditOptions = {}) {
   const instance = yield* InstanceState.context
-  const state = options.state ?? (options.ctx ? yield* openProjectGraphForTool(options.ctx, params.refresh !== false) : yield* Chimera.openProjectGraph({ sync: params.refresh !== false }))
+  const refresh = options.refresh ?? params.refresh === true
+  const state = options.state ?? (options.ctx ? yield* openProjectGraphForTool(options.ctx, refresh) : yield* Chimera.openProjectGraph({ sync: refresh }))
   const records = yield* provenanceRecords(state.projectRoot, state.artifact)
   const recent = latestSuccessfulProvenance(records)
   const explicitFileSeeds = graphFilesFromPaths(state.projectRoot, instance.directory, [...(params.files ?? []), ...(params.filePath ? [params.filePath] : [])])
@@ -2483,9 +2497,9 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
     explicitFiles.length || params.symbol || nodeID ? "input" : recentFiles.length ? "recent_provenance" : "git_diff"
   const depth = bounded(params.depth, 2, 5)
   const limit = bounded(params.limit, 10, 100)
-  if (explicitFileSeeds.length > 0) {
+  if (refresh && explicitFileSeeds.length > 0) {
     yield* Effect.promise(() => syncExistingGraphFiles(state, explicitFileSeeds, "force")).pipe(Effect.orDie)
-  } else if (recentFiles.length > 0) {
+  } else if (refresh && recentFiles.length > 0) {
     yield* Effect.promise(() => syncExistingGraphFiles(state, graphFilesFromPaths(state.projectRoot, state.projectRoot, recentFiles), "missing")).pipe(Effect.orDie)
   }
   const snapshot = state.graph.snapshot()
@@ -2611,7 +2625,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
     parameters: StatusParameters,
     execute: (params: Schema.Schema.Type<typeof StatusParameters>, ctx: Tool.Context<StatusMetadata>) =>
       Effect.gen(function* () {
-        yield* permission(ctx, "chimera_status", { refresh: params.refresh !== false, projectPath: params.projectPath })
+        yield* permission(ctx, "chimera_status", { refresh: false, projectPath: params.projectPath })
         const instance = yield* InstanceState.context
         const target = Chimera.resolveProjectGraphTarget(params.projectPath, contextProjectRoot(instance))
         const root = target.root
@@ -2649,7 +2663,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
         return yield* catchSchemaMigrationRequired(
           withProjectGraphForTool(
             ctx as Tool.Context,
-            params.refresh !== false,
+            false,
             { init: false, readOnly: true, projectPath: params.projectPath },
           (state) =>
             Effect.gen(function* () {
@@ -2769,7 +2783,7 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
         yield* permission(ctx, "chimera_search", {
           query: params.query,
           projectPath: params.projectPath,
-          refresh: params.refresh !== false,
+          refresh: false,
         })
         if (!params.query.trim()) throw new Error("chimera_search requires a non-empty query")
         yield* DiscoveryNudge.noteGraphQuery(ctx.sessionID)
@@ -2802,7 +2816,7 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
         return yield* catchSchemaMigrationRequired(
           withProjectGraphForTool(
             ctx as Tool.Context,
-            params.refresh !== false,
+            false,
             { init: false, readOnly: true, projectPath: params.projectPath },
           (state) =>
             Effect.gen(function* () {
@@ -2890,21 +2904,21 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
         yield* permission(ctx, "chimera_file_symbols", {
           filePath: params.filePath,
           projectPath: params.projectPath,
-          refresh: params.refresh !== false,
+          refresh: params.refresh === true,
         })
         yield* DiscoveryNudge.noteGraphQuery(ctx.sessionID)
         const instance = yield* InstanceState.context
         return yield* catchSchemaMigrationRequired(
           withProjectGraphForTool(
             ctx as Tool.Context,
-            params.refresh !== false,
+            params.refresh === true,
             { init: false, projectPath: params.projectPath },
           (state) =>
             Effect.gen(function* () {
               const limit = bounded(params.limit, 10, 50)
               const kinds = params.kind ? [params.kind] : undefined
               const file = graphFile(state.projectRoot, state.crossProject ? state.projectRoot : instance.directory, params.filePath)
-              if (!state.crossProject) {
+              if (params.refresh === true && !state.crossProject) {
                 yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
               }
               const fileExists = yield* Effect.promise(() => Bun.file(file.absolutePath).exists()).pipe(Effect.orDie)
@@ -2996,7 +3010,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
             symbols,
             refs,
             nodeIDs,
-            refresh: params.refresh !== false,
+            refresh: params.refresh === true,
           }),
           PREDESIGN_PERMISSION_TIMEOUT_MS,
         )
@@ -3013,7 +3027,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
           ? yield* predesignStage(
               ctx,
               "open graph",
-              openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false),
+              openProjectGraphForTool(ctx as Tool.Context, params.refresh === true),
             )
           : undefined
         const depth = bounded(params.depth, 2, 5)
@@ -3023,9 +3037,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
           yield* predesignStage(
             ctx,
             "sync files",
-            graphFiles.length
-              ? Effect.promise(() => syncExistingGraphFiles(state, graphFiles, "force")).pipe(Effect.orDie)
-              : Effect.void,
+            params.refresh === true && graphFiles.length ? Effect.promise(() => syncExistingGraphFiles(state, graphFiles, "force")).pipe(Effect.orDie) : Effect.void,
           )
         }
         const normalizedFiles = graphFiles.map((file) => file.graphPath)
@@ -3200,9 +3212,9 @@ export const ChimeraAuditTool = Tool.define<typeof AuditParameters, AuditMetadat
           symbol: params.symbol,
           ref: params.ref,
           nodeID: params.nodeID,
-          refresh: params.refresh !== false,
+          refresh: params.refresh === true,
         })
-        const audit = yield* buildAudit({ ...params, recent: false }, { ctx: ctx as Tool.Context })
+        const audit = yield* buildAudit({ ...params, recent: false }, { ctx: ctx as Tool.Context, refresh: params.refresh === true })
         const auditRunID = yield* persistAuditRun(audit)
         const recorded = { ...audit, auditRunID, ref: chimeraRef("audit", auditRunID) }
 
@@ -3227,7 +3239,7 @@ export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, 
       execute: (params: Schema.Schema.Type<typeof RecentAuditParameters>, ctx: Tool.Context<AuditMetadata>) =>
         Effect.gen(function* () {
           yield* permission(ctx, "chimera_audit_recent", {
-            refresh: params.refresh !== false,
+            refresh: params.refresh === true,
           })
           // The explicit closeout unlock is graph-independent: with an
           // uninitialized graph the propagation audit itself is unavailable
@@ -3269,7 +3281,7 @@ export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, 
               },
             }
           }
-          const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context })
+          const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context, refresh: params.refresh === true })
           const auditRunID = yield* persistAuditRun(audit)
           const recorded = { ...audit, auditRunID, ref: chimeraRef("audit", auditRunID) }
 
@@ -3389,9 +3401,9 @@ export const ChimeraObligationsListTool = Tool.define<typeof ObligationsListPara
       Effect.gen(function* () {
         yield* permission(ctx, "chimera_obligations_list", {
           status: params.status,
-          refresh: params.refresh !== false,
+          refresh: params.refresh === true,
         })
-        const current = yield* obligationContext(ctx as Tool.Context, params.refresh !== false)
+        const current = yield* obligationContext(ctx as Tool.Context, params.refresh === true)
         const obligations = filterObligations(current.refreshed.obligations, params)
         const counts = obligationCounts(current.refreshed.obligations)
         return {
@@ -3437,7 +3449,7 @@ export const ChimeraObligationsSyncTool = Tool.define<typeof ObligationsSyncPara
         const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const artifact = obligationsArtifact(state.artifact)
         const store = yield* readObligationStore(state.projectRoot, artifact)
-        const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context, state })
+        const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context, state, refresh: params.refresh !== false })
         const auditRunID = yield* Effect.promise(() =>
           recordAuditRun(state.projectRoot, {
             source: audit.source,
@@ -3641,15 +3653,15 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
           nodeID: params.nodeID,
           filePath: params.filePath,
           mode: params.mode ?? "search",
-          refresh: params.refresh !== false,
+          refresh: params.refresh === true,
         })
         const instance = yield* InstanceState.context
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh === true)
         const mode: ContextMetadata["mode"] = params.mode ?? "search"
         const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
         const node = nodeID ? state.graph.node(nodeID) : undefined
         const file = params.filePath ? graphFile(state.projectRoot, instance.directory, params.filePath) : undefined
-        if (file) yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
+        if (file && params.refresh === true) yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
         const normalizedFile = file?.graphPath
         const query =
           params.query ??

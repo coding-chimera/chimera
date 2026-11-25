@@ -96,6 +96,15 @@ import {
   diffNodeLanguageSignals as diffLanguageAwareSignals,
   projectLanguageAwareSignals,
 } from './semantic/language-signals';
+import {
+  closeGraphWriter,
+  drainGraphWriter,
+  enqueueGraphWrite,
+  ensureGraphWriterReady,
+  type GraphWrite,
+  type GraphWriteResult,
+} from './worker';
+import { beginInlineWrite, endInlineWrite } from './worker/inline-write-guard';
 
 const WATCH_INCREMENTAL_SYNC_FILE_LIMIT = 200;
 
@@ -190,6 +199,7 @@ export {
   defaultLogger,
 } from './errors';
 export type { Logger } from './errors';
+import { logDebug } from './errors';
 export { Mutex, FileLock, processInBatches, debounce, throttle } from './utils';
 export {
   FileWatcher,
@@ -961,6 +971,30 @@ export interface OpenOptions {
 
   /** Per-connection SQLite page-cache override in MB (see DatabaseOpenOptions). */
   cacheSizeMB?: number;
+
+  /**
+   * Route every write (sync/syncFiles/indexAll/indexFiles) through the
+   * per-root graph writer worker instead of this handle. The main thread
+   * then never enters the local FileLock, SQLite write pipeline, or
+   * Atomics.wait; reads still run on this handle. Defaults to false, so
+   * CLI, MCP, and ordinary opens keep the inline write path byte-for-byte.
+   * Provenance enables it for the current-project writer open; cross-project
+   * opens stay readOnly with offload false.
+   */
+  offload?: boolean;
+}
+
+/**
+ * An offloaded main handle is a reader: writes run on the writer worker's
+ * own read-write handle. Accepting `offload` on a writable main open would
+ * silently put writes back on the main thread's FileLock/SQLite pipeline.
+ */
+function assertOffloadReadOnly(options: { offload?: boolean; readOnly?: boolean }): void {
+  if (options.offload === true && options.readOnly !== true) {
+    throw new Error(
+      'offload:true requires readOnly:true: the main offload handle only reads; writes run on the graph writer worker handle'
+    );
+  }
 }
 
 /**
@@ -1044,17 +1078,26 @@ export class CodeGraph {
   // File lock for preventing concurrent writes across processes (CLI, MCP, git hooks)
   private fileLock: FileLock;
 
+  /**
+   * Opt-in worker offload: writes route through the per-root graph writer
+   * worker, so this handle never takes the local write lock or SQLite write
+   * pipeline. Reads stay local. Default false keeps the inline path.
+   */
+  private readonly offload: boolean;
+
   // File watcher for auto-sync on file changes
   private watcher: FileWatcher | null = null;
 
   private constructor(
     db: DatabaseConnection,
     queries: QueryBuilder,
-    projectRoot: string
+    projectRoot: string,
+    offload = false
   ) {
     this.db = db;
     this.queries = queries;
     this.projectRoot = projectRoot;
+    this.offload = offload;
     this.fileLock = new FileLock(
       path.join(getCodeGraphDir(projectRoot), 'codegraph.lock')
     );
@@ -1154,25 +1197,38 @@ export class CodeGraph {
    * writing into the dead inode (upstream #925/#1902).
    *
    * Opens the live file FIRST — if that throws (e.g. mid-recreate), the old
-   * handle stays untouched and the caller retries. Sets
-   * {@link pendingFullReconcile} wherever the database is reopened, so the
-   * next sync reconciles the whole tree.
+   * handle stays untouched and the caller retries. A read-only handle
+   * reopens read-only (no repair/migration) and never sets
+   * {@link pendingFullReconcile}; a writable reopen does, so the next sync
+   * reconciles the whole tree.
    */
   private reopenReplacedDatabase(): boolean {
-    if (this.db.isReadOnly()) return false;
     if (!this.isDatabaseReplacedOnDisk()) return false;
     const dbPath = this.db.getPath();
-    const fresh = DatabaseConnection.open(dbPath);
+    const readOnly = this.db.isReadOnly();
+    let fresh: DatabaseConnection;
+    if (readOnly) {
+      // A read-only handle must follow an externally replaced database so
+      // reads (and offloaded-write read-your-writes) keep serving the live
+      // file; a mid-rebuild open is a transient miss, not an error.
+      try {
+        fresh = DatabaseConnection.open(dbPath, { readOnly: true });
+      } catch {
+        return false;
+      }
+    } else {
+      fresh = DatabaseConnection.open(dbPath);
+    }
     const staleDb = this.db;
     const staleQueries = this.queries;
     const staleResolver = this.resolver;
     this.db = fresh;
-    this.queries = new QueryBuilder(fresh.getDb(), openStoreBridge(dbPath, false));
+    this.queries = new QueryBuilder(fresh.getDb(), openStoreBridge(dbPath, readOnly));
     this.wireLayers();
     this.projectionCaches.clear();
     this.projectionSourcePins.clear();
     this.dbIdentity = this.statDbIdentity();
-    this.pendingFullReconcile = true;
+    if (!readOnly) this.pendingFullReconcile = true;
     // Releasing the dead handle also frees the leaked db/-wal/-shm fds that
     // were pinning the unlinked inode (#925). Reverse construction order:
     // resolver native context → store bridge/statements → connection (R1).
@@ -1308,6 +1364,7 @@ export class CodeGraph {
    * @returns A CodeGraph instance
    */
   static async open(projectRoot: string, options: OpenOptions = {}): Promise<CodeGraph> {
+    assertOffloadReadOnly(options);
     await initGrammars();
     const resolvedRoot = path.resolve(projectRoot);
 
@@ -1326,7 +1383,7 @@ export class CodeGraph {
     const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly, cacheSizeMB: options.cacheSizeMB });
     const queries = new QueryBuilder(db.getDb(), openStoreBridge(dbPath, options.readOnly));
 
-    const instance = new CodeGraph(db, queries, resolvedRoot);
+    const instance = new CodeGraph(db, queries, resolvedRoot, options.offload === true);
 
     // Sync if requested
     if (options.sync && !options.readOnly) {
@@ -1346,7 +1403,8 @@ export class CodeGraph {
   /**
    * Open synchronously (without sync)
    */
-  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly' | 'cacheSizeMB'> = {}): CodeGraph {
+  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly' | 'cacheSizeMB' | 'offload'> = {}): CodeGraph {
+    assertOffloadReadOnly(options);
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
@@ -1365,7 +1423,7 @@ export class CodeGraph {
     const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly, cacheSizeMB: options.cacheSizeMB });
     const queries = new QueryBuilder(db.getDb(), openStoreBridge(dbPath, options.readOnly));
 
-    return new CodeGraph(db, queries, resolvedRoot);
+    return new CodeGraph(db, queries, resolvedRoot, options.offload === true);
   }
 
   /**
@@ -1491,9 +1549,22 @@ export class CodeGraph {
   }
 
   /**
-   * Close the CodeGraph instance and release resources
+   * Close the CodeGraph instance and release resources.
+   *
+   * An offload handle first drains and closes its writer worker: the worker
+   * may still be writing through the database this handle reads, so the main
+   * handle must not be closed mid-flight.
    */
   async close(): Promise<void> {
+    if (this.offload) {
+      // Wait for any offloaded write still in its ensure/enqueue phase (it
+      // holds the index mutex), then drain and close the worker before the
+      // read handle goes away.
+      await this.indexMutex.withLock(async () => {
+        await drainGraphWriter(this.projectRoot);
+        await closeGraphWriter(this.projectRoot);
+      });
+    }
     try {
       await this.unwatch();
     } finally {
@@ -1544,14 +1615,55 @@ export class CodeGraph {
   // ===========================================================================
 
   /**
+   * Run one write on the root's graph writer worker instead of this handle.
+   *
+   * Called under {@link indexMutex}, so `isIndexing()` keeps its inline
+   * meaning for the whole RPC lifetime. The worker owns the only read-write
+   * handle, so this thread never acquires the file lock, enters the SQLite
+   * write pipeline, or waits on Atomics. A result that followed a database
+   * replaced on disk reopens this (possibly read-only) handle so reads see
+   * the new file; `LockUnavailableError` is rehydrated so callers that match
+   * the typed contention error keep working across the port.
+   */
+  private async offloadedWrite<T extends GraphWriteResult>(
+    kind: GraphWrite['kind'],
+    options: IndexOptions,
+    files?: string[]
+  ): Promise<T> {
+    try {
+      await ensureGraphWriterReady(this.projectRoot);
+      const write: GraphWrite = {
+        kind,
+        signal: options.signal,
+        onProgress: options.onProgress,
+        ...(files ? { files } : {}),
+      } as GraphWrite;
+      const outcome = await enqueueGraphWrite(this.projectRoot, write);
+      if (outcome.databaseReplaced) {
+        try { this.reopenReplacedDatabase(); } catch { /* next refresh retries */ }
+      }
+      return outcome.result as T;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'LockUnavailableError') {
+        throw new LockUnavailableError(error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Index all files in the project
    *
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
+    if (this.offload) {
+      return this.indexMutex.withLock(() => this.offloadedWrite<IndexResult>('indexAll', options));
+    }
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
+        beginInlineWrite(this.projectRoot);
       } catch {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
@@ -1561,6 +1673,7 @@ export class CodeGraph {
         job = startIndexJob(this.projectRoot, 'index', 'indexing project files');
       } catch (error) {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
         throw error;
       }
       const onProgress = (progress: IndexProgress) => {
@@ -1691,6 +1804,7 @@ export class CodeGraph {
           this.queries.getStoreBridge()?.setWalAutocheckpoint(walAutocheckpoint);
         }
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
       }
     });
   }
@@ -1701,9 +1815,13 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async indexFiles(filePaths: string[]): Promise<IndexResult> {
+    if (this.offload) {
+      return this.indexMutex.withLock(() => this.offloadedWrite<IndexResult>('indexFiles', {}, filePaths));
+    }
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
+        beginInlineWrite(this.projectRoot);
       } catch {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
@@ -1713,6 +1831,7 @@ export class CodeGraph {
         job = startIndexJob(this.projectRoot, 'index', 'indexing selected files');
       } catch (error) {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
         throw error;
       }
       try {
@@ -1734,6 +1853,7 @@ export class CodeGraph {
         throw error;
       } finally {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
       }
     });
   }
@@ -1744,6 +1864,9 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
+    if (this.offload) {
+      return this.indexMutex.withLock(() => this.offloadedWrite<SyncResult>('sync', options));
+    }
     return this.indexMutex.withLock(() => this.syncLocked(options));
   }
 
@@ -1755,6 +1878,7 @@ export class CodeGraph {
   private async syncLocked(options: IndexOptions = {}): Promise<SyncResult> {
       try {
         this.fileLock.acquire();
+        beginInlineWrite(this.projectRoot);
       } catch (err) {
         // Lock contention is reported, not swallowed as a clean no-op sync
         // (upstream #1361/#2014): the all-zero shape was indistinguishable
@@ -1773,6 +1897,7 @@ export class CodeGraph {
         this.reopenReplacedDatabase();
       } catch (err) {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
         throw new LockUnavailableError(
           `Sync could not open the rebuilt index yet; retry when the rebuild finishes. ${err instanceof Error ? err.message : String(err)}`
         );
@@ -1785,6 +1910,7 @@ export class CodeGraph {
         // window so a rebuild that died before indexing never parks the
         // watcher forever.
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
         throw new LockUnavailableError('A rebuild of this index is in progress; retry when it finishes.');
       }
 
@@ -1793,6 +1919,7 @@ export class CodeGraph {
         job = startIndexJob(this.projectRoot, 'sync', 'syncing changed files');
       } catch (error) {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
         throw error;
       }
       const onProgress = (progress: IndexProgress) => {
@@ -2021,6 +2148,7 @@ export class CodeGraph {
         throw error;
       } finally {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
       }
   }
 
@@ -2083,9 +2211,76 @@ export class CodeGraph {
    * a full repository sync after every edit.
    */
   async syncFiles(filePaths: string[], options: IndexOptions = {}): Promise<SyncResult> {
-    return this.indexMutex.withLock(async () => {
+    if (this.offload) {
+      return this.indexMutex.withLock(() => this.offloadedWrite<SyncResult>('syncFiles', options, filePaths));
+    }
+    // Opt-in phase timing (CODEGRAPH_DEBUG): exactly one line per syncFiles
+    // exit, so a slow scoped sync can be attributed to a stage without
+    // per-stage log spam. Fixed key set keeps the default-off cost negligible.
+    const startedAt = Date.now();
+    const phases = {
+      lock: 0,
+      reopen: 0,
+      dependents: 0,
+      synthesisCheck: 0,
+      extract: 0,
+      dependentsIndex: 0,
+      postExtract: 0,
+      resolve: 0,
+      failedRefRetry: 0,
+      rebind: 0,
+      synthesisRefresh: 0,
+      maintenance: 0,
+    };
+    let activePhase: keyof typeof phases = 'lock';
+    let activePhaseStartedAt = startedAt;
+    let dependents = 0;
+    let widened = false;
+    let widenStartedAt = 0;
+    const enter = (phase: keyof typeof phases) => {
+      const now = Date.now();
+      phases[activePhase] += now - activePhaseStartedAt;
+      activePhase = phase;
+      activePhaseStartedAt = now;
+    };
+    const emit = (context: Record<string, unknown>) => {
+      try {
+        logDebug('syncFiles timing', context);
+      } catch {
+        // Observation only: a throwing logger must never change sync semantics.
+      }
+    };
+    const report = (ok: boolean) => {
+      const now = Date.now();
+      const activePhaseMs = now - activePhaseStartedAt;
+      if (widened) {
+        emit({
+          files: filePaths.length,
+          dependents,
+          ok,
+          totalMs: now - startedAt,
+          phases,
+          widened: true,
+          widenMs: now - widenStartedAt,
+          ...(ok ? {} : { failedPhase: 'widen', failedPhaseMs: now - widenStartedAt }),
+        });
+        return;
+      }
+      phases[activePhase] += activePhaseMs;
+      emit({
+        files: filePaths.length,
+        dependents,
+        ok,
+        totalMs: now - startedAt,
+        phases,
+        ...(ok ? {} : { failedPhase: activePhase, failedPhaseMs: activePhaseMs }),
+      });
+    };
+
+    const run = async (): Promise<SyncResult> => {
       try {
         this.fileLock.acquire();
+        beginInlineWrite(this.projectRoot);
       } catch (err) {
         // Reported, not swallowed (upstream #1361/#2014) — see sync().
         throw new LockUnavailableError(
@@ -2096,10 +2291,12 @@ export class CodeGraph {
       // Follow a database replaced on disk before writing (upstream #1902).
       // A failed reopen (rebuild mid-way) reports lock contention so the
       // watcher keeps its pending files and retries.
+      enter('reopen');
       try {
         this.reopenReplacedDatabase();
       } catch (err) {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
         throw new LockUnavailableError(
           `Sync could not open the rebuilt index yet; retry when the rebuild finishes. ${err instanceof Error ? err.message : String(err)}`
         );
@@ -2109,14 +2306,20 @@ export class CodeGraph {
         // absorbed since the rebuild never reached the new file. syncLocked
         // re-acquires the file lock itself (we are inside the index mutex).
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
+        widened = true;
+        widenStartedAt = Date.now();
+        phases[activePhase] += widenStartedAt - activePhaseStartedAt;
         return this.syncLocked(options);
       }
+      enter('dependents');
 
       let job: ReturnType<typeof startIndexJob>;
       try {
         job = startIndexJob(this.projectRoot, 'sync', 'syncing selected files');
       } catch (error) {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
         throw error;
       }
       const onProgress = (progress: IndexProgress) => {
@@ -2148,6 +2351,8 @@ export class CodeGraph {
           ),
         ])]
           .filter((filePath) => !changedSet.has(filePath));
+        dependents = dependentFilePaths.length;
+        enter('synthesisCheck');
         // Synthesis-refresh trigger (upstream #2033, fork landing). The
         // scoped candidate set is known up front, so run the staleness
         // predicates BEFORE the orchestrator replaces/deletes these files
@@ -2175,18 +2380,22 @@ export class CodeGraph {
           }
         }
         if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
+        enter('extract');
         const result = await this.orchestrator.syncFiles(filePaths, onProgress);
         const changed = result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0;
 
+        enter('dependentsIndex');
         if (changed && dependentFilePaths.length > 0) {
           const dependentResult = await this.orchestrator.indexFiles(dependentFilePaths);
           result.nodesUpdated += dependentResult.nodesCreated;
         }
 
+        enter('postExtract');
         if (result.filesAdded > 0 || result.filesModified > 0) {
           this.resolver.runPostExtract();
         }
 
+        enter('resolve');
         const resolutionFilePaths = [...new Set([...(result.changedFilePaths ?? []), ...(changed ? dependentFilePaths : [])])];
         if (changed && resolutionFilePaths.length > 0) {
           const unresolvedRefs = this.queries.getUnresolvedReferencesByFiles(resolutionFilePaths);
@@ -2208,6 +2417,7 @@ export class CodeGraph {
 
           // Retry previously-failed refs the changed files may now satisfy
           // (#1240) — same rationale as the full-sync path.
+          enter('failedRefRetry');
           const retryable = this.queries.getRetryableFailedReferences(
             this.queries.getNodeNamesByFiles(resolutionFilePaths)
           );
@@ -2223,6 +2433,7 @@ export class CodeGraph {
         // path, adapted: syncFiles has no orphan sweep of its own, so the
         // resurrected pending refs (which live in files OUTSIDE this sync's
         // resolution scope) are consumed right here.
+        enter('rebind');
         if (result.definitionDelta && process.env.CODEGRAPH_NO_REBIND !== '1') {
           const rebound = this.orchestrator.resurrectStaleResolutionEdges(
             result.definitionDelta,
@@ -2246,10 +2457,12 @@ export class CodeGraph {
         }
         // Replace the whole synthesis-owned edge set only after every base
         // resolution pass above has finished (upstream #2033).
+        enter('synthesisRefresh');
         if (refreshSynthesis) {
           this.resolver.refreshSynthesis(this.db.getPath());
           this.queries.setMetadata('synthesis_pending', '0');
         }
+        enter('maintenance');
         if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0 || refreshSynthesis) {
           this.refreshFileSemantics([...(result.changedFilePaths ?? []), ...(changed ? dependentFilePaths : [])]);
           this.db.runMaintenance();
@@ -2270,8 +2483,22 @@ export class CodeGraph {
         throw error;
       } finally {
         this.fileLock.release();
+        endInlineWrite(this.projectRoot);
       }
-    });
+    };
+
+    // `run` stays the mutex-serialized critical section: totalMs includes any
+    // wait for the index mutex, and the report fires exactly once on its exit.
+    return this.indexMutex.withLock(() => run()).then(
+      (result) => {
+        report(true);
+        return result;
+      },
+      (error) => {
+        report(false);
+        throw error;
+      },
+    );
   }
 
   /**

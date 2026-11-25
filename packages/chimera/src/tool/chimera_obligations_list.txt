@@ -2,7 +2,7 @@ List tracked Chimera propagation obligations.
 
 Use this tool when you need to inspect pending, claimed, stale, resolved, or ignored obligations for the current project, typically before final closeout.
 
-Do NOT use it to create or update obligations — use `chimera_obligations_sync` and the single-obligation tools. `refresh` (default true) may mark obligations stale when referenced graph nodes disappeared.
+Do NOT use it to create or update obligations — use `chimera_obligations_sync` and the single-obligation tools. It reads the existing obligation store by default without syncing or writing; `refresh: true` syncs this project's graph first and may mark obligations stale when referenced graph nodes disappeared (writing the updated store).
 
 After this tool:
 - Claim, resolve, or ignore active obligations relevant to the task before final closeout.

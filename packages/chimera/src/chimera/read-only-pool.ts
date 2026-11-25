@@ -23,13 +23,14 @@ import type { ProjectGraphState } from "./provenance"
  *   Lower the cap when the RSS budget matters more than read concurrency.
  * - Validate-on-checkout (tarn `validate` / sqlx `test_before_acquire`): an
  *   idle entry is destroyed and recreated when the database file disappeared,
- *   the connection was closed underneath the pool, or the entry reached
- *   maxLifetime. Freshness needs no validation: `getSnapshot()` reads live
- *   SQL per call and WAL readers see the latest committed state per
- *   statement. A replaced database file (the `reopenReplacedDatabase` case)
- *   is picked up by maxLifetime retirement at the latest; the writer-side
- *   heal stays where it is because `reopenReplacedDatabase` refuses
- *   read-only handles.
+ *   the connection was closed underneath the pool, the entry reached
+ *   maxLifetime, or the file at the same path was REPLACED (dev/ino identity
+ *   changed — the `reopenReplacedDatabase` case). Freshness otherwise needs
+ *   no validation: `getSnapshot()` reads live SQL per call and WAL readers
+ *   see the latest committed state per statement. Replacement destroys the
+ *   stale handle and reopens through the caller's readOnly `open`; the pool
+ *   never migrates or repairs anything. The writer-side heal stays where it
+ *   is because `reopenReplacedDatabase` refuses read-only handles.
  * - maxLifetime (sqlx `max_lifetime`, CHIMERA_GRAPH_RO_MAX_LIFETIME_MS,
  *   default 10 min, 0 disables) exists for the same mimalloc-retention
  *   reason: retiring a connection periodically is the only way to actually
@@ -75,6 +76,10 @@ interface PoolEntry {
   createdAt: number
   lastUsedAt: number
   inUse: boolean
+  /** Filesystem identity (dev:ino) of the database file this handle opened
+   *  against; undefined when the platform/filesystem cannot report one. A
+   *  checkout stat that differs means the path was replaced under the handle. */
+  identity: string | undefined
 }
 
 interface Waiter {
@@ -103,6 +108,20 @@ function envNumber(name: string, fallback: number) {
   const raw = process.env[name]
   const parsed = raw === undefined || raw === "" ? fallback : Number(raw)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+/** Filesystem identity of the database file at `dbPath`, or undefined when
+ *  it does not exist or the platform reports no usable dev/ino (e.g. some
+ *  Windows filesystems report 0/0). The pair identifies one file inode, so a
+ *  temp-write-and-rename replacement at the same path yields a new value. */
+function databaseIdentity(dbPath: string): string | undefined {
+  try {
+    const stat = fs.statSync(dbPath, { bigint: true })
+    if (stat.dev === 0n && stat.ino === 0n) return undefined
+    return `${stat.dev}:${stat.ino}`
+  } catch {
+    return undefined
+  }
 }
 
 /** Read per call so tests (and operators) can retune without a reload. */
@@ -142,7 +161,14 @@ function destroyEntry(root: string, entry: PoolEntry, reason: string) {
 
 /** tarn `validate` / sqlx `test_before_acquire`: why an idle entry must not be checked out. */
 function invalidReason(root: string, entry: PoolEntry, now: number) {
-  if (!fs.existsSync(getDatabasePath(root))) return "database-missing"
+  const dbPath = getDatabasePath(root)
+  if (!fs.existsSync(dbPath)) return "database-missing"
+  if (entry.identity !== undefined) {
+    const identity = databaseIdentity(dbPath)
+    // A defined live identity that differs from the recorded one means the
+    // same path now names a different file: the handle points at the old DB.
+    if (identity !== undefined && identity !== entry.identity) return "database-replaced"
+  }
   if (entry.state.graph.isClosed()) return "connection-closed"
   const { maxLifetimeMs } = poolSettings()
   if (maxLifetimeMs > 0 && now - entry.createdAt >= maxLifetimeMs) return "max-lifetime"
@@ -223,11 +249,16 @@ function pump(root: string) {
   // The timeout bounds the queue wait, not the open itself (see header).
   clearTimeout(waiter.timer)
   creating.add(root)
+  // Capture the DB identity BEFORE the open: if the file is replaced while
+  // the connection is being created, the recorded identity no longer matches
+  // the live file and the next checkout reopens instead of trusting a handle
+  // to the old inode.
+  const identity = databaseIdentity(getDatabasePath(root))
   waiter.open().then(
     (state) => {
       creating.delete(root)
       const now = Date.now()
-      const entry: PoolEntry = { state, createdAt: now, lastUsedAt: now, inUse: true }
+      const entry: PoolEntry = { state, createdAt: now, lastUsedAt: now, inUse: true, identity }
       const list = entries.get(root) ?? []
       list.push(entry)
       entries.set(root, list)

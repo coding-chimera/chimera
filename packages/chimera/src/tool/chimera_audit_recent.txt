@@ -6,7 +6,7 @@ Do NOT pass file paths to this tool — it audits the latest mutation automatica
 
 Calling this tool also acts as the explicit closeout unlock for cross-session edit coordination: the `chimera_predesign` edit-intent claims your session registered are released the moment the audit completes, and queued sessions are woken immediately (the output then ends with a `Released N edit-intent claim(s): ...; woke M queued session(s).` line). You do not need to wait for your run to go idle. In a project whose graph is not initialized the propagation audit itself is unavailable: the tool then degrades to an audit-less closeout that still runs this unlock and prints the same `Released N ...` line after the degradation note — claims need no graph.
 
-Mechanics: findings are structural evidence, not commands or tracked obligations. Provenance files missing graph records are filesystem-synced before classification. Set `refresh` to false only when current graph state is known sufficient.
+Mechanics: findings are structural evidence, not commands or tracked obligations. It reads the existing graph snapshot by default; set `refresh: true` to sync this project's graph first, which also filesystem-syncs provenance files missing graph records before classification.
 
 See chimera_audit description for the CodePlan atomic label glossary.
 

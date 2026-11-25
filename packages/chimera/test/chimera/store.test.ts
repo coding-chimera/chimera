@@ -616,7 +616,30 @@ describe("Chimera store", () => {
       },
     })
 
-    const result = await compactCommittedChangeEvidence(tmp.path, { now: "2026-01-01T00:00:03.000Z", retentionDays: 0 })
+    // Default is a dry run: candidates are reported but nothing is deleted.
+    const dryRun = await compactCommittedChangeEvidence(tmp.path, { now: "2026-01-01T00:00:03.000Z", retentionDays: 0 })
+    expect(dryRun.dryRun).toBe(true)
+    expect(dryRun.candidateEvents).toBe(1)
+    expect(dryRun.compactedEvents).toBe(1)
+    expect(dryRun.deletedFacts).toBe(0)
+    expect(dryRun.deletedSemanticSnapshots).toBe(0)
+    expect(dryRun.summariesWritten).toBe(0)
+    expect(await readChangeFacts(tmp.path, [mutation.id])).toHaveLength(1)
+    expect(await readCommitChangeSummaries(tmp.path)).toHaveLength(0)
+
+    // An active session still protects its evidence even on an explicit apply.
+    const protectedRun = await compactCommittedChangeEvidence(tmp.path, {
+      dryRun: false,
+      activeSessionID: "session",
+      now: "2026-01-01T00:00:03.000Z",
+      retentionDays: 0,
+    })
+    expect(protectedRun.candidateEvents).toBe(0)
+    expect(protectedRun.compactedEvents).toBe(0)
+    expect(await readChangeFacts(tmp.path, [mutation.id])).toHaveLength(1)
+
+    // Only an explicit apply deletes.
+    const result = await compactCommittedChangeEvidence(tmp.path, { dryRun: false, now: "2026-01-01T00:00:03.000Z", retentionDays: 0 })
     expect(result.candidateEvents).toBe(1)
     expect(result.compactedEvents).toBe(1)
     expect(result.deletedFacts).toBe(1)

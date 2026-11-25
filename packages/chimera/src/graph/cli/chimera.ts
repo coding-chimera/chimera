@@ -1100,12 +1100,13 @@ program
 program
   .command('compact-evidence [path]')
   .description('Compact verified committed Chimera evidence into commit-bound summaries')
-  .option('--dry-run', 'Show eligible evidence without deleting hot fact/evidence rows')
+  .option('--dry-run', 'Explicit dry run (the default; no rows are deleted)')
+  .option('--yes', 'Apply compaction; without this flag the command is a dry run')
   .option('--vacuum', 'Run SQLite VACUUM after compaction to physically shrink the database')
   .option('--active-session <id>', 'Protect a currently active Chimera session from compaction')
   .option('--older-than <duration>', 'Only compact evidence older than this duration (default: 30d)', '30d')
   .option('-j, --json', 'Output as JSON')
-  .action(async (pathArg: string | undefined, options: { dryRun?: boolean; vacuum?: boolean; activeSession?: string; olderThan: string; json?: boolean }) => {
+  .action(async (pathArg: string | undefined, options: { dryRun?: boolean; yes?: boolean; vacuum?: boolean; activeSession?: string; olderThan: string; json?: boolean }) => {
     const projectPath = resolveProjectPath(pathArg);
 
     try {
@@ -1119,7 +1120,7 @@ program
         process.exit(1);
       }
       const result = await compactEvidence(projectPath, {
-        dryRun: options.dryRun,
+        dryRun: Boolean(options.dryRun) || !options.yes,
         vacuum: options.vacuum,
         activeSessionID: options.activeSession,
         retentionDays: parseOlderThan(options.olderThan),

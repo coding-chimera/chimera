@@ -84,40 +84,44 @@ describe('getNodesByIds (batch lookup)', () => {
     expect(out.has('n1499')).toBe(true);
   });
 
-  it('serves cache hits from memory and queries only the misses', () => {
-    q.insertNodes([makeNode('n1'), makeNode('n2'), makeNode('n3')]);
-    // Warm the cache for n1 only.
-    q.getNodeById('n1');
-    // Replace the underlying row to make a miss-vs-cache-hit detectable.
+  it('serves a repeated lookup from the in-memory cache', () => {
+    q.insertNodes([makeNode('n1'), makeNode('n2')]);
+    const first = q.getNodeById('n1')!;
+    // A cache hit returns the same decoded object; a SQL round-trip would
+    // build a new one.
+    expect(q.getNodeById('n1')).toBe(first);
+    expect(q.getNodesByIds(['n1']).get('n1')).toBe(first);
+  });
+
+  it('drops a warmed entry when the row changes (change-stamp invalidation)', () => {
+    q.insertNodes([makeNode('n1'), makeNode('n2')]);
+    q.getNodeById('n1'); // warm
     db.getDb().prepare('UPDATE nodes SET name = ? WHERE id = ?').run('changed', 'n1');
+    // total_changes() moved, so the cache is dropped instead of serving 'n1'.
     const out = q.getNodesByIds(['n1', 'n2']);
-    // The cached n1 (still 'n1', not 'changed') must be returned.
-    expect(out.get('n1')!.name).toBe('n1');
+    expect(out.get('n1')!.name).toBe('changed');
     expect(out.get('n2')!.name).toBe('n2');
   });
 
   it('evicts the oldest entry at the maxCacheSize boundary (LRU)', () => {
-    // maxCacheSize is 1000 — inserting 1001 distinct nodes evicts the
-    // least-recently-used (oldest) entry, so a direct UPDATE is visible.
+    // maxCacheSize is 1000 — warming 1001 distinct nodes evicts the
+    // least-recently-used (oldest) entry, so its next read re-decodes.
     const nodes = Array.from({ length: 1001 }, (_, i) => makeNode(`evict${i}`));
     q.insertNodes(nodes);
-    q.getNodesByIds(nodes.map((n) => n.id)); // warm all; evict0 is oldest
-    db.getDb().prepare('UPDATE nodes SET name = ? WHERE id = ?').run('changed', 'evict0');
-    expect(q.getNodeById('evict0')!.name).toBe('changed'); // evicted → fresh read
+    const warmed = q.getNodesByIds(nodes.map((n) => n.id)); // evict0 is oldest
+    expect(q.getNodeById('evict1')).toBe(warmed.get('evict1') ?? null); // still cached
+    expect(q.getNodeById('evict0')).not.toBe(warmed.get('evict0')); // evicted → fresh
   });
 
   it('touching a cached node refreshes its LRU position', () => {
     const nodes = Array.from({ length: 1001 }, (_, i) => makeNode(`lru${i}`));
     q.insertNodes(nodes);
-    q.getNodesByIds(nodes.map((n) => n.id)); // warm all; lru0 evicted, lru1 oldest
-    q.getNodeById('lru0'); // touch → reinserted as newest (evicts lru1)
-    q.insertNodes([makeNode('lruNew')]);
-    q.getNodesByIds(['lruNew']); // warm lruNew → evicts lru2
-    db.getDb().prepare('UPDATE nodes SET name = ? WHERE id = ?').run('changed', 'lru1');
-    expect(q.getNodeById('lru1')!.name).toBe('changed'); // lru1 evicted → fresh read
-    // lru0 was touched and not re-evicted, so it is still cached (stale read).
-    db.getDb().prepare('UPDATE nodes SET name = ? WHERE id = ?').run('changed2', 'lru0');
-    expect(q.getNodeById('lru0')!.name).toBe('lru0'); // cached → stale
+    const warmed = q.getNodesByIds(nodes.map((n) => n.id)); // lru0 evicted, lru1 oldest
+    const touched = q.getNodeById('lru0')!; // reinserted as newest (evicts lru1)
+    // No write happened in between, so the cache is intact: the touched entry
+    // survives, and the entry it displaced is now a miss.
+    expect(q.getNodeById('lru0')).toBe(touched);
+    expect(q.getNodeById('lru1')).not.toBe(warmed.get('lru1'));
   });
 
   it('invalidates the cache entry on deleteNode', () => {

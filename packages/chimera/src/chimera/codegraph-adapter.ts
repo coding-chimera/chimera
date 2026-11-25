@@ -1,4 +1,5 @@
 import path from "path"
+import { ensureGraphWriterReady } from "@/graph/worker"
 import {
   CodeGraph,
   type BuildContextOptions,
@@ -55,6 +56,15 @@ export interface OpenOptions {
   index?: boolean
   sync?: boolean
   readOnly?: boolean
+  /**
+   * Route writes through the per-root graph writer worker. Only the
+   * provenance current-project writer open enables this: the writer worker
+   * performs migrations/repair/WAL heal first, then this adapter keeps a
+   * read-only main handle whose write methods forward over the worker.
+   * Cross-project and plain read-only opens must leave this false.
+   */
+  offload?: boolean
+
   onProgress?: (progress: IndexProgress) => void
   /** Per-connection SQLite page-cache override in MB (pooled read-only opens). */
   cacheSizeMB?: number
@@ -75,10 +85,12 @@ export class CodeGraphAdapter {
   private constructor(
     readonly projectRoot: string,
     private readonly graph: CodeGraph,
+    private readonly offload = false,
   ) {}
 
   static async open(projectRoot: string, options: OpenOptions = {}) {
     const root = path.resolve(projectRoot)
+    if (options.offload === true && options.readOnly !== true) return CodeGraphAdapter.openOffloaded(root, options)
     if (CodeGraph.isInitialized(root)) {
       const adapter = new CodeGraphAdapter(root, await CodeGraph.open(root, { sync: false, readOnly: options.readOnly, cacheSizeMB: options.cacheSizeMB }))
       if (options.sync && !options.readOnly) await adapter.sync({ onProgress: options.onProgress })
@@ -93,7 +105,32 @@ export class CodeGraphAdapter {
     return adapter
   }
 
+  /**
+   * Writer-open sequence for the provenance path: create the data root (an
+   * explicit init only), let the writer worker run migrations/repair/WAL
+   * heal, then open a read-only main handle whose writes forward over the
+   * worker. The main thread never migrates or attaches the Rust writer.
+   */
+  private static async openOffloaded(root: string, options: OpenOptions) {
+    if (!CodeGraph.isInitialized(root)) {
+      if (!options.init) throw new Error(`CodeGraph is not initialized in ${root}`)
+      const created = await CodeGraph.init(root, { index: false })
+      await created.close()
+    }
+    await ensureGraphWriterReady(root)
+    const adapter = new CodeGraphAdapter(
+      root,
+      await CodeGraph.open(root, { sync: false, readOnly: true, offload: true, cacheSizeMB: options.cacheSizeMB }),
+      true,
+    )
+    if (options.index) await adapter.graph.indexAll({ onProgress: options.onProgress })
+    if (!options.index && options.sync) await adapter.sync({ onProgress: options.onProgress })
+    return adapter
+  }
+
   close() {
+    // The offload handle's CodeGraph.close drains and closes the writer
+    // before releasing the main read handle (see CodeGraph.close).
     return this.graph.close()
   }
 
@@ -103,6 +140,15 @@ export class CodeGraphAdapter {
    */
   isClosed() {
     return this.graph.isClosed()
+  }
+
+  /**
+   * Follow a database replaced on disk (external full rebuild). Read-only
+   * handles reopen read-only; an offloaded write also does this when the
+   * worker reports `databaseReplaced`.
+   */
+  reopenIfReplaced() {
+    return this.graph.reopenIfReplaced()
   }
 
   /**
@@ -319,6 +365,12 @@ export class CodeGraphAdapter {
   }
 
   optimize(): void {
+    // The offload handle is read-only: `optimize` runs SQLite maintenance
+    // (writes) and would fail with a raw SQLITE_READONLY. No worker job is
+    // added for this — callers get an explicit contract error instead.
+    if (this.offload) {
+      throw new Error('CodeGraphAdapter.optimize is unavailable on an offloaded read-only handle; run optimize through the writer worker path or an inline writer')
+    }
     this.graph.optimize()
   }
 }

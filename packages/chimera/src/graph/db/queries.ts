@@ -366,6 +366,11 @@ export class QueryBuilder {
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
   private nodeCache: Map<string, Node> = new Map();
   private readonly maxCacheSize = 1000;
+  /** Database change stamp the cache was populated under (see getChangeStamp).
+   *  A cached node is only served while this matches the live stamp, so a
+   *  write by ANOTHER connection (data_version moves) or by this one
+   *  (total_changes moves) drops the cache instead of serving a stale row. */
+  private nodeCacheStamp: string | undefined;
 
   // getDominantFile()'s answer, tagged with the database change stamp it was
   // computed under (see getChangeStamp). Query-independent, so one value
@@ -938,6 +943,11 @@ export class QueryBuilder {
    * Get a node by ID
    */
   getNodeById(id: string): Node | null {
+    // A cached row is only valid under the stamp it was read at. One O(1)
+    // pragma read per lookup is the price of cross-connection correctness;
+    // it is cheaper than the point query the cache replaces.
+    this.refreshNodeCache();
+
     // Check cache first
     if (this.nodeCache.has(id)) {
       const cached = this.nodeCache.get(id)!;
@@ -979,6 +989,10 @@ export class QueryBuilder {
     const out = new Map<string, Node>();
     if (ids.length === 0) return out;
 
+    // Same cross-connection freshness gate as getNodeById: the whole batch
+    // is served against one stamp, so any intervening write invalidates it.
+    this.refreshNodeCache();
+
     // Serve cache hits first; build the miss list for SQL.
     const misses: string[] = [];
     for (const id of ids) {
@@ -1012,6 +1026,19 @@ export class QueryBuilder {
     return out;
   }
 
+  /**
+   * Drop cached nodes when the database changed since they were read.
+   * `getChangeStamp()` folds this connection's write count with
+   * `PRAGMA data_version` (which advances when another connection commits),
+   * so both same-connection and cross-connection writes invalidate. O(1).
+   */
+  private refreshNodeCache(): void {
+    const stamp = this.getChangeStamp();
+    if (this.nodeCacheStamp === stamp) return;
+    this.nodeCache.clear();
+    this.nodeCacheStamp = stamp;
+  }
+
   private getExistingNodeIds(ids: readonly string[]): Set<string> {
     const out = new Set<string>();
     if (ids.length === 0) return out;
@@ -1035,6 +1062,11 @@ export class QueryBuilder {
    * Add a node to the cache, evicting oldest if needed
    */
   private cacheNode(node: Node): void {
+    // Never cache a row read inside a transaction: total_changes counts
+    // writes that a ROLLBACK later undoes, so the stamp could not tell a
+    // rolled-back row from a committed one. Reads outside transactions are
+    // the only cached ones.
+    if (this.db.inTransaction === true) return;
     if (this.nodeCache.size >= this.maxCacheSize) {
       // Evict oldest (first) entry
       const firstKey = this.nodeCache.keys().next().value;

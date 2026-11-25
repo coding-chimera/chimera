@@ -149,6 +149,35 @@ describe("read-only pool checkout and reuse", () => {
       second.release(true)
     })
   })
+
+  test("checkout validation destroys and reopens an entry whose database file was replaced in place", async () => {
+    await using tmp = await tmpdir()
+    const root = await initializedRoot(tmp.path, "replaced")
+    const replacementRoot = await initializedRoot(tmp.path, "replacement-source")
+    const closed: string[] = []
+    const counter = { opens: 0 }
+    await withEnv({}, async () => {
+      const first = await ReadOnlyPool.acquire(root, fakeOpen(root, closed, counter))
+      first.release(true)
+
+      // External replacement: stage a different database and rename it over
+      // the same path, so the inode (dev/ino) changes under the idle handle.
+      const dbPath = getDatabasePath(root)
+      const staged = `${dbPath}.staged`
+      await fs.copyFile(getDatabasePath(replacementRoot), staged)
+      await fs.rm(dbPath)
+      await fs.rename(staged, dbPath)
+      await fs.rm(`${dbPath}-wal`, { force: true })
+      await fs.rm(`${dbPath}-shm`, { force: true })
+
+      const second = await ReadOnlyPool.acquire(root, fakeOpen(root, closed, counter))
+      expect(second.state).not.toBe(first.state)
+      expect(counter.opens).toBe(2)
+      expect(closed).toEqual([root])
+      expect(ReadOnlyPool.readOnlyPoolStats(root).size).toBe(1)
+      second.release(true)
+    })
+  })
 })
 
 describe("read-only pool sweep (idle TTL + maxLifetime)", () => {

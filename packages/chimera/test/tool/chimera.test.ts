@@ -345,6 +345,71 @@ describe("tool.chimera", () => {
   )
 
 
+  it.instance("stays strictly read-only: default and refresh: true both leave status unsynced", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+      yield* Effect.promise(() => Bun.$`git add tracked.ts && git commit -q -m baseline`.cwd(test.directory))
+      yield* initGraph()
+
+      const before = (yield* runStatus({})).metadata.snapshot?.nodeCount ?? 0
+
+      // A modified tracked file is never picked up, whether or not refresh is set.
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\nexport function lateStatusSymbol() { return 1 }\n"))
+
+      const unsynced = yield* runStatus({})
+      expect(unsynced.metadata.snapshot?.nodeCount).toBe(before)
+
+      const requested = yield* runStatus({ refresh: true })
+      expect(requested.metadata.snapshot?.nodeCount).toBe(before)
+    }),
+    { git: true },
+  )
+
+  it.instance("stays strictly read-only: refresh: true does not sync search", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+      yield* Effect.promise(() => Bun.$`git add tracked.ts && git commit -q -m baseline`.cwd(test.directory))
+      yield* initGraph()
+
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\nexport function lateSearchSymbol() { return 1 }\n"))
+
+      const unsynced = yield* runSearch({ query: "lateSearchSymbol" })
+      expect(unsynced.metadata.results).toHaveLength(0)
+
+      const requested = yield* runSearch({ query: "lateSearchSymbol", refresh: true })
+      expect(requested.metadata.results).toHaveLength(0)
+    }),
+    { git: true },
+  )
+
+  it.instance("reports a pending migration without applying it even when status gets refresh: true", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+      yield* initGraph()
+      yield* Effect.sync(() => downgradeGraphSchema(test.directory))
+
+      const status = yield* runStatus({ refresh: true })
+      expect(status.metadata.needsMigration).toBe(true)
+      expect(graphSchemaVersion(test.directory)).toBe(6)
+    }),
+  )
+
+  it.instance("reports a pending migration without applying it even when search gets refresh: true", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+      yield* initGraph()
+      yield* Effect.sync(() => downgradeGraphSchema(test.directory))
+
+      const search = yield* runSearch({ query: "tracked", refresh: true })
+      expect(search.metadata.needsMigration).toBe(true)
+      expect(graphSchemaVersion(test.directory)).toBe(6)
+    }),
+  )
+
   it.instance("reports structured migration-required status for outdated graph schema", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -432,14 +497,19 @@ describe("tool.chimera", () => {
     }),
   )
 
-  it.instance("syncs an existing explicit file path before listing symbols", () =>
+  it.instance("reads the existing snapshot by default and force-syncs an explicit file path only with refresh: true", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "baseline.ts"), "export const baseline = 1\n"))
       yield* initGraph()
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late-symbol.ts"), "export function lateSymbol() { return 1 }\n"))
 
-      const result = yield* runFileSymbols({ filePath: "late-symbol.ts", refresh: false })
+      // Default: no sync — the unindexed file is absent from the snapshot.
+      const unsynced = yield* runFileSymbols({ filePath: "late-symbol.ts" })
+      expect(unsynced.metadata.results.some((item) => item.node.name === "lateSymbol")).toBe(false)
+
+      // Explicit refresh opts into the independent per-file force sync.
+      const result = yield* runFileSymbols({ filePath: "late-symbol.ts", refresh: true })
 
       expect(result.title).toBe("Chimera file symbols")
       expect(result.metadata.results.some((item) => item.node.name === "lateSymbol")).toBe(true)
@@ -1083,7 +1153,7 @@ describe("tool.chimera", () => {
       yield* initGraph()
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late-audit.ts"), "export function lateAudit() { return 1 }\n"))
 
-      const result = yield* runAudit({ filePath: "late-audit.ts", refresh: false })
+      const result = yield* runAudit({ filePath: "late-audit.ts", refresh: true })
 
       expect(result.title).toBe("Chimera audit")
       expect(result.metadata.changedFiles).toContain("late-audit.ts")
@@ -1679,7 +1749,7 @@ describe("cross-project projectPath", () => {
       const beforeStatus = yield* runStatus({ projectPath: bRoot, refresh: false })
       expect(beforeStatus.metadata.snapshot?.nodeCount).toBeGreaterThan(0)
 
-      const symbols = yield* runFileSymbols({ filePath: "late-cross.ts", projectPath: bRoot })
+      const symbols = yield* runFileSymbols({ filePath: "late-cross.ts", projectPath: bRoot, refresh: true })
       expect(symbols.metadata.crossProject).toBe(true)
       expect(symbols.metadata.results).toHaveLength(0)
       expect(symbols.output).toContain("No indexed symbols found")
@@ -1690,10 +1760,10 @@ describe("cross-project projectPath", () => {
       const afterStatus = yield* runStatus({ projectPath: bRoot, refresh: false })
       expect(afterStatus.metadata.snapshot?.nodeCount).toBe(beforeStatus.metadata.snapshot?.nodeCount)
 
-      // Contrast: the same call shape on the current project does sync the unindexed file seed,
-      // proving the cross skip above is what kept the target index unchanged.
+      // Contrast: the same call shape with explicit refresh: true on the current project does
+      // sync the unindexed file seed, proving the cross skip above is what kept the target index unchanged.
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late-local.ts"), "export function lateLocalSymbol() { return 6 }\n"))
-      const local = yield* runFileSymbols({ filePath: "late-local.ts" })
+      const local = yield* runFileSymbols({ filePath: "late-local.ts", refresh: true })
       expect(local.metadata.results.some((item) => item.node.name === "lateLocalSymbol")).toBe(true)
       expect(local.metadata.crossProject ?? false).toBe(false)
 
@@ -1725,7 +1795,7 @@ describe("cross-project projectPath", () => {
       yield* Effect.promise(() =>
         fs.writeFile(path.join(test.directory, "late-local-root.ts"), "export function lateLocalRootSymbol() { return 2 }\n"),
       )
-      const symbols = yield* runFileSymbols({ filePath: "late-local-root.ts", projectPath: test.directory })
+      const symbols = yield* runFileSymbols({ filePath: "late-local-root.ts", projectPath: test.directory, refresh: true })
       expect(symbols.output).not.toContain("cross-project")
       expect(symbols.metadata.crossProject).toBe(false)
       expect(symbols.metadata.projectRoot).toBe(test.directory)

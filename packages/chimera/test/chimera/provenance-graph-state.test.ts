@@ -16,6 +16,8 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as fs from "fs/promises"
 import path from "path"
+import * as os from "os"
+import { busyGraphWriter, graphWriterSpawnCountForTest, hasGraphWriterForTest } from "@/graph/worker"
 import { Chimera } from "@/chimera/provenance"
 import type { ProjectGraphState } from "@/chimera/provenance"
 import { CodeGraph } from "@/graph"
@@ -245,6 +247,40 @@ describe("openProjectGraph in-use window (B1)", () => {
       expect(observed.every((n) => n >= 1)).toBe(true)
       expect(Chimera.graphStateInUseForTest(test.directory)).toBe(0)
       yield* Effect.promise(() => Chimera.closeGraphRootForTest(test.directory))
+    }),
+  )
+})
+
+describe("cross-project opens never spawn a writer", () => {
+  it.instance("a cross-project read/sync open stays read-only and writes nothing", () =>
+    Effect.gen(function* () {
+      const other = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "chimera-cross-")))
+      try {
+        yield* Effect.promise(() => fs.writeFile(path.join(other, "sample.ts"), "export const crossSample = 1\n"))
+        const setup = yield* Effect.promise(() => CodeGraph.init(other, { index: true }))
+        yield* Effect.promise(() => setup.close())
+
+        const spawnedBefore = graphWriterSpawnCountForTest(other)
+        yield* Chimera.withProjectGraph({ projectPath: other, sync: true, watch: true }, () =>
+          Effect.sync(() => {
+            // Cross-project opens are readOnly by contract and never offload:
+            // no worker is spawned for the target root at all.
+            expect(hasGraphWriterForTest(other)).toBe(false)
+            expect(busyGraphWriter(other)).toBe(false)
+          }),
+        )
+        expect(graphWriterSpawnCountForTest(other)).toBe(spawnedBefore)
+
+        // A later change plus a syncing cross-project open still must not
+        // create a writer for that root.
+        yield* Effect.promise(() => fs.writeFile(path.join(other, "sample.ts"), "export const crossSample = 2\n"))
+        yield* Chimera.withProjectGraph({ projectPath: other, sync: true }, () => Effect.void)
+        expect(hasGraphWriterForTest(other)).toBe(false)
+        expect(busyGraphWriter(other)).toBe(false)
+        expect(graphWriterSpawnCountForTest(other)).toBe(spawnedBefore)
+      } finally {
+        yield* Effect.promise(() => fs.rm(other, { recursive: true, force: true }))
+      }
     }),
   )
 })

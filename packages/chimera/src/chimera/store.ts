@@ -945,6 +945,66 @@ async function withDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string
   }
 }
 
+// (F2) Bounded retry for transient write-lock contention. Every store write
+// runs inside ONE transaction (withWriteDb), so a SQLITE_BUSY/SQLITE_LOCKED
+// failure rolls the whole unit back before the helper retries: replaying the
+// callback can never double-apply a partially committed write. The connection
+// already sets `busy_timeout = 5000` (graph/db configureConnection), so this
+// budget only covers a writer that outlasts that window: at most 3 retries
+// with 50/150/400ms backoff (~600ms of sleep). Anything that is not BUSY/LOCKED
+// keeps the previous behavior exactly — evict the connection and let the
+// caller's JSONL fallback take over.
+const STORE_BUSY_RETRY_DELAYS_MS = [50, 150, 400] as const
+
+function isStoreBusyError(error: unknown) {
+  const record = error && typeof error === "object" ? (error as { code?: unknown; errno?: unknown; message?: unknown }) : undefined
+  if (typeof record?.code === "string" && /SQLITE_(BUSY|LOCKED)/.test(record.code)) return true
+  // SQLITE_BUSY = 5, SQLITE_LOCKED = 6; extended codes share the low byte.
+  if (typeof record?.errno === "number" && [5, 6].includes(record.errno & 0xff)) return true
+  const message = error instanceof Error ? error.message : typeof record?.message === "string" ? record.message : ""
+  return /SQLITE_(BUSY|LOCKED)|database (table )?is locked/i.test(message)
+}
+
+function sleepMacrotask(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Transactional write helper for the store surface. `fn` is executed inside one
+ * adapter transaction per attempt; the adapter rolls back on any throw, so a
+ * retried attempt starts from a clean, uncommitted state. Only BUSY/LOCKED is
+ * retried (bounded); every other error keeps the historical `withDb` fallback
+ * of evicting the pooled connection and returning undefined.
+ */
+async function withWriteDb<T>(
+  projectRoot: string,
+  fn: (db: ChimeraDb, dbPath: string) => T,
+  options: { ensureStore?: boolean } = {},
+) {
+  const dbPath = databaseStorePath(projectRoot)
+  if (!(await Bun.file(dbPath).exists()) && !(options.ensureStore && (await ensureStoreDatabase(dbPath)))) return undefined
+  for (let attempt = 0; ; attempt++) {
+    let db: ChimeraDb
+    try {
+      db = acquireStoreConnection(dbPath, false).getDb()
+    } catch {
+      releaseStoreConnection(dbPath, false)
+      return undefined
+    }
+    try {
+      return db.transaction(() => fn(db, dbPath))()
+    } catch (error) {
+      const delay = STORE_BUSY_RETRY_DELAYS_MS[attempt]
+      if (delay !== undefined && isStoreBusyError(error)) {
+        await sleepMacrotask(delay)
+        continue
+      }
+      releaseStoreConnection(dbPath, false)
+      return undefined
+    }
+  }
+}
+
 async function withReadOnlyDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string) => T) {
   const dbPath = databaseStorePath(projectRoot)
   if (!(await Bun.file(dbPath).exists())) return undefined
@@ -1384,7 +1444,7 @@ function writeProvenanceRecordToDb(db: ChimeraDb, input: ToolMutationRecord, mig
 }
 
 export async function appendProvenanceRecord(projectRoot: string, artifact: string, record: ToolMutationRecord) {
-  const wrote = await withDb(projectRoot, (db) => {
+  const wrote = await withWriteDb(projectRoot, (db) => {
     writeProvenanceRecordToDb(db, record)
     return true
   })
@@ -1442,7 +1502,7 @@ export async function readRecentProvenanceRecords(
 
 export async function provenanceRecordCount(projectRoot: string, artifact: string) {
   const legacy = (await readLegacyProvenanceRecords(artifact)).map(normalizeProvenanceRecord)
-  const count = await withDb(projectRoot, (db) => {
+  const count = await withWriteDb(projectRoot, (db) => {
     for (const record of legacy) writeProvenanceRecordToDb(db, record, artifact)
     const row = db.prepare("SELECT COUNT(*) AS count FROM chimera_change_event").get() as CountRow | undefined
     return row?.count ?? 0
@@ -1466,7 +1526,7 @@ export async function provenanceRecordCountReadOnly(projectRoot: string, artifac
 
 export async function writeChangeFacts(projectRoot: string, facts: ChangeFact[]) {
   if (facts.length === 0) return
-  await withDb(projectRoot, (db) => {
+  await withWriteDb(projectRoot, (db) => {
     const eventIDs = [...new Set(facts.map((fact) => fact.eventID))]
     db.transaction(() => {
       for (const eventID of eventIDs) db.prepare("DELETE FROM chimera_change_fact WHERE event_id = ?").run(eventID)
@@ -1566,7 +1626,7 @@ export async function recordAuditRun(projectRoot: string, input: AuditRunInput) 
   // colliding id would silently REPLACE each other (audit rows lost under
   // concurrent multi-session waves).
   const id = `audit_${createHash("sha256").update(`${createdAt}:${input.source}:${input.provenanceID ?? ""}:${payload}`).digest("hex").slice(0, 16)}`
-  await withDb(projectRoot, (db) => {
+  await withWriteDb(projectRoot, (db) => {
     db.prepare(`
       INSERT OR REPLACE INTO chimera_audit_run (
         id,
@@ -1641,7 +1701,7 @@ export async function recordPredesignRun(projectRoot: string, artifact: string, 
     createdAt,
   }
   const payload = safeJson(record)
-  const wrote = await withDb(projectRoot, (db) => {
+  const wrote = await withWriteDb(projectRoot, (db) => {
     db.prepare(`
       INSERT OR REPLACE INTO chimera_predesign_run (
         id,
@@ -1799,7 +1859,7 @@ export async function registerEditIntentClaims(projectRoot: string, input: EditI
   const createdAt = new Date().toISOString()
   const ttlMs = Math.max(60_000, Math.floor(input.ttlMs ?? EDIT_INTENT_CLAIM_DEFAULT_TTL_MS))
   const expiresAt = new Date(Date.now() + ttlMs).toISOString()
-  const records = await withDb(projectRoot, (db) => {
+  const records = await withWriteDb(projectRoot, (db) => {
     expireStaleEditIntentClaims(db, createdAt)
     const insert = db.prepare(`
       INSERT OR REPLACE INTO chimera_edit_intent_claim (
@@ -1888,7 +1948,7 @@ export async function releaseEditIntentClaims(
   options: { now?: string } = {},
 ): Promise<EditIntentClaimRecord[]> {
   const now = options.now ?? new Date().toISOString()
-  const released = await withDb(projectRoot, (db) => {
+  const released = await withWriteDb(projectRoot, (db) => {
     expireStaleEditIntentClaims(db, now)
     const rows = db.prepare("SELECT * FROM chimera_edit_intent_claim WHERE session_id = ? AND status = 'active'").all(sessionID) as EditIntentClaimRow[]
     if (rows.length === 0) return []
@@ -1920,7 +1980,7 @@ export async function releaseEditIntentClaimsForFiles(
   const now = options.now ?? new Date().toISOString()
   const targets = unique(files.map(claimFilePath).filter(Boolean))
   if (targets.length === 0) return []
-  const released = await withDb(projectRoot, (db) => {
+  const released = await withWriteDb(projectRoot, (db) => {
     expireStaleEditIntentClaims(db, now)
     const inFiles = `file_path IN (${targets.map(() => "?").join(", ")})`
     const rows = db
@@ -1954,7 +2014,7 @@ export async function registerEditIntentWaiter(
   if (!filePath) return false
   const now = input.now ?? new Date().toISOString()
   const host = input.host === undefined ? { pid: process.pid, bootID: HOST_BOOT_ID } : input.host
-  const wrote = await withDb(projectRoot, (db) => {
+  const wrote = await withWriteDb(projectRoot, (db) => {
     db.prepare(`
       INSERT INTO chimera_edit_intent_waiter (session_id, file_path, blocker_session_id, status, reason, host_pid, host_boot_id, created_at, updated_at)
       VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?)
@@ -1994,7 +2054,7 @@ export async function takeWokenEditIntentWaiters(
   const now = options.now ?? new Date().toISOString()
   const targets = unique(files.map(claimFilePath).filter(Boolean))
   if (targets.length === 0) return []
-  const woken = await withDb(projectRoot, (db) => {
+  const woken = await withWriteDb(projectRoot, (db) => {
     expireStaleEditIntentClaims(db, now)
     const result: EditIntentWaiterRecord[] = []
     db.transaction(() => {
@@ -2110,7 +2170,7 @@ export async function readEditIntentQueuePositions(
 
 export async function cancelEditIntentWaiters(projectRoot: string, sessionID: string, options: { now?: string } = {}): Promise<number> {
   const now = options.now ?? new Date().toISOString()
-  const cancelled = await withDb(projectRoot, (db) => {
+  const cancelled = await withWriteDb(projectRoot, (db) => {
     // Woken rows are cancelled too: a removed session can never act on its
     // wake, so leaving the row would keep its G1 wake-priority hold blocking
     // other sessions until the window expired on its own.
@@ -2139,7 +2199,7 @@ export async function listEditIntentWaiterHosts(projectRoot: string): Promise<Ar
  */
 export async function cancelEditIntentWaitersByHostBootID(projectRoot: string, hostBootID: string, options: { now?: string } = {}): Promise<number> {
   const now = options.now ?? new Date().toISOString()
-  const cancelled = await withDb(projectRoot, (db) => {
+  const cancelled = await withWriteDb(projectRoot, (db) => {
     const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE status IN ('waiting', 'woken') AND host_boot_id = ?").run(now, hostBootID)
     return Number(result.changes ?? 0)
   })
@@ -2243,7 +2303,7 @@ function expireStaleProcesses(db: ChimeraDb, now: string) {
  */
 export async function sweepExpiredStoreRows(projectRoot: string, options: { now?: string } = {}) {
   const now = options.now ?? new Date().toISOString()
-  return withDb(projectRoot, (db) => {
+  return withWriteDb(projectRoot, (db) => {
     expireStaleEditIntentClaims(db, now)
     expireStaleProcesses(db, now)
     const running = db.prepare("SELECT id, pid FROM chimera_process_registry WHERE status = 'running'").all() as Array<{ id: string; pid: number }>
@@ -2262,7 +2322,7 @@ export async function registerProcess(projectRoot: string, input: ProcessRegistr
   const ttlMs = Math.max(60_000, Math.floor(input.ttlMs ?? PROCESS_REGISTRY_TTL_MS))
   const expiresAt = new Date(Date.parse(startedAt) + ttlMs).toISOString()
   const id = `proc_${randomUUID()}`
-  return withDb(projectRoot, (db) => {
+  return withWriteDb(projectRoot, (db) => {
     expireStaleProcesses(db, startedAt)
     db.prepare(
       `
@@ -2295,7 +2355,7 @@ export async function markProcessExited(
   options: { now?: string } = {},
 ): Promise<ProcessRegistryRecord | undefined> {
   const now = options.now ?? new Date().toISOString()
-  return withDb(projectRoot, (db) => {
+  return withWriteDb(projectRoot, (db) => {
     const flipped = db
       .prepare("UPDATE chimera_process_registry SET status = 'exited', exit_code = ?, exited_at = ? WHERE id = ? AND status = 'running'")
       .run(exitCode, now, id)
@@ -2312,7 +2372,7 @@ export async function markProcessKilled(
   options: { now?: string } = {},
 ): Promise<ProcessRegistryRecord | undefined> {
   const now = options.now ?? new Date().toISOString()
-  return withDb(projectRoot, (db) => {
+  return withWriteDb(projectRoot, (db) => {
     const flipped = db
       .prepare("UPDATE chimera_process_registry SET status = 'killed', exited_at = ? WHERE id = ? AND status = 'running'")
       .run(now, id)
@@ -2360,7 +2420,7 @@ export async function releaseProcessesForSession(
   options: { now?: string } = {},
 ): Promise<ProcessRegistryRecord[]> {
   const now = options.now ?? new Date().toISOString()
-  const released = await withDb(projectRoot, (db) => {
+  const released = await withWriteDb(projectRoot, (db) => {
     const rows = db
       .prepare("SELECT * FROM chimera_process_registry WHERE session_id = ? AND status = 'running'")
       .all(sessionID) as ProcessRegistryRow[]
@@ -2385,7 +2445,7 @@ export async function readProcessesByPids(
   const wanted = [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0))]
   if (wanted.length === 0) return []
   const now = options.now ?? new Date().toISOString()
-  const rows = await withDb(projectRoot, (db) => {
+  const rows = await withWriteDb(projectRoot, (db) => {
     expireStaleProcesses(db, now)
     const placeholders = wanted.map(() => "?").join(", ")
     const running = db
@@ -2412,7 +2472,7 @@ export async function readProcessesByPids(
  */
 export async function cancelOrphanedEditIntentWaiters(projectRoot: string, options: { orphanedBefore: string; now?: string }): Promise<number> {
   const now = options.now ?? new Date().toISOString()
-  const cancelled = await withDb(projectRoot, (db) => {
+  const cancelled = await withWriteDb(projectRoot, (db) => {
     const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE status IN ('waiting', 'woken') AND host_boot_id IS NULL AND updated_at <= ?").run(now, options.orphanedBefore)
     return Number(result.changes ?? 0)
   })
@@ -2477,7 +2537,7 @@ export async function recordOracleResult(projectRoot: string, artifact: string, 
     createdAt,
   }
   const normalized = normalizeOracleRecord(record)
-  const wrote = await withDb(projectRoot, (db) => {
+  const wrote = await withWriteDb(projectRoot, (db) => {
     writeOracleResultToDb(db, normalized)
     return true
   })
@@ -2793,7 +2853,7 @@ function rewriteStoredFactPayloads(db: ChimeraDb) {
 
 export async function compactCommittedChangeEvidence(projectRoot: string, options: CommittedEvidenceCompactionOptions = {}): Promise<CommittedEvidenceCompactionResult> {
   const dbPath = databaseStorePath(projectRoot)
-  const dryRun = options.dryRun ?? false
+  const dryRun = options.dryRun ?? true
   const vacuum = !dryRun && (options.vacuum ?? false)
   const dbBytesBefore = await fileBytes(dbPath)
   const head = await gitHead(projectRoot)
@@ -2846,7 +2906,7 @@ export async function compactCommittedChangeEvidence(projectRoot: string, option
   }
 
   if (committed.length === 0) {
-    const rewrittenFactPayloads = await withDb(projectRoot, (db) => db.transaction(() => rewriteStoredFactPayloads(db))()) ?? 0
+    const rewrittenFactPayloads = await withWriteDb(projectRoot, (db) => rewriteStoredFactPayloads(db)) ?? 0
     if (vacuum) {
       await withDb(projectRoot, (db) => {
         db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -2883,7 +2943,7 @@ export async function compactCommittedChangeEvidence(projectRoot: string, option
     facts: committed.flatMap((candidate) => candidate.facts),
     compactedAt,
   })
-  const cleanup = await withDb(projectRoot, (db) => {
+  const cleanup = await withWriteDb(projectRoot, (db) => {
     return db.transaction(() => {
       const rewrittenFactPayloads = rewriteStoredFactPayloads(db)
       writeCommitChangeSummary(db, summary)
@@ -3007,7 +3067,7 @@ export async function writePersistentObligationStore<T extends ObligationLike>(
   store: ObligationStoreLike<T>,
   runID?: string,
 ) {
-  const wrote = await withDb(projectRoot, (db) => {
+  const wrote = await withWriteDb(projectRoot, (db) => {
     db.transaction(() => {
       db.prepare("DELETE FROM chimera_audit_obligation").run()
       for (const item of store.obligations) writeObligationToDb(db, item, runID)

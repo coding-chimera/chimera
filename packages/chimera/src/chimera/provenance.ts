@@ -22,6 +22,7 @@ import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProve
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 import { EditIntentClaims } from "./edit-intent"
 import { ReadOnlyPool, type ReadOnlyLease } from "./read-only-pool"
+import { busyGraphWriter, closeGraphWriter, drainGraphWriter } from "@/graph/worker"
 
 type ShadowOracleRecorder = (input: {
   projectID: string
@@ -623,6 +624,12 @@ async function closeGraphRoot(root: string) {
   for (const key of recentToolFiles.keys()) {
     if (key.startsWith(`${root}\0`)) recentToolFiles.delete(key)
   }
+  // The writer worker owns the only read-write handle for this root. Drain
+  // its in-flight/queued writes and shut it down BEFORE closing the main
+  // (read-only, offload) handle: closing that handle mid-write would pull
+  // the database out from under the worker.
+  if (busyGraphWriter(root)) await drainGraphWriter(root)
+  await closeGraphWriter(root)
   if (!promise) return
   try {
     const state = await promise
@@ -765,6 +772,14 @@ function readExtractionSemantics(state: ProjectGraphState) {
 
 async function refreshProjectGraph(state: ProjectGraphState, onProgress?: (progress: CodeGraphIndexProgress) => void) {
   if (state.refreshPromise) return state.refreshPromise
+  // Follow an externally rebuilt database before reading pending/changed
+  // files or stats, so a refresh after `rm -rf .chimera && graph init`
+  // sees the new file instead of the dead inode.
+  try {
+    state.graph.reopenIfReplaced()
+  } catch {
+    // Mid-rebuild: the offloaded write below reports contention and retries.
+  }
   // Writer refresh doubles as the retry point for a failed stale-extraction
   // rebuild (the trigger is one-shot per state while in flight).
   maybeRebuildStaleIndex(state)
@@ -997,6 +1012,9 @@ function openGraphState(
     index: init,
     sync: false,
     readOnly: options.readOnly,
+    // Current-project writer open: the worker performs migrations/repair/WAL
+    // heal, and this main handle stays read-only with writes offloaded.
+    offload: true,
     onProgress: options.onProgress,
   }).then((graph) => {
     const state: ProjectGraphState = {

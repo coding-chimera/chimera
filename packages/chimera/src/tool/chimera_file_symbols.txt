@@ -4,7 +4,7 @@ Use this tool when you already know the file path and need CodeGraph nodes insid
 
 Do NOT use it for open-ended search — use `chimera_search` for query-based graph search and `grep` for raw source text.
 
-Mechanics: explicit `filePath` values are filesystem-synced before resolution, even when untracked by git. `range` requires `filePath` and narrows to intersecting symbols.
+Mechanics: the existing snapshot is read by default. With `refresh: true`, explicit `filePath` values are filesystem-synced before resolution, even when untracked by git; without it, an unindexed file yields no results. `range` requires `filePath` and narrows to intersecting symbols.
 - Output enrichment: symbol hits append up to 3 lines of source definition excerpt each, and the host file lists up to 2 companion test files as a `Tests: <path>` line (total added output is budget-capped at 2KB).
 
 `projectPath`: optional path to another initialized Chimera project (or its subdirectory) for strictly read-only cross-project queries; never initializes or writes there. In cross-project mode `filePath` resolves against the target's indexed records and is not filesystem-synced. See `chimera_status` for full cross-project rules.

@@ -4,7 +4,7 @@ Use this tool when the audit seed comes from another source — files changed by
 
 Do NOT use it for tool-made mutations — those are audited automatically at edit time and `chimera_audit_recent` reads that recorded evidence.
 
-Mechanics: provide at least one seed (`files`, `filePath`, `symbol`, `ref`, or legacy `nodeID`), preferring `ref` copied from `Ref: node:<id>`; `range` requires `filePath`. Explicit file seeds are filesystem-synced before resolution, even when untracked by git. Findings are structural evidence, not commands or tracked obligations.
+Mechanics: provide at least one seed (`files`, `filePath`, `symbol`, `ref`, or legacy `nodeID`), preferring `ref` copied from `Ref: node:<id>`; `range` requires `filePath`. The existing snapshot is read by default; with `refresh: true` explicit file seeds are filesystem-synced before resolution, even when untracked by git. Findings are structural evidence, not commands or tracked obligations.
 
 After this tool:
 - Interpret findings in task context; intentional, irrelevant, or duplicate findings can be skipped with a brief note. Use build/typecheck/lint/tests for oracle verification; for frontend component files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`) also run lint or render tests — framework-rule violations are invisible to structural audit. Use `chimera_obligations_sync` only for durable tracking.
