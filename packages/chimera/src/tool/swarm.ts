@@ -92,9 +92,10 @@ type Params = Schema.Schema.Type<typeof Parameters>
 const AUTO_BACKGROUND_DESCRIPTION = [
   "Run a homogeneous fan-out of independent subagents from one prompt template.",
   "chimera_swarm is directly available: never use tool_search to find it and never claim it is unavailable.",
-  "Every call must include BOTH items and prompt_template. items is a non-empty array of strings or objects; prompt_template must contain {{item}}.",
+  "Every call must include items, prompt_template, AND model. items is a non-empty array of strings or objects; prompt_template must contain {{item}}.",
   "Never call with only description, concurrency, or model selectors: those fields do not specify the work items.",
-  'Minimal call: { prompt_template: "Review {{item}}", items: ["src/a.ts", "src/b.ts"] }',
+  "The description and prompt text never select a worker model. When the user names, restricts, or expresses a resource or capacity preference for a model, copy its exact provider/model route into model. Otherwise explicitly use the parent model route.",
+  'Minimal call: { prompt_template: "Review {{item}}", items: ["src/a.ts", "src/b.ts"], model: "provider/model" }',
   "subagent_type must be general or explore (omit it to use general). workload must be scout, builder, or reviewer; workload names are not agent types.",
   "Use task for one delegation and orchestrate for multi-stage or heterogeneous work. Worker results arrive through completion notifications.",
 ].join("\n")
@@ -113,7 +114,10 @@ const AUTO_BACKGROUND_PARAMETERS = Schema.Struct({
     description: "Optional delegation workload: scout, builder, or reviewer.",
   }),
   model_profile: BaseParameterFields.model_profile,
-  model: BaseParameterFields.model,
+  model: Schema.String.annotate({
+    description:
+      "Required worker model route. Copy the exact provider/model route when the user names or prefers a model, including resource or capacity preferences. Otherwise explicitly use the parent model route. Description text is never a substitute.",
+  }),
   model_identity: BaseParameterFields.model_identity,
   provider: BaseParameterFields.provider,
   variant: BaseParameterFields.variant,
@@ -124,8 +128,8 @@ const AUTO_BACKGROUND_PARAMETERS = Schema.Struct({
 function autoBackgroundValidationError(error: unknown) {
   return [
     `The ${id} tool was called with invalid arguments: ${error}.`,
-    "Expected shape: { prompt_template: string (required; must include {{item}}), items: (string | object)[] (required), subagent_type?: general | explore, workload?: scout | builder | reviewer, model_profile?: string, model?: string, model_identity?: string, provider?: string, variant?: string, description?: string, concurrency?: number (1-16) }",
-    'Example: { prompt_template: "Review {{item}}", items: ["src/a.ts", "src/b.ts"] }',
+    "Expected shape: { prompt_template: string (required; must include {{item}}), items: (string | object)[] (required), model: provider/model (required; user-selected route or parent route), subagent_type?: general | explore, workload?: scout | builder | reviewer, model_profile?: string, model_identity?: string, provider?: string, variant?: string, description?: string, concurrency?: number (1-16) }",
+    'Example: { prompt_template: "Review {{item}}", items: ["src/a.ts", "src/b.ts"], model: "provider/model" }',
   ].join("\n")
 }
 
