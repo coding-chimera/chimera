@@ -16,7 +16,7 @@ ultra 是用户对主动委派的长期授权，不是"所有任务都包一层�
 
 ## 规则 2：先定位，再按形状分派
 
-复杂/多文件任务先做最小定位（自己的 grep/glob/图工具，或一个 `task` scout），再按形状选择 `task` / `chimera_swarm` / `orchestrate`。规模按任务定档：简单 2-4 个 agent、中等 5-9 个、复杂 10-30 个；`maxTotalAgents`（默认 64，硬顶 256）与 16 并发窗口是护栏，不是目标。
+复杂/多文件任务先做最小定位（自己的 grep/glob/图工具，或一个 `task` scout），再按形状选择 `task` / `chimera_swarm` / `orchestrate`。规模按任务定档：简单 2-4 个 agent、中等 5-9 个、复杂 10-30 个；`maxTotalAgents` 是可选正数总量上限（不传即不限），16 并发窗口是护栏，不是目标。
 
 ## 规则 3：派发前写一行计划
 

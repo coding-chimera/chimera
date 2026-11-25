@@ -251,6 +251,26 @@ describe("orchestrate host bindings", () => {
     }),
   )
 
+  it.instance("allows more than the former default when maxTotalAgents is omitted", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const sessions = yield* Session.Service
+      const orche = yield* bind(parent, { maxConcurrent: 16 })
+
+      const results = yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 65 }, (_, index) =>
+            Promise.resolve(orche.bindings.orche.agent({ prompt: `task-${index}` })),
+          ),
+        ),
+      )
+
+      expect(results.filter(Boolean)).toHaveLength(65)
+      expect(yield* sessions.children(parent.chat.id)).toHaveLength(65)
+      yield* orche.disposeAll()
+    }),
+  )
+
   it.instance("returns null when the subagent fails", () =>
     Effect.gen(function* () {
       const parent = yield* seed()

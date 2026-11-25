@@ -243,7 +243,9 @@ describe("orchestrate parameters", () => {
     const examples = promptJsonExamples(ORCHESTRATE_DESCRIPTION)
     expect(examples.length).toBeGreaterThan(0)
     const parsed = examples.map((example) => Schema.decodeUnknownSync(OrchestrateParameters)(example))
-    expect(parsed.some((entry) => entry.timeoutMs === 0 && entry.maxTotalAgents === 64)).toBe(true)
+    expect(parsed.some((entry) => entry.timeoutMs === 0 && entry.maxTotalAgents === undefined)).toBe(true)
+    expect(ORCHESTRATE_DESCRIPTION).toContain("Omit `maxTotalAgents` for unlimited dispatches")
+    expect(ORCHESTRATE_DESCRIPTION).not.toContain("default 64, hard cap 256")
   })
 
   test("description routes single-layer work to task, homogeneous batches to chimera_swarm, and complex programs to orchestrate", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
 import { Effect, Fiber } from "effect"
-import { parseChildFrame, parseHostFrame, type ChildFrame } from "@/orchestrate/protocol"
+import { parseChildFrame, parseHostFrame, type ChildFrame, type JsonValue } from "@/orchestrate/protocol"
 import { OrchestrateRuntime } from "@/orchestrate/runtime"
 import { testEffect } from "../lib/effect"
 
@@ -83,6 +83,23 @@ function directHost() {
 }
 
 const it = testEffect(OrchestrateRuntime.defaultLayer)
+
+function trackedBinding(delayMs = 1) {
+  let active = 0
+  let peak = 0
+  let calls = 0
+  return {
+    binding: async (args: JsonValue) => {
+      calls += 1
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      active -= 1
+      return args
+    },
+    stats: () => ({ calls, peak }),
+  }
+}
 
 describe("orchestrate child worker (direct protocol)", () => {
   test(
@@ -275,6 +292,91 @@ TIMEOUT,
     TIMEOUT,
   )
 })
+
+describe("orchestrate worker pools", () => {
+  it.live(
+    "queues 300 parallel calls without exceeding 16 in flight",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* OrchestrateRuntime.Service
+        const tracker = trackedBinding()
+        const spec = yield* runtime.resolve({
+          code: [
+            "const results = await orche.parallel(Array.from({ length: 300 }, (_, index) => () => orche.worker({ index })));",
+            "return { count: results.length, first: results[0].index, last: results[299].index };",
+          ].join("\n"),
+          bindings: { orche: { worker: tracker.binding } },
+        })
+
+        const result = yield* runtime.run(spec)
+        expect(result.error).toBeUndefined()
+        expect(result.value).toEqual({ count: 300, first: 0, last: 299 })
+        expect(tracker.stats()).toEqual({ calls: 300, peak: 16 })
+      }),
+    TIMEOUT,
+  )
+
+  it.live(
+    "queues 300 two-stage pipeline items without exceeding 16 in flight",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* OrchestrateRuntime.Service
+        const tracker = trackedBinding()
+        const spec = yield* runtime.resolve({
+          code: [
+            "const results = await orche.pipeline([",
+            "  (index) => orche.worker({ index, stage: 1 }),",
+            "  (value) => orche.worker({ index: value.index, stage: 2 }),",
+            "])(Array.from({ length: 300 }, (_, index) => index));",
+            "return { count: results.length, first: results[0], last: results[299] };",
+          ].join("\n"),
+          bindings: { orche: { worker: tracker.binding } },
+        })
+
+        const result = yield* runtime.run(spec)
+        expect(result.error).toBeUndefined()
+        expect(result.value).toEqual({
+          count: 300,
+          first: { index: 0, stage: 2 },
+          last: { index: 299, stage: 2 },
+        })
+        expect(tracker.stats()).toEqual({ calls: 600, peak: 16 })
+      }),
+    TIMEOUT,
+  )
+
+  it.live(
+    "observes delayed rejections and stops claiming work with maxPending 1",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* OrchestrateRuntime.Service
+        const tracker = trackedBinding(25)
+        const spec = yield* runtime.resolve({
+          code: [
+            "const unhandled = [];",
+            "process.on('unhandledRejection', (reason) => unhandled.push(reason?.message ?? String(reason)));",
+            "let started = 0;",
+            "const delayed = new Promise((_, reject) => setTimeout(() => reject(new Error('delayed rejection')), 10));",
+            "const slow = () => { started += 1; return orche.worker({ index: 0 }); };",
+            "const never = () => { started += 1; return orche.worker({ index: started }); };",
+            "let message = '';",
+            "try { await orche.parallel([slow, delayed, never, never]); } catch (error) { message = error.message; }",
+            "await new Promise((resolve) => setTimeout(resolve, 25));",
+            "return { started, message, unhandled };",
+          ].join("\n"),
+          maxPending: 1,
+          bindings: { orche: { worker: tracker.binding } },
+        })
+
+        const result = yield* runtime.run(spec)
+        expect(result.error).toBeUndefined()
+        expect(result.value).toEqual({ started: 1, message: "delayed rejection", unhandled: [] })
+        expect(tracker.stats()).toEqual({ calls: 1, peak: 1 })
+      }),
+    TIMEOUT,
+  )
+})
+
 describe("orchestrate timeout budgets", () => {
   it.live(
     "starts no timer when timeoutMs is omitted",

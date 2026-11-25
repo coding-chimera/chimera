@@ -14,7 +14,7 @@
  *   defects) -> the binding rejects, which aborts the program;
  * - approval denial -> the binding rejects as well (the ask effect fails).
  *
- * Limits are enforced per binding instance: `maxTotalAgents` is a hard cap and
+ * Limits are enforced per binding instance: `maxTotalAgents` is an optional positive cap and
  * `maxConcurrent` is a FIFO slot queue that defaults to 16 (the swarm default).
  */
 
@@ -57,7 +57,7 @@ export interface OrchestrationHost {
 }
 
 export interface OrchestrationLimits {
-  readonly maxTotalAgents: number
+  readonly maxTotalAgents?: number
   readonly maxConcurrent: number
 }
 
@@ -321,9 +321,10 @@ export const makeOrchestrationBindingsFrom = (
     const truncate = Option.getOrUndefined(yield* Effect.serviceOption(Truncate.Service))
     const { sessions, agents, scheduling } = services
 
-    const maxTotalAgents = Number.isFinite(limits.maxTotalAgents)
-      ? Math.max(1, Math.trunc(limits.maxTotalAgents))
-      : 1
+    const maxTotalAgents =
+      typeof limits.maxTotalAgents === "number" && Number.isFinite(limits.maxTotalAgents) && limits.maxTotalAgents > 0
+        ? Math.max(1, Math.trunc(limits.maxTotalAgents))
+        : undefined
     const maxConcurrent = Number.isFinite(limits.maxConcurrent)
       ? Math.max(1, Math.trunc(limits.maxConcurrent))
       : DEFAULT_MAX_CONCURRENT
@@ -406,7 +407,7 @@ export const makeOrchestrationBindingsFrom = (
       const request = parseAgentRequest(args)
       total += 1
       const index = total
-      if (total > maxTotalAgents) {
+      if (maxTotalAgents !== undefined && total > maxTotalAgents) {
         throw new Error(`orche.agent exceeded maxTotalAgents (${maxTotalAgents})`)
       }
 

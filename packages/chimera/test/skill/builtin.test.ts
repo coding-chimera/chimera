@@ -47,7 +47,9 @@ describe("builtin skills", () => {
           const examples = [...content.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) => JSON.parse(match[1]!))
           expect(examples.length).toBeGreaterThan(0)
           const parsed = examples.map((example) => Schema.decodeUnknownSync(OrchestrateParameters)(example))
-          expect(parsed.some((entry) => entry.timeoutMs === 0 && entry.maxTotalAgents === 64)).toBe(true)
+          expect(parsed.some((entry) => entry.timeoutMs === 0 && entry.maxTotalAgents === undefined)).toBe(true)
+          expect(content).toContain("Omit `maxTotalAgents` for unlimited dispatches")
+          expect(content).not.toContain("default 64, hard cap 256")
         }),
       { git: true },
     ),

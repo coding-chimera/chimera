@@ -16,6 +16,7 @@ import { createInterface } from "node:readline"
 import { inspect } from "node:util"
 
 const MAX_FRAME_BYTES = 4 * 1024 * 1024
+const DEFAULT_MAX_PENDING = 128
 const DEFAULT_LOG_BYTES = 64 * 1024
 const DEFAULT_RESULT_BYTES = 1024 * 1024
 const CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"] as const
@@ -25,6 +26,7 @@ type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string
 interface Boot {
   readonly program: string
   readonly namespaces: Record<string, readonly string[]>
+  readonly maxPending: number
   readonly maxLogBytes: number
   readonly maxResultBytes: number
 }
@@ -118,11 +120,16 @@ function parseBoot(line: string): Boot | undefined {
   }
   const budgets = parsed.budgets
   if (!isRecord(budgets)) return undefined
+  const maxPending = budgets.maxPending
   const maxLogBytes = budgets.maxLogBytes
   const maxResultBytes = budgets.maxResultBytes
   return {
     program: parsed.program,
     namespaces,
+    maxPending:
+      typeof maxPending === "number" && Number.isFinite(maxPending)
+        ? Math.max(1, Math.trunc(maxPending))
+        : DEFAULT_MAX_PENDING,
     maxLogBytes: typeof maxLogBytes === "number" && Number.isFinite(maxLogBytes) ? maxLogBytes : DEFAULT_LOG_BYTES,
     maxResultBytes:
       typeof maxResultBytes === "number" && Number.isFinite(maxResultBytes) ? maxResultBytes : DEFAULT_RESULT_BYTES,
@@ -223,32 +230,88 @@ async function main() {
   // `pipeline` compose agent() results locally, `log` rides the existing log
   // frame channel through the console shim. Host-declared bindings win on a
   // name collision (the boot frame is host-generated, so this is defensive).
+  type PoolSettled = { readonly ok: true; readonly value: unknown } | { readonly ok: false }
+
+  /** Bounded FIFO workers preserve input order and stop claiming work after a failure. */
+  function workerPool(
+    items: readonly unknown[],
+    concurrency: number,
+    run: (item: unknown, index: number) => unknown | Promise<unknown>,
+    prepare?: (item: unknown, fail: (error: unknown) => void) => unknown,
+  ) {
+    const results = new Array<unknown>(items.length)
+    let next = 0
+    let failed = false
+    let failure: unknown
+    const fail = (error: unknown) => {
+      if (failed) return
+      failed = true
+      failure = error
+    }
+    const prepared = prepare ? Array.from(items, (item) => prepare(item, fail)) : [...items]
+    const workers = Array.from({ length: Math.min(concurrency, prepared.length) }, async () => {
+      while (!failed) {
+        const index = next
+        if (index >= prepared.length) return
+        next += 1
+        try {
+          results[index] = await run(prepared[index], index)
+        } catch (error) {
+          fail(error)
+        }
+      }
+    })
+    return Promise.all(workers).then(() => {
+      if (failed) throw failure
+      return results
+    })
+  }
+
   const helpers: Record<string, unknown> = {
     parallel: (tasks: unknown) => {
       if (!Array.isArray(tasks)) throw bindingError("parallel", "orche.parallel expects an array")
-      return Promise.all(tasks.map((task) => (typeof task === "function" ? (task as () => unknown)() : task)))
+      return workerPool(
+        tasks,
+        Math.min(16, boot.maxPending),
+        async (task) => {
+          if (typeof task === "function") return (task as () => unknown)()
+          const settled = (await task) as PoolSettled
+          if (!settled.ok) return undefined
+          return settled.value
+        },
+        (task, fail) => {
+          if (typeof task === "function") return task
+          // Pre-created promises may already be running or rejected. Observe all
+          // of them now so queued entries never produce unhandled rejections.
+          return Promise.resolve(task).then(
+            (value): PoolSettled => ({ ok: true, value }),
+            (error): PoolSettled => {
+              fail(error)
+              return { ok: false }
+            },
+          )
+        },
+      )
     },
     pipeline: (stages: unknown) => {
       if (!Array.isArray(stages)) throw bindingError("pipeline", "orche.pipeline expects an array of stages")
       return async (items: unknown) => {
         if (!Array.isArray(items)) throw bindingError("pipeline", "orche.pipeline(...) expects an array of items")
-        return Promise.all(
-          items.map(async (item) => {
-            let value: unknown = item
-            for (const stage of stages) {
-              if (typeof stage !== "function") {
-                throw bindingError("pipeline", "orche.pipeline stages must be functions")
-              }
-              try {
-                value = await (stage as (input: unknown) => unknown)(value)
-              } catch {
-                return null
-              }
-              if (value === null) return null
+        return workerPool(items, Math.min(16, boot.maxPending), async (item) => {
+          let value: unknown = item
+          for (const stage of stages) {
+            if (typeof stage !== "function") {
+              throw bindingError("pipeline", "orche.pipeline stages must be functions")
             }
-            return value
-          }),
-        )
+            try {
+              value = await (stage as (input: unknown) => unknown)(value)
+            } catch {
+              return null
+            }
+            if (value === null) return null
+          }
+          return value
+        })
       }
     },
     log: (...args: unknown[]) => {

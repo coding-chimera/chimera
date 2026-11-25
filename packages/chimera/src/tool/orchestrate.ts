@@ -20,8 +20,6 @@ import { Cause, Effect, Fiber, Option, Queue, Schema, Scope } from "effect"
 
 const id = "orchestrate"
 
-const DEFAULT_MAX_TOTAL_AGENTS = 64
-const MAX_TOTAL_AGENTS = 256
 const MAX_CONCURRENT = 16
 
 export const Parameters = Schema.Struct({
@@ -33,7 +31,8 @@ export const Parameters = Schema.Struct({
     description: "A short (3-5 words) UI label describing what this orchestration does",
   }),
   maxTotalAgents: Schema.optional(Schema.Number).annotate({
-    description: "Maximum total subagent dispatches across the whole program. Defaults to 64; hard cap 256.",
+    description:
+      "Optional positive cap on total subagent dispatches across the whole program. Omit for unlimited; there is no built-in hard cap.",
   }),
   timeoutMs: Schema.optional(Schema.Number).annotate({
     description:
@@ -49,9 +48,9 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-function clamp(value: number | undefined, fallback: number, min: number, max: number) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
-  return Math.min(Math.max(Math.trunc(value), min), max)
+function optionalPositiveLimit(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined
+  return Math.max(1, Math.trunc(value))
 }
 
 type AgentProgress = {
@@ -215,7 +214,7 @@ export const OrchestrateTool = Tool.define(
         metadata: { description: params.description },
       })
 
-      const maxTotalAgents = clamp(params.maxTotalAgents, DEFAULT_MAX_TOTAL_AGENTS, 1, MAX_TOTAL_AGENTS)
+      const maxTotalAgents = optionalPositiveLimit(params.maxTotalAgents)
 
       const progress = new Map<string, AgentProgress>()
       const logs: string[] = []
@@ -297,7 +296,7 @@ export const OrchestrateTool = Tool.define(
         dispatch,
         promptOps,
         host,
-        { maxTotalAgents, maxConcurrent: MAX_CONCURRENT },
+        { ...(maxTotalAgents === undefined ? {} : { maxTotalAgents }), maxConcurrent: MAX_CONCURRENT },
         { sessions, agents, scheduling },
       )
 

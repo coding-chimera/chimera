@@ -39,10 +39,10 @@ Common single-phase programs to chain across turns:
 The outer tool arguments are JSON. Prefer this complete template and change only what the task needs:
 
 ```json
-{ "description": "Run without deadline", "code": "return { ok: true }", "timeoutMs": 0, "maxTotalAgents": 64 }
+{ "description": "Run without deadline", "code": "return { ok: true }", "timeoutMs": 0 }
 ```
 
-`timeoutMs: 0` means no global timer; omission and negative values are also unlimited, but the explicit `0` is preferred over deleting the field. `maxTotalAgents` caps total child dispatches (default 64, hard cap 256) — 64 is the built-in default, so keep it unless the task needs a different cap.
+`timeoutMs: 0` means no global timer; omission and negative values are also unlimited, but the explicit `0` is preferred over deleting the field. Omit `maxTotalAgents` for unlimited dispatches; a finite positive value is an optional runaway-loop cap, with no built-in hard cap.
 
 The program runs in a dedicated worker process with a scrubbed environment. Standard JS built-ins (JSON, Math, Date, Array, ...) are available — including `Date.now()` and `Math.random()` (there is no resume mechanism, so nothing restricts them). There is NO filesystem, Node.js API, network, or tool access: the only way to touch the outside world is `orche.agent`.
 
@@ -56,8 +56,8 @@ The program runs in a dedicated worker process with a scrubbed environment. Stan
   - `label` sets the UI label; when omitted, the prompt's first line (truncated at 80 chars) is used. Keep labels short and distinct enough to tell agents apart in the progress view.
   - `schema` is a JSON Schema object; the child's final answer is validated against it and returned as `{ structured }`. If the child ends without valid structured output, dispatch sends a corrective user turn to the SAME child session (same schema, default 2 retries) instead of discarding the work. If retries are exhausted and the child produced final text, the call resolves to `{ text }` instead of `null` — `structured` is `undefined`; the inline text is capped near 8KB and, when truncated, the returned text carries the `outputFile` path for the full text. The compaction-window rule only decides whether retrying continues; a round that already produced valid structured output returns directly, unaffected by compaction. Keep schemas flat and small.
   - `model` is an exact `provider/model` route string (e.g. a route from the session's scheduling context or `subagent_model_routes`). Default to omitting it — dispatch falls back through the agent's configured route to the parent model, which is usually correct. Never invent provider IDs. `variant` is allowed only when the resolved route advertises it; subagents never run `ultra`. `workload` declares the delegation archetype so the scheduler can pick a route, or records attribution when combined with an explicit `model`. Route/variant/workload validation and `task_model` authorization run before the child is created, exactly as for `task`.
-- `await orche.parallel([() => ..., ...])` -> results array in input order. Entries may be thunks (preferred) or already-created promises/values. This is a BARRIER: it awaits every entry. A thunk whose agent fails resolves to `null` in place — the call itself does not reject for child failures, so handle `null` (e.g. `.filter(Boolean)`, with a type guard to keep inference) before using results.
-- `orche.pipeline([stage, ...])([item, ...])` -> results array in input order. Each item flows through ALL stages independently — NO barrier between stages: item A can be in stage 3 while item B is still in stage 1. This is the DEFAULT shape for multi-stage work.
+- `await orche.parallel([() => ..., ...])` -> results array in input order. Entries may be thunks (preferred) or already-created promises/values. A bounded worker pool starts at most 16 tasks (fewer when the protocol pending-call budget is smaller). A thunk whose agent fails resolves to `null` in place — the call itself does not reject for child failures, so handle `null` (e.g. `.filter(Boolean)`, with a type guard to keep inference) before using results. A rejection stops new thunks from starting; active tasks settle before the pool rejects, and every pre-created promise is observed immediately so queued rejections are never unhandled.
+- `orche.pipeline([stage, ...])([item, ...])` -> results array in input order. Each item flows through ALL stages independently — NO barrier between stages: item A can be in stage 3 while item B is still in stage 1. Items use the same bounded worker pool as `parallel`, so hundreds of items queue instead of overflowing the host's pending-call limit. This is the DEFAULT shape for multi-stage work.
   - A stage receives ONLY the previous stage's value — there is no item/index parameter. To keep the original item around, have stage 1 return `{ item, ...result }` and thread it through.
   - A stage that throws or returns `null` drops that item to `null` and skips its remaining stages.
   - Stages must be functions: a non-function stage fails the whole program, not just the item.
@@ -85,8 +85,8 @@ Use `orche.batch` only when a homogeneous batch sits inside a larger program tha
 
 ## Limits
 
-- `maxTotalAgents` caps total dispatches per program (default 64, hard cap 256) — a runaway-loop backstop.
-- At most 16 agents run concurrently (FIFO queue); you can pass 100 items to parallel/pipeline and they all complete, ~16 at a time.
+- `maxTotalAgents` is an optional positive cap on total dispatches per program. Omit it for unlimited dispatches; there is no built-in default or hard cap.
+- At most 16 agents run concurrently (FIFO queue), reduced further when the protocol pending-call budget is smaller. You can pass hundreds of items to parallel/pipeline and they all complete through the worker pool rather than overflowing the host's pending-call limit.
 - Use `timeoutMs: 0` for an unlimited run (recommended default); negative values and omission also mean unlimited, with no global timer. `null` is a schema error. A finite positive number enables a deadline; it is rounded down to whole milliseconds with a 1ms floor (so `0.5` is 1ms) and no upper cap. Set a positive budget only when you deliberately want a time limit.
 - Subagents are real child sessions (visible, persisted, individually cancellable) and obey delegation depth, concurrency budgets, and their own permission rules. Subagents never run the ultra variant.
 - Each worker's intermediate messages and tool output NEVER enter the parent context — only its returned text/structured value crosses. Every prompt must be fully self-contained: context, constraints, file lists, acceptance criteria, and exactly what to return (its final message, or the structured object, is the only thing that comes back). Workers know nothing you don't write.
@@ -170,4 +170,4 @@ Pipeline by default — each dimension's findings start verifying while the othe
 
 The parent context receives ONLY the return value and log lines. Return exactly what the parent needs: a compact findings array, a deduplicated table, a verdict — with `file:line` anchors and enough per-item detail to act on. A program that returns nothing (or raw transcripts) wastes the entire fan-out.
 
-Scale to what the task needs: "find any bugs" -> a few finders, single-vote verify; "thoroughly audit" -> a larger finder pool, 3-5 vote adversarial pass, synthesis stage. Within `maxTotalAgents`, prefer wider coverage over depth-per-item for exploration.
+Scale to what the task needs: "find any bugs" -> a few finders, single-vote verify; "thoroughly audit" -> a larger finder pool, 3-5 vote adversarial pass, synthesis stage. When `maxTotalAgents` is explicitly set, prefer wider coverage over depth-per-item for exploration within that cap.
