@@ -727,7 +727,18 @@ export const layer: Layer.Layer<
                       continue
                     }
 
-                    const match = head.match(/^[0-9a-f]+ blob (\d+)$/)
+                    // Submodules/gitlinks and directory paths resolve to non-blob
+                    // objects (`tree`/`commit`/`tag`), not only `blob`. A gitlink whose
+                    // commit object is absent from this snapshot repo is reported
+                    // header-only as `<oid> submodule` with no content at all. Accept
+                    // every shape, consuming the declared size where present and
+                    // leaving the side empty (binary semantics) instead of discarding
+                    // the whole batch and falling back to per-file `git show`.
+                    const match = head.match(/^[0-9a-f]+ (blob|tree|commit|tag) (\d+)$/)
+                    if (!match && /^[0-9a-f]+ submodule$/.test(head)) {
+                      map.set(ref.file, hit)
+                      continue
+                    }
                     if (!match) {
                       return fail(
                         "git cat-file --batch returned an unexpected header during snapshot diff, falling back to per-file git show",
@@ -735,7 +746,7 @@ export const layer: Layer.Layer<
                       )
                     }
 
-                    const size = Number(match[1])
+                    const size = Number(match[2])
                     if (!Number.isInteger(size) || size < 0 || i + size >= out.length || out[i + size] !== 10) {
                       return fail(
                         "git cat-file --batch returned truncated content during snapshot diff, falling back to per-file git show",
@@ -743,9 +754,13 @@ export const layer: Layer.Layer<
                       )
                     }
 
-                    const text = dec.decode(out.slice(i, i + size))
-                    if (ref.side === "before") hit.before = text
-                    if (ref.side === "after") hit.after = text
+                    // Only blobs carry file text; trees/commits/tags are consumed by
+                    // size but leave both sides empty so patch output stays binary-like.
+                    if (match[1] === "blob") {
+                      const text = dec.decode(out.slice(i, i + size))
+                      if (ref.side === "before") hit.before = text
+                      if (ref.side === "after") hit.after = text
+                    }
                     map.set(ref.file, hit)
                     i += size + 1
                   }

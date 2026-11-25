@@ -411,3 +411,82 @@ test("write-tree hash is byte-identical to the pre-change staging sequence", asy
     },
   })
 })
+
+// ---------------------------------------------------------------------------
+// diffFull batch parsing: a gitlink (embedded repo / submodule) resolves to a
+// non-blob cat-file object (`<oid> submodule` when the commit object is absent
+// from the snapshot repo, `commit <size>` when present). It must not discard
+// the whole batch into per-file `git show`; the gitlink side stays empty
+// (binary semantics) while sibling blobs in the same batch still get patches.
+// ---------------------------------------------------------------------------
+test("diffFull with a gitlink keeps the batch path and leaves the gitlink patch empty", async () => {
+  await using tmp = await bootstrap()
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      await run(
+        tmp.path,
+        (snapshot) =>
+          Effect.gen(function* () {
+            const before = yield* snapshot.track()
+            expect(before).toBeTruthy()
+
+            // An embedded git repo is recorded as a 160000 gitlink by `git add` —
+            // the same object shape a submodule produces in a snapshot tree.
+            yield* Effect.promise(async () => {
+              await $`git init -q sub`.cwd(tmp.path).quiet()
+              await Filesystem.write(`${tmp.path}/sub/f.txt`, "hi\n")
+              await $`git -C sub add .`.cwd(tmp.path).quiet()
+              await $`git -C sub -c user.email=test@opencode.test -c user.name=Test commit -qm sub`
+                .cwd(tmp.path)
+                .quiet()
+            })
+            yield* Effect.promise(() => Filesystem.write(`${tmp.path}/a.txt`, "alpha2\n"))
+
+            const after = yield* snapshot.track()
+            expect(after).toBeTruthy()
+            expect(after).not.toBe(before!)
+
+            spawnLog.length = 0
+            const diffs = yield* snapshot.diffFull(before!, after!)
+
+            // Gitlink row: status/additions/deletions come from numstat.
+            const link = diffs.find((item) => item.file === "sub")
+            expect(link).toBeDefined()
+            expect(link!.status).toBe("added")
+            expect(link!.additions).toBe(1)
+            expect(link!.deletions).toBe(0)
+            // Same empty-content patch the per-file `git show` fallback produced:
+            // the gitlink's commit payload must never be decoded as file text.
+            expect(link!.patch).not.toContain("@@")
+            expect(
+              link!.patch
+                .split("\n")
+                .filter(
+                  (line) =>
+                    line &&
+                    !line.startsWith("Index:") &&
+                    !line.startsWith("====") &&
+                    !line.startsWith("---") &&
+                    !line.startsWith("+++"),
+                ),
+            ).toEqual([])
+
+            // The sibling blob in the same batch still gets its patch: the parser
+            // advanced past the non-blob object instead of aborting the batch.
+            const text = diffs.find((item) => item.file === "a.txt")
+            expect(text).toBeDefined()
+            expect(text!.status).toBe("modified")
+            expect(text!.additions).toBe(1)
+            expect(text!.deletions).toBe(1)
+            expect(text!.patch).toContain("-alpha")
+            expect(text!.patch).toContain("+alpha2")
+
+            // Every header was consumed by the batch parser: no per-file fallback.
+            expect(spawnLog.some((spawn) => subcommand(spawn) === "show")).toBe(false)
+            expect(spawnLog.some((spawn) => subcommand(spawn) === "cat-file")).toBe(true)
+          }),
+      )
+    },
+  })
+})
