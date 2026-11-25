@@ -17,8 +17,10 @@ import { NotFoundError } from "@/storage/storage"
 import { Database } from "@/storage/db"
 import { SyncEvent } from "@/sync"
 import { EventSequenceTable, EventTable } from "../../src/sync/event.sql"
+import { SessionTable } from "@/storage/tables/session.sql"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Config } from "@/config/config"
+import { SessionDataPlane } from "@/session/data-plane"
 
 const projectRoot = path.join(__dirname, "../..")
 void Log.init({ print: false })
@@ -35,6 +37,13 @@ function remove(id: SessionID) {
   return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.remove(id)))
 }
 
+function removeForCleanup(id: SessionID) {
+  return remove(id).catch((error) => {
+    if (error instanceof NotFoundError) return
+    throw error
+  })
+}
+
 const load = () => AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
 
 function updateMessage<T extends MessageV2.Info>(msg: T) {
@@ -45,7 +54,12 @@ function updatePart<T extends MessageV2.Part>(part: T) {
   return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.updatePart(part)))
 }
 
-function recordUsage(input: { sessionID: SessionID; tokens: MessageV2.TokenUsage; cost: number; modelContextWindow?: number }) {
+function recordUsage(input: {
+  sessionID: SessionID
+  tokens: MessageV2.TokenUsage
+  cost: number
+  modelContextWindow?: number
+}) {
   return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.recordUsage(input)))
 }
 
@@ -74,7 +88,7 @@ describe("session.created event", () => {
         expect(receivedInfo?.path).toBe(info.path)
         expect(receivedInfo?.title).toBe(info.title)
 
-        await remove(info.id)
+        await removeForCleanup(info.id)
       },
     })
   })
@@ -102,7 +116,7 @@ describe("session.created event", () => {
         expect(events).toContain("updated")
         expect(events.indexOf("created")).toBeLessThan(events.indexOf("updated"))
 
-        await remove(info.id)
+        await removeForCleanup(info.id)
       },
     })
   })
@@ -171,7 +185,7 @@ describe("step-finish token propagation via Bus event", () => {
           expect(received).not.toBe(partInput)
 
           unsub()
-          await remove(info.id)
+          await removeForCleanup(info.id)
         },
       })
     },
@@ -189,7 +203,7 @@ describe("Session", () => {
     })
 
     await expect(async () => {
-      await remove(info.id)
+      await removeForCleanup(info.id)
     }).not.toThrow()
 
     let missing = false
@@ -199,7 +213,6 @@ describe("Session", () => {
 
     expect(missing).toBe(true)
   })
-
 
   test("recordUsage persists total and last token usage", async () => {
     await WithInstance.provide({
@@ -241,7 +254,7 @@ describe("Session", () => {
           },
         })
 
-        await remove(info.id)
+        await removeForCleanup(info.id)
       },
     })
   })
@@ -396,10 +409,9 @@ describe("Session.updatePermissionSlots", () => {
           tx.delete(EventTable).where(eq(EventTable.aggregate_id, info.id)).run()
           tx.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, info.id)).run()
         })
-        yield* sync.replayAll(
-          [{ id: slot!.id, seq: 0, type: slot!.type, aggregateID: info.id, data: slot!.data }],
-          { publish: false },
-        )
+        yield* sync.replayAll([{ id: slot!.id, seq: 0, type: slot!.type, aggregateID: info.id, data: slot!.data }], {
+          publish: false,
+        })
         const replayed = yield* svc.get(info.id)
         expect(replayed.permission).toEqual([editAllow, taskDeny])
         expect(replayed.time.updated).toBe(after.time.updated)
@@ -490,7 +502,9 @@ describe("Session.updatePermissionSlots", () => {
     }),
   )
 
-  it.instance("survives NUL bytes loaded from a real config file", () =>
+  it.instance(
+    "survives NUL bytes loaded from a real config file",
+    () =>
       Effect.gen(function* () {
         const svc = yield* SessionNs.Service
         const config = yield* Effect.promise(() => load())
@@ -514,4 +528,313 @@ describe("Session.updatePermissionSlots", () => {
       },
     },
   )
+})
+
+function writerFixture(overrides: Partial<SessionDataPlane.WriterDriver> = {}) {
+  const calls: Array<{ operation: string; input: unknown }> = []
+  let opened = 0
+  let dropped = 0
+  const committed: SessionDataPlane.WriterResult = { status: "committed", changed: true }
+  const record = (operation: string) => async (_id: number, input: unknown) => {
+    calls.push({ operation, input })
+    return committed
+  }
+  const driver: SessionDataPlane.WriterDriver = {
+    writerNew: () => {
+      opened += 1
+      return 7
+    },
+    writerHistoryHash: async () => "hh1:test",
+    writerUpsertMessage: record("message.upsert"),
+    writerUpsertPart: record("part.upsert"),
+    writerRemoveMessage: record("message.remove"),
+    writerRemovePart: record("part.remove"),
+    writerProbeMessage: record("message.probe"),
+    writerProbePart: record("part.probe"),
+    writerProbeRemoveMessage: record("message.remove-probe"),
+    writerProbeRemovePart: record("part.remove-probe"),
+    writerCommitToolResult: record("tool-result.commit"),
+    writerCreateSession: async (_id, input) => {
+      calls.push({ operation: "session.create", input })
+      const info = JSON.parse(input.eventData!).info as SessionNs.Info
+      await AppRuntime.runPromise(
+        Effect.sync(() =>
+          Database.use((db) =>
+            db
+              .insert(SessionTable)
+              .values({
+                id: info.id,
+                project_id: info.projectID,
+                workspace_id: info.workspaceID,
+                parent_id: info.parentID,
+                slug: info.slug,
+                directory: info.directory,
+                path: info.path,
+                title: info.title,
+                version: info.version,
+                client: info.client,
+                permission: info.permission,
+                agent: info.agent,
+                model: info.model,
+                time_created: info.time.created,
+                time_updated: info.time.updated,
+              })
+              .run(),
+          ),
+        ),
+      )
+      return committed
+    },
+    writerPatchSession: record("session.patch"),
+    writerDeleteSession: record("session.delete"),
+    writerProbeCreateSession: record("session.create-probe"),
+    writerProbePatchSession: record("session.patch-probe"),
+    writerProbeDeleteSession: record("session.delete-probe"),
+    writerDrop: () => {
+      dropped += 1
+      return true
+    },
+    ...overrides,
+  }
+  return { driver, calls, opened: () => opened, dropped: () => dropped }
+}
+
+function testMessage(sessionID: SessionID): MessageV2.Info {
+  return {
+    id: MessageID.ascending(),
+    sessionID,
+    role: "user",
+    time: { created: Date.now() },
+    agent: "user",
+    model: { providerID: "test", modelID: "test" },
+    tools: {},
+  } as unknown as MessageV2.Info
+}
+
+function testTextPart(sessionID: SessionID, messageID: MessageID): MessageV2.TextPart {
+  return {
+    id: PartID.ascending(),
+    sessionID,
+    messageID,
+    type: "text",
+    text: "native writer",
+  }
+}
+
+function armWriter(fixture: ReturnType<typeof writerFixture>) {
+  const previous = {
+    writer: process.env.CHIMERA_SESSION_DATA_WRITER,
+    event: Flag.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM,
+    workspaces: Flag.OPENCODE_EXPERIMENTAL_WORKSPACES,
+  }
+  process.env.CHIMERA_SESSION_DATA_WRITER = "1"
+  Flag.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = false
+  Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = false
+  SessionDataPlane.setWriterDriverForTests(fixture.driver)
+  return () => {
+    if (previous.writer === undefined) delete process.env.CHIMERA_SESSION_DATA_WRITER
+    else process.env.CHIMERA_SESSION_DATA_WRITER = previous.writer
+    Flag.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = previous.event
+    Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = previous.workspaces
+    SessionDataPlane.setWriterDriverForTests(undefined)
+  }
+}
+
+describe("Session native data writer", () => {
+  test("routes upsert/remove through one writer and preserves bus payloads", async () => {
+    await WithInstance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const fixture = writerFixture()
+        const restore = armWriter(fixture)
+        const info = await create({})
+        const events: string[] = []
+        const subscriptions = [
+          Bus.subscribe(MessageV2.Event.Updated, (event) => {
+            if (event.properties.sessionID === info.id) events.push("message.updated")
+          }),
+          Bus.subscribe(MessageV2.Event.PartUpdated, (event) => {
+            if (event.properties.sessionID === info.id) events.push("part.updated")
+          }),
+          Bus.subscribe(MessageV2.Event.PartRemoved, (event) => {
+            if (event.properties.sessionID === info.id) events.push("part.removed")
+          }),
+          Bus.subscribe(MessageV2.Event.Removed, (event) => {
+            if (event.properties.sessionID === info.id) events.push("message.removed")
+          }),
+        ]
+        try {
+          const msg = testMessage(info.id)
+          const part = testTextPart(info.id, msg.id)
+          await updateMessage(msg)
+          await updatePart(part)
+          await AppRuntime.runPromise(
+            SessionNs.Service.use((svc) =>
+              svc.removePart({
+                sessionID: info.id,
+                messageID: msg.id,
+                partID: part.id,
+              }),
+            ),
+          )
+          await AppRuntime.runPromise(
+            SessionNs.Service.use((svc) =>
+              svc.removeMessage({
+                sessionID: info.id,
+                messageID: msg.id,
+              }),
+            ),
+          )
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          expect(fixture.opened()).toBe(1)
+          expect(fixture.calls.map((call) => call.operation)).toEqual([
+            "session.create",
+            "message.upsert",
+            "part.upsert",
+            "part.remove",
+            "message.remove",
+          ])
+          const messageInput = fixture.calls[1].input as SessionDataPlane.HistoryMessageInput
+          expect(messageInput.timeCreated).toBe(msg.time.created)
+          expect(JSON.parse(messageInput.data)).not.toHaveProperty("id")
+          expect(JSON.parse(messageInput.data)).not.toHaveProperty("sessionID")
+          const partInput = fixture.calls[2].input as SessionDataPlane.HistoryPartInput
+          expect(partInput.messageId).toBe(msg.id)
+          expect(JSON.parse(partInput.data)).toEqual({ type: "text", text: "native writer" })
+          expect(events).toEqual(["message.updated", "part.updated", "part.removed", "message.removed"])
+        } finally {
+          for (const unsubscribe of subscriptions) unsubscribe()
+          restore()
+          await removeForCleanup(info.id)
+        }
+      },
+    })
+  })
+
+  for (const flag of ["event", "workspaces"] as const) {
+    test(`keeps legacy writer when ${flag} experiment is enabled`, async () => {
+      await WithInstance.provide({
+        directory: projectRoot,
+        fn: async () => {
+          const fixture = writerFixture()
+          const previous = process.env.CHIMERA_SESSION_DATA_WRITER
+          const event = Flag.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM
+          const workspaces = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
+          process.env.CHIMERA_SESSION_DATA_WRITER = "1"
+          if (flag === "event") Flag.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = true
+          else Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = true
+          SessionDataPlane.setWriterDriverForTests(fixture.driver)
+          const info = await create({})
+          try {
+            const msg = testMessage(info.id)
+            const part = testTextPart(info.id, msg.id)
+            await updateMessage(msg)
+            await updatePart(part)
+            const stored = await AppRuntime.runPromise(
+              SessionNs.Service.use((svc) =>
+                svc.getPart({
+                  sessionID: info.id,
+                  messageID: msg.id,
+                  partID: part.id,
+                }),
+              ),
+            )
+            expect(stored).toEqual(part)
+            expect(fixture.opened()).toBe(0)
+          } finally {
+            Flag.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = event
+            Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = workspaces
+            if (previous === undefined) delete process.env.CHIMERA_SESSION_DATA_WRITER
+            else process.env.CHIMERA_SESSION_DATA_WRITER = previous
+            SessionDataPlane.setWriterDriverForTests(undefined)
+            await removeForCleanup(info.id)
+          }
+        },
+      })
+    })
+  }
+
+  test("falls back before commit and arbitrates an unknown post-commit result without replay", async () => {
+    await WithInstance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const before = writerFixture({
+          writerUpsertMessage: async () => {
+            throw new Error("pre-commit failure")
+          },
+          writerProbeMessage: async () => {
+            throw new Error("not committed")
+          },
+        })
+        const restoreBefore = armWriter(before)
+        const first = await create({})
+        try {
+          const msg = testMessage(first.id)
+          await updateMessage(msg)
+          const stored = await AppRuntime.runPromise(
+            SessionNs.Service.use((svc) => svc.messages({ sessionID: first.id })),
+          )
+          expect(stored.map((item) => item.info.id)).toEqual([msg.id])
+          expect(before.dropped()).toBe(1)
+        } finally {
+          restoreBefore()
+          await removeForCleanup(first.id)
+        }
+
+        const after = writerFixture({
+          writerUpsertMessage: async () => {
+            throw new Error("response lost after commit")
+          },
+          writerProbeMessage: async () => ({ status: "already_committed", changed: false }),
+        })
+        const restoreAfter = armWriter(after)
+        const second = await create({})
+        let published = 0
+        const unsubscribe = Bus.subscribe(MessageV2.Event.Updated, (event) => {
+          if (event.properties.sessionID === second.id) published += 1
+        })
+        try {
+          const msg = testMessage(second.id)
+          await updateMessage(msg)
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          const stored = await AppRuntime.runPromise(
+            SessionNs.Service.use((svc) => svc.messages({ sessionID: second.id })),
+          )
+          expect(stored).toHaveLength(0)
+          expect(published).toBe(1)
+          expect(after.dropped()).toBe(0)
+        } finally {
+          unsubscribe()
+          restoreAfter()
+          await removeForCleanup(second.id)
+        }
+      },
+    })
+  })
+
+  test("does not republish an already committed retry", async () => {
+    await WithInstance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const fixture = writerFixture({
+          writerUpsertMessage: async () => ({ status: "already_committed", changed: false }),
+        })
+        const restore = armWriter(fixture)
+        const info = await create({})
+        let published = 0
+        const unsubscribe = Bus.subscribe(MessageV2.Event.Updated, (event) => {
+          if (event.properties.sessionID === info.id) published += 1
+        })
+        try {
+          await updateMessage(testMessage(info.id))
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          expect(published).toBe(0)
+        } finally {
+          unsubscribe()
+          restore()
+          await removeForCleanup(info.id)
+        }
+      },
+    })
+  })
 })

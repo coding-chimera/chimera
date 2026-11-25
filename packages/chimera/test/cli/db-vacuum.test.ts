@@ -7,9 +7,13 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import {
+  CLEARED_TOOL_OUTPUT,
   SUMMARY_DIFFS_RETENTION_MS,
+  clearCompactedToolOutputs,
   clearStaleSummaryDiffs,
+  countCompactedToolOutputs,
   countStaleSummaryDiffs,
+  estimateCompactedToolOutputBytes,
   formatBytes,
   summaryDiffsCutoff,
   vacuumEstimate,
@@ -53,6 +57,82 @@ describe("db vacuum summary.diffs sweep", () => {
     expect(diffs(db, "old-empty")).toEqual([])
     expect(diffs(db, "recent-diffs")).toEqual([{ file: "b.ts" }])
     expect(countStaleSummaryDiffs(db, cutoff)).toBe(0)
+    db.close()
+  })
+})
+
+function seedParts(db: Database) {
+  db.run("CREATE TABLE part (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+  const insert = db.query("INSERT INTO part (id, data) VALUES (?, ?)")
+  insert.run(
+    "compacted-tool",
+    JSON.stringify({
+      type: "tool",
+      state: {
+        status: "completed",
+        output: "x".repeat(4096),
+        attachments: [{ type: "file", mime: "image/png", filename: "shot.png" }],
+        time: { start: 1, end: 2, compacted: 3 },
+      },
+    }),
+  )
+  insert.run(
+    "active-tool",
+    JSON.stringify({ type: "tool", state: { status: "completed", output: "still here", time: { start: 1, end: 2 } } }),
+  )
+  insert.run(
+    "compacted-text",
+    JSON.stringify({ type: "text", text: "hello", state: { time: { compacted: 3 } } }),
+  )
+  insert.run(
+    "compacted-tool-cleared",
+    JSON.stringify({ type: "tool", state: { status: "completed", output: CLEARED_TOOL_OUTPUT, time: { compacted: 3 } } }),
+  )
+}
+
+function part(db: Database, id: string) {
+  const row = db.query("SELECT data FROM part WHERE id = ?").get(id) as { data: string }
+  return JSON.parse(row.data) as {
+    type: string
+    text?: string
+    state?: { output?: string; attachments?: unknown[]; time?: { compacted?: number } }
+  }
+}
+
+describe("db vacuum compacted tool output sweep", () => {
+  test("reports only compacted tool parts that still hold payload, without writing", () => {
+    const db = new Database(":memory:")
+    seedParts(db)
+    const before = part(db, "compacted-tool")
+
+    expect(countCompactedToolOutputs(db)).toBe(1)
+    expect(estimateCompactedToolOutputBytes(db)).toBeGreaterThan(4096)
+    // Dry run: reporting must not mutate the row.
+    expect(part(db, "compacted-tool")).toEqual(before)
+    db.close()
+  })
+
+  test("clears compacted tool outputs idempotently and leaves everything else alone", () => {
+    const db = new Database(":memory:")
+    seedParts(db)
+
+    expect(clearCompactedToolOutputs(db)).toBe(1)
+
+    const cleared = part(db, "compacted-tool")
+    expect(cleared.type).toBe("tool")
+    expect(cleared.state?.output).toBe(CLEARED_TOOL_OUTPUT)
+    expect(cleared.state?.attachments).toBeUndefined()
+    expect(cleared.state?.time?.compacted).toBe(3)
+
+    // Not compacted: output stays intact.
+    expect(part(db, "active-tool").state?.output).toBe("still here")
+    // Compacted but not a tool part: untouched.
+    expect(part(db, "compacted-text").text).toBe("hello")
+    // Already cleared: no attachments and no new candidate.
+    expect(part(db, "compacted-tool-cleared").state?.output).toBe(CLEARED_TOOL_OUTPUT)
+
+    expect(countCompactedToolOutputs(db)).toBe(0)
+    expect(clearCompactedToolOutputs(db)).toBe(0)
     db.close()
   })
 })

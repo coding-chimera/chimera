@@ -9,6 +9,9 @@ import { JsonMigration } from "@/storage/json-migration"
 import { EOL } from "os"
 import { errorMessage } from "../../util/error"
 import { ToolMetadataMaintenance } from "@/session/tool-metadata-maintenance"
+import { CLEARED_TOOL_OUTPUT } from "@/session/message-v2"
+
+export { CLEARED_TOOL_OUTPUT }
 
 const QueryCommand = cmd({
   command: "$0 [query]",
@@ -92,6 +95,49 @@ export function clearStaleSummaryDiffs(db: BunDatabase, cutoff: number) {
     .changes
 }
 
+// Compacted tool parts keep their (possibly multi-MB) output and attachments in
+// the stored row even though every reader projects them away: message-v2.ts
+// substitutes CLEARED_TOOL_OUTPUT and drops attachments for `type=tool` parts
+// whose `state.time.compacted` is set. Physically clearing those bytes here
+// changes no consumer semantics; reusing the same constant keeps the stored
+// value and the read projection from drifting apart. Only compacted tool parts
+// are touched, and the `IS NOT ?` guard makes repeated runs idempotent.
+const COMPACTED_TOOL_OUTPUT_NEEDS_CLEAR = `
+  json_extract(data, '$.type') = 'tool'
+    AND json_extract(data, '$.state.time.compacted') IS NOT NULL
+    AND (
+      (
+        json_extract(data, '$.state.output') IS NOT NULL
+          AND json_extract(data, '$.state.output') IS NOT ?
+      )
+      OR json_type(data, '$.state.attachments') IS NOT NULL
+    )
+`
+
+export function countCompactedToolOutputs(db: BunDatabase) {
+  const row = db
+    .query(`SELECT count(*) AS count FROM part WHERE ${COMPACTED_TOOL_OUTPUT_NEEDS_CLEAR}`)
+    .get(CLEARED_TOOL_OUTPUT) as { count: number }
+  return Number(row.count)
+}
+
+export function estimateCompactedToolOutputBytes(db: BunDatabase) {
+  const row = db
+    .query(`SELECT coalesce(sum(length(data)), 0) AS bytes FROM part WHERE ${COMPACTED_TOOL_OUTPUT_NEEDS_CLEAR}`)
+    .get(CLEARED_TOOL_OUTPUT) as { bytes: number }
+  return Number(row.bytes)
+}
+
+export function clearCompactedToolOutputs(db: BunDatabase) {
+  return db
+    .run(
+      `UPDATE part
+       SET data = json_remove(json_set(data, '$.state.output', json_quote(?)), '$.state.attachments')
+       WHERE ${COMPACTED_TOOL_OUTPUT_NEEDS_CLEAR}`,
+      [CLEARED_TOOL_OUTPUT, CLEARED_TOOL_OUTPUT],
+    ).changes
+}
+
 function pragmaNumber(db: BunDatabase, name: string) {
   const row = db.query(`PRAGMA ${name}`).get() as Record<string, number> | null
   return row ? Number(Object.values(row)[0] ?? 0) : 0
@@ -113,7 +159,7 @@ export function formatBytes(bytes: number) {
 
 const VacuumCommand = cmd({
   command: "vacuum",
-  describe: "reclaim database space: clear stale message summary diffs, checkpoint the WAL, VACUUM, and optimize",
+  describe: "reclaim database space: clear stale message summary diffs and compacted tool outputs, checkpoint the WAL, VACUUM, and optimize",
   builder: (yargs: Argv) =>
     yargs.option("yes", {
       type: "boolean",
@@ -126,17 +172,25 @@ const VacuumCommand = cmd({
     const db = args.yes ? new BunDatabase(Database.Path) : new BunDatabase(Database.Path, { readonly: true })
     try {
       const stale = countStaleSummaryDiffs(db, cutoff)
+      const compactedToolOutputs = countCompactedToolOutputs(db)
+      const compactedToolOutputBytes = estimateCompactedToolOutputBytes(db)
       const before = vacuumEstimate(db)
       console.log(`Messages older than ${new Date(cutoff).toISOString()} with summary.diffs: ${stale}`)
+      console.log(
+        `Compacted tool output parts: ${compactedToolOutputs} (~${formatBytes(compactedToolOutputBytes)} in part payloads)`,
+      )
       console.log(
         `Database: ${before.pageCount} pages x ${before.pageSize} bytes, ${before.freePages} free pages (~${formatBytes(before.reclaimableBytes)} reclaimable)`,
       )
       console.log("Warning: VACUUM needs up to 2x the database size in free disk space and blocks writes while it runs.")
       if (!args.yes) {
-        console.log("Dry run: no changes applied. Re-run with --yes to clear stale summary diffs, checkpoint the WAL, VACUUM, and optimize.")
+        console.log(
+          "Dry run: no changes applied. Re-run with --yes to clear stale summary diffs and compacted tool outputs, checkpoint the WAL, VACUUM, and optimize.",
+        )
         return
       }
       console.log(`Cleared summary.diffs on ${clearStaleSummaryDiffs(db, cutoff)} message(s)`)
+      console.log(`Cleared compacted tool output on ${db.transaction(() => clearCompactedToolOutputs(db))()} part(s)`)
       const checkpoint = db.query("PRAGMA wal_checkpoint(TRUNCATE)").get() as Record<string, number> | null
       console.log(
         checkpoint && checkpoint.log >= 0

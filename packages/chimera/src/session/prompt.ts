@@ -4,6 +4,7 @@ import { createHash } from "crypto"
 import * as EffectZod from "@/util/effect-zod"
 import { SessionID, MessageID, PartID } from "@/contracts/session-ids"
 import { MessageV2 } from "./message-v2"
+import { SessionHistoryView } from "./history-view"
 import * as Log from "@opencode-ai/core/util/log"
 import { SessionRevert } from "./revert"
 import * as Session from "./session"
@@ -107,7 +108,9 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 // Final extraction turn for the native chat-completions path. The request
 // carries no tools and no tool_choice, so the schema must travel in the prompt
 // itself (DashScope's json_object mode requires an explicit JSON instruction).
-const STRUCTURED_OUTPUT_EXTRACTION_PROMPT = (schema: Record<string, unknown>) => `You have finished the work above. Return the final answer for the user's request as a single JSON value that conforms to this JSON Schema:
+const STRUCTURED_OUTPUT_EXTRACTION_PROMPT = (
+  schema: Record<string, unknown>,
+) => `You have finished the work above. Return the final answer for the user's request as a single JSON value that conforms to this JSON Schema:
 
 ${JSON.stringify(schema, null, 2)}
 
@@ -535,29 +538,28 @@ export const layer = Layer.effect(
       { signature: string; workBrief: string | undefined; chimera: string | undefined }
     >()
 
-    const runtimeContextStoreSignature = Effect.fn("SessionPrompt.runtimeContextStoreSignature")(
-      function* (sessionID: SessionID) {
-        const ctx = yield* InstanceState.context
-        const root = ctx.worktree === "/" ? ctx.directory : ctx.worktree
-        const workBriefVersion = yield* Effect.sync(() =>
-          hash(
-            JSON.stringify(
-              Database.use((db) =>
+    const runtimeContextStoreSignature = Effect.fn("SessionPrompt.runtimeContextStoreSignature")(function* (
+      sessionID: SessionID,
+    ) {
+      const ctx = yield* InstanceState.context
+      const root = ctx.worktree === "/" ? ctx.directory : ctx.worktree
+      const workBriefVersion = yield* Effect.sync(() =>
+        hash(
+          JSON.stringify(
+            Database.use(
+              (db) =>
                 db
                   .select({ data: WorkBriefTable.data })
                   .from(WorkBriefTable)
                   .where(eq(WorkBriefTable.session_id, sessionID))
                   .get()?.data ?? null,
-              ),
             ),
           ),
-        )
-        const revisions = yield* Effect.promise(() =>
-          Promise.all(runtimeContextStoreFiles(root).map(fileRevision)),
-        )
-        return hash(JSON.stringify([workBriefVersion, ...revisions]))
-      },
-    )
+        ),
+      )
+      const revisions = yield* Effect.promise(() => Promise.all(runtimeContextStoreFiles(root).map(fileRevision)))
+      return hash(JSON.stringify([workBriefVersion, ...revisions]))
+    })
 
     const runtimeContextSections = Effect.fn("SessionPrompt.runtimeContextSections")(function* (input: {
       sessionID: SessionID
@@ -572,10 +574,7 @@ export const layer = Layer.effect(
       const store = cached?.signature === signature ? cached : undefined
       const [workBriefSuffix, chimeraContextSuffix] = store
         ? [store.workBrief, store.chimera]
-        : yield* Effect.all([
-            workBrief.render(input.sessionID),
-            chimeraPromptContext.render(input.sessionID, sessions),
-          ])
+        : yield* Effect.all([workBrief.render(input.sessionID), chimeraPromptContext.render(input.sessionID, sessions)])
       if (!store) {
         runtimeContextStoreCache.set(input.sessionID, {
           signature,
@@ -1271,7 +1270,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         )
       }
 
-      const executeGuarded = <A, E, R>(callID: string, signal: AbortSignal, effect: Effect.Effect<A, E, R>, toolInput?: unknown) =>
+      const executeGuarded = <A, E, R>(
+        callID: string,
+        signal: AbortSignal,
+        effect: Effect.Effect<A, E, R>,
+        toolInput?: unknown,
+      ) =>
         effect.pipe(
           Effect.raceFirst(waitForAbort(signal)),
           Effect.catchCause((cause) =>
@@ -2889,33 +2893,34 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
     const prompt: (input: PromptInput, client?: Session.Client) => Effect.Effect<MessageV2.WithParts, Image.Error> =
       Effect.fn("SessionPrompt.prompt")(function* (input: PromptInput, client?: Session.Client) {
-      // Arm the per-instance edit-intent release watcher and process-exit watch
-      // (memoized; the subscriptions need instance context, which layer build
-      // lacks).
-      yield* InstanceState.get(editIntentWatch)
-      yield* InstanceState.get(processWatch)
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-      yield* revert.cleanup(session)
-      const message = yield* createUserMessage(input)
-      yield* sessions.touch(input.sessionID)
+        // Arm the per-instance edit-intent release watcher and process-exit watch
+        // (memoized; the subscriptions need instance context, which layer build
+        // lacks).
+        yield* InstanceState.get(editIntentWatch)
+        yield* InstanceState.get(processWatch)
+        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+        yield* revert.cleanup(session)
+        const message = yield* createUserMessage(input)
+        yield* sessions.touch(input.sessionID)
 
-      const permissions: Permission.Ruleset = []
-      for (const [t, enabled] of Object.entries(input.tools ?? {})) {
-        permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
-      }
-      if (permissions.length > 0) {
-        session.permission = [
-          ...(session.permission ?? []).filter(
-            (rule) => !permissions.some((slot) => slot.permission === rule.permission && slot.pattern === rule.pattern),
-          ),
-          ...permissions,
-        ]
-        yield* sessions.updatePermissionSlots({ sessionID: session.id, rules: permissions }).pipe(Effect.orDie)
-      }
+        const permissions: Permission.Ruleset = []
+        for (const [t, enabled] of Object.entries(input.tools ?? {})) {
+          permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
+        }
+        if (permissions.length > 0) {
+          session.permission = [
+            ...(session.permission ?? []).filter(
+              (rule) =>
+                !permissions.some((slot) => slot.permission === rule.permission && slot.pattern === rule.pattern),
+            ),
+            ...permissions,
+          ]
+          yield* sessions.updatePermissionSlots({ sessionID: session.id, rules: permissions }).pipe(Effect.orDie)
+        }
 
-      if (input.noReply === true) return message
-      return yield* loop({ sessionID: input.sessionID, client })
-    })
+        if (input.noReply === true) return message
+        return yield* loop({ sessionID: input.sessionID, client })
+      })
 
     const injectSynthetic = Effect.fn("SessionPrompt.injectSynthetic")(function* (input: InjectSyntheticInput) {
       // Typed failure (NotFoundError) instead of Effect.orDie: a notify path that
@@ -3000,10 +3005,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           parentSessionID: input.session.parentID,
           // Extraction guidance lives entirely in the appended user message.
           system: [],
-          messages: [
-            ...modelMsgs,
-            { role: "user", content: STRUCTURED_OUTPUT_EXTRACTION_PROMPT(format.schema) },
-          ],
+          messages: [...modelMsgs, { role: "user", content: STRUCTURED_OUTPUT_EXTRACTION_PROMPT(format.schema) }],
           tools: {},
           model,
           structuredOutput: {
@@ -3069,7 +3071,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           // One bounded session scan per step: the boundary scan stops pulling
           // from the pruned newest-first stream at the first valid compaction
           // boundary instead of materializing the whole session.
-          const scan = yield* MessageV2.scanCompactedEffect(sessionID)
+          const scan = yield* SessionHistoryView.scanCompactionView(sessionID)
           let msgs = scan.messages
           let loopState = inspectLoopMessages(msgs)
 
@@ -3098,7 +3100,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           // the text view must keep reading past it. Re-run the same scan in
           // text mode only in that case; with no remote pair the views match.
           if (remoteCompaction === "text" && hasRemoteCompaction) {
-            msgs = (yield* MessageV2.scanCompactedEffect(sessionID, { remoteCompaction })).messages
+            msgs = (yield* SessionHistoryView.scanCompactionView(sessionID, { remoteCompaction })).messages
             loopState = inspectLoopMessages(msgs)
           }
           const { lastUser, lastAssistant, lastFinished, tasks } = loopState
@@ -3358,8 +3360,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               system.push(CUTOFF_NOTE)
               cutoffPending = false
             }
-            if (format.type === "json_schema" && !nativeStructuredOutput)
-              system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            if (format.type === "json_schema" && !nativeStructuredOutput) system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const extraModelMsgs = isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : []
             yield* bus.publish(
               PromptStats.Event.Updated,
@@ -3438,9 +3439,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     })
                     .pipe(
                       Stream.runDrain,
-                      Effect.catchCause((cause) =>
-                        Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.void,
-                      ),
+                      Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.void)),
                     )
                 }
                 if (structured !== undefined) {
@@ -3516,8 +3515,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         yield* finalizeNativeStructuredOutput({ sessionID, session })
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)
-      },
-    )
+      })
 
     const loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
@@ -3982,7 +3980,13 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(Question.defaultLayer),
     Layer.provide(
-      Layer.mergeAll(Session.defaultLayer, SessionRevert.defaultLayer, SyncEvent.defaultLayer, SessionActivity.defaultLayer, BackgroundJob.defaultLayer),
+      Layer.mergeAll(
+        Session.defaultLayer,
+        SessionRevert.defaultLayer,
+        SyncEvent.defaultLayer,
+        SessionActivity.defaultLayer,
+        BackgroundJob.defaultLayer,
+      ),
     ),
     Layer.provide(
       Layer.mergeAll(

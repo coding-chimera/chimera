@@ -9,7 +9,7 @@ import { Identifier } from "../id/id"
 import * as Log from "@opencode-ai/core/util/log"
 import { ToolID } from "./schema"
 import { TRUNCATION_DIR } from "./truncation-dir"
-
+import { SessionDataPlane } from "../session/data-plane"
 const log = Log.create({ service: "truncation" })
 const RETENTION = Duration.days(7)
 
@@ -88,6 +88,32 @@ export const layer = Layer.effect(
       const maxLines = options.maxLines ?? resolved.maxLines
       const maxBytes = options.maxBytes ?? resolved.maxBytes
       const direction = options.direction ?? "head"
+      const driver = yield* Effect.sync(() => SessionDataPlane.getSpoolDriver())
+      const spoolPath = driver ? path.join(TRUNCATION_DIR, ToolID.ascending()) : ""
+      const spooled = driver
+        ? yield* Effect.promise(() =>
+            SessionDataPlane.spoolChunks(
+              driver,
+              { filePath: spoolPath, maxLines, maxBytes, direction },
+              SessionDataPlane.stringChunks(text),
+            ).catch(() => undefined),
+          )
+        : undefined
+      if (spooled) {
+        if (!spooled.truncated) return { content: spooled.content, truncated: false } as const
+        const outputPath = spooled.outputPath ?? spoolPath
+        const hint = hasTaskTool(agent)
+          ? `The tool call succeeded but the output was truncated. Full output saved to: ${outputPath}\nUse Grep to search the full content or Read with offset/limit to view specific sections. For broad exploration, consider the Task tool with an explore agent.`
+          : `The tool call succeeded but the output was truncated. Full output saved to: ${outputPath}\nUse Grep to search the full content or Read with offset/limit to view specific sections.`
+        return {
+          content:
+            direction === "head"
+              ? `${spooled.content}\n\n...${spooled.removed} ${spooled.unit} truncated...\n\n${hint}`
+              : `...${spooled.removed} ${spooled.unit} truncated...\n\n${hint}\n\n${spooled.content}`,
+          truncated: true,
+          outputPath,
+        } as const
+      }
       const lines = text.split("\n")
       const totalBytes = Buffer.byteLength(text, "utf-8")
 

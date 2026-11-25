@@ -45,10 +45,13 @@ import type { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
 import { Global } from "@opencode-ai/core/global"
 import { copySessionState, deleteSessionMemory, ensureSessionState } from "@/memory/store"
-import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { Effect, Layer, Option, Context, Schema, Semaphore, Types } from "effect"
 import { SessionStatus } from "./status"
 import { zod } from "@/util/effect-zod"
 import { NonNegativeInt, optionalOmitUndefined, withStatics } from "@/util/schema"
+import { SessionDataPlane } from "./data-plane"
+import { EventID } from "@/sync/schema"
+import { toPartialRow } from "./session-patch"
 
 const log = Log.create({ service: "session" })
 
@@ -634,7 +637,10 @@ export interface Interface {
    */
   readonly setCompacting?: (input: { sessionID: SessionID; time?: number | null }) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: Permission.Ruleset }) => Effect.Effect<void>
-  readonly updatePermissionSlots: (input: { sessionID: SessionID; rules: Permission.Ruleset }) => Effect.Effect<void, NotFound>
+  readonly updatePermissionSlots: (input: {
+    sessionID: SessionID
+    rules: Permission.Ruleset
+  }) => Effect.Effect<void, NotFound>
   readonly setRevert: (input: {
     sessionID: SessionID
     revert: Info["revert"]
@@ -713,623 +719,941 @@ function normalizePermissionSlots(rules: Permission.Ruleset): Permission.Ruleset
   return Array.from(slots.values())
 }
 
-export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | SyncEvent.Service | Config.Service> = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const bus = yield* Bus.Service
-    const storage = yield* Storage.Service
-    const sync = yield* SyncEvent.Service
-    const config = yield* Config.Service
-    const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
+export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | SyncEvent.Service | Config.Service> =
+  Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const storage = yield* Storage.Service
+      const sync = yield* SyncEvent.Service
+      const config = yield* Config.Service
+      const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
 
-    const createNext = Effect.fn("Session.createNext")(function* (input: {
-      id?: SessionID
-      title?: string
-      agent?: string
-      model?: Schema.Schema.Type<typeof Model>
-      parentID?: SessionID
-      workspaceID?: WorkspaceID
-      directory: string
-      path?: string
-      permission?: Permission.Ruleset
-      client?: Client
-    }) {
-      const ctx = yield* InstanceState.context
-      // Freeze the owning client environment: an explicit value wins, a child
-      // session inherits its parent's value, and an unknown/legacy session
-      // stays undefined (terminal wording). Only a compaction boundary resyncs
-      // it afterwards, via `updateClient`.
-      const client =
-        input.client ??
-        (input.parentID
-          ? (yield* db((d) =>
-              d
-                .select({ client: SessionTable.client })
-                .from(SessionTable)
-                .where(eq(SessionTable.id, input.parentID!))
-                .get(),
-            ))?.client ?? undefined
-          : undefined)
-      const result: Info = {
-        id: SessionID.descending(input.id),
-        slug: Slug.create(),
-        version: InstallationVersion,
-        projectID: ctx.project.id,
-        directory: input.directory,
-        path: input.path,
-        workspaceID: input.workspaceID,
-        parentID: input.parentID,
-        title: input.title ?? createDefaultTitle(!!input.parentID),
-        agent: input.agent,
-        client,
-        model: input.model,
-        permission: input.permission,
-        time: {
-          created: Date.now(),
-          updated: Date.now(),
-        },
-      }
-      log.info("created", result)
+      const createNext = Effect.fn("Session.createNext")(function* (input: {
+        id?: SessionID
+        title?: string
+        agent?: string
+        model?: Schema.Schema.Type<typeof Model>
+        parentID?: SessionID
+        workspaceID?: WorkspaceID
+        directory: string
+        path?: string
+        permission?: Permission.Ruleset
+        client?: Client
+      }) {
+        const ctx = yield* InstanceState.context
+        // Freeze the owning client environment: an explicit value wins, a child
+        // session inherits its parent's value, and an unknown/legacy session
+        // stays undefined (terminal wording). Only a compaction boundary resyncs
+        // it afterwards, via `updateClient`.
+        const client =
+          input.client ??
+          (input.parentID
+            ? ((yield* db((d) =>
+                d
+                  .select({ client: SessionTable.client })
+                  .from(SessionTable)
+                  .where(eq(SessionTable.id, input.parentID!))
+                  .get(),
+              ))?.client ?? undefined)
+            : undefined)
+        const result: Info = {
+          id: SessionID.descending(input.id),
+          slug: Slug.create(),
+          version: InstallationVersion,
+          projectID: ctx.project.id,
+          directory: input.directory,
+          path: input.path,
+          workspaceID: input.workspaceID,
+          parentID: input.parentID,
+          title: input.title ?? createDefaultTitle(!!input.parentID),
+          agent: input.agent,
+          client,
+          model: input.model,
+          permission: input.permission,
+          time: {
+            created: Date.now(),
+            updated: Date.now(),
+          },
+        }
+        log.info("created", result)
 
-      yield* sync.run(Event.Created, { sessionID: result.id, info: result })
-
-      if (!Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
-        // This only exist for backwards compatibility. We should not be
-        // manually publishing this event; it is a sync event now
-        yield* bus.publish(Event.Updated, {
-          sessionID: result.id,
-          info: result,
-        })
-      }
-      if ((yield* config.get()).memories?.enabled === true) {
-        ensureSessionState({
-          sessionID: result.id,
-          watermark: result.time.updated,
-          mode: input.parentID ? "disabled" : "enabled",
-        })
-      }
-
-      return result
-    })
-
-    const get = Effect.fn("Session.get")(function* (id: SessionID) {
-      const row = yield* db((d) => d.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
-      if (!row) return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${id}` }))
-      return fromRow(row)
-    })
-
-    const list = Effect.fn("Session.list")(function* (input?: ListInput) {
-      const ctx = yield* InstanceState.context
-      return Array.from(listByProject({ projectID: ctx.project.id, ...input }))
-    })
-
-    const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
-      const rows = yield* db((d) =>
-        d
-          .select()
-          .from(SessionTable)
-          .where(and(eq(SessionTable.parent_id, parentID)))
-          .all(),
-      )
-      return rows.map(fromRow)
-    })
-
-    const childrenIDs = Effect.fn("Session.childrenIDs")(function* (parentID: SessionID) {
-      const rows = yield* db((d) =>
-        d
-          .select({ id: SessionTable.id })
-          .from(SessionTable)
-          .where(eq(SessionTable.parent_id, parentID))
-          .all(),
-      )
-      return rows.map((row) => row.id)
-    })
-
-    const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const session = yield* get(sessionID)
-      try {
-        const kids = yield* childrenIDs(sessionID)
-        for (const kid of kids) {
-          yield* remove(kid)
+        const state = writer(result.id)
+        const created = state
+          ? yield* Effect.promise(() => {
+              const info = { sessionID: result.id, info: result }
+              const eventId = EventID.ascending()
+              return writeNative(
+                state,
+                {
+                  data: JSON.stringify(toRow(result)),
+                  timeUpdated: result.time.updated,
+                  eventId,
+                  eventData: JSON.stringify(info),
+                },
+                state.driver.writerCreateSession.bind(state.driver),
+                state.driver.writerProbeCreateSession.bind(state.driver),
+              ).then((result) => ({ result, info, eventId }))
+            })
+          : undefined
+        if (created?.result?.status === "committed") {
+          void Bus.publish(Event.Created, created.info, { id: created.eventId })
+          if (!Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) yield* bus.publish(Event.Updated, created.info)
+        } else if (created?.result?.status !== "already_committed") {
+          yield* sync.run(Event.Created, { sessionID: result.id, info: result })
+          if (!Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
+            // This only exist for backwards compatibility. We should not be
+            // manually publishing this event; it is a sync event now
+            yield* bus.publish(Event.Updated, {
+              sessionID: result.id,
+              info: result,
+            })
+          }
+        }
+        if ((yield* config.get()).memories?.enabled === true) {
+          ensureSessionState({
+            sessionID: result.id,
+            watermark: result.time.updated,
+            mode: input.parentID ? "disabled" : "enabled",
+          })
         }
 
-        // `remove` needs to work in all cases, such as a broken
-        // sessions that run cleanup. In certain cases these will
-        // run without any instance state, so we need to turn off
-        // publishing of events in that case
-        const hasInstance = yield* InstanceState.directory.pipe(
-          Effect.as(true),
-          Effect.catchCause(() => Effect.succeed(false)),
+        return result
+      })
+
+      const get = Effect.fn("Session.get")(function* (id: SessionID) {
+        const row = yield* db((d) => d.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+        if (!row) return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${id}` }))
+        return fromRow(row)
+      })
+
+      const list = Effect.fn("Session.list")(function* (input?: ListInput) {
+        const ctx = yield* InstanceState.context
+        return Array.from(listByProject({ projectID: ctx.project.id, ...input }))
+      })
+
+      const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
+        const rows = yield* db((d) =>
+          d
+            .select()
+            .from(SessionTable)
+            .where(and(eq(SessionTable.parent_id, parentID)))
+            .all(),
         )
+        return rows.map(fromRow)
+      })
 
-        // Cancel the background jobs this session owns or dispatched: the
-        // session is being deleted, so its running tasks and any tasks it
-        // launched can no longer deliver results. Single-level on purpose —
-        // the child recursion above triggers each child session's own cleanup.
-        // Gated on the instance so cleanup still works without one.
-        if (hasInstance) yield* cancelBackgroundJobs(background, sessionID)
+      const childrenIDs = Effect.fn("Session.childrenIDs")(function* (parentID: SessionID) {
+        const rows = yield* db((d) =>
+          d.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.parent_id, parentID)).all(),
+        )
+        return rows.map((row) => row.id)
+      })
 
-        // Release this session's advisory edit-intent claims and wake the
-        // sessions queued behind them (the SessionPrompt watcher injects the
-        // release notices). Isolated so claim trouble can never skip the
-        // removal cleanup below; the claim TTL is the crash fallback.
-        if (hasInstance) {
-          yield* EditIntentClaims.publishRemovalRelease({ bus, sessionID }).pipe(Effect.ignoreCause({ log: true }))
-          // Release this session's registered child processes from the process
-          // registry so a removed session never keeps owning live rows; the
-          // registry TTL is the crash fallback. Isolated like the claim release
-          // above so registry trouble can never skip the removal cleanup below.
-          const instance = yield* InstanceState.context
-          yield* Effect.promise(() =>
-            ProcessRegistry.releaseForSession(
+      const removeUnlocked: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
+        const session = yield* get(sessionID)
+        try {
+          const kids = yield* childrenIDs(sessionID)
+          for (const kid of kids) {
+            yield* remove(kid)
+          }
+
+          // `remove` needs to work in all cases, such as a broken
+          // sessions that run cleanup. In certain cases these will
+          // run without any instance state, so we need to turn off
+          // publishing of events in that case
+          const hasInstance = yield* InstanceState.directory.pipe(
+            Effect.as(true),
+            Effect.catchCause(() => Effect.succeed(false)),
+          )
+
+          // Cancel the background jobs this session owns or dispatched: the
+          // session is being deleted, so its running tasks and any tasks it
+          // launched can no longer deliver results. Single-level on purpose —
+          // the child recursion above triggers each child session's own cleanup.
+          // Gated on the instance so cleanup still works without one.
+          if (hasInstance) yield* cancelBackgroundJobs(background, sessionID)
+
+          // Release this session's advisory edit-intent claims and wake the
+          // sessions queued behind them (the SessionPrompt watcher injects the
+          // release notices). Isolated so claim trouble can never skip the
+          // removal cleanup below; the claim TTL is the crash fallback.
+          if (hasInstance) {
+            yield* EditIntentClaims.publishRemovalRelease({ bus, sessionID }).pipe(Effect.ignoreCause({ log: true }))
+            // Release this session's registered child processes from the process
+            // registry so a removed session never keeps owning live rows; the
+            // registry TTL is the crash fallback. Isolated like the claim release
+            // above so registry trouble can never skip the removal cleanup below.
+            const instance = yield* InstanceState.context
+            yield* Effect.promise(() =>
+              ProcessRegistry.releaseForSession(
+                instance.worktree === "/" ? instance.directory : instance.worktree,
+                sessionID,
+              ),
+            ).pipe(Effect.ignoreCause({ log: true }))
+            // Drop this session's proc_notify exit subscriptions: they are
+            // host-local and could only ever inject into this now-removed session.
+            ProcessWatch.releaseForSession(
               instance.worktree === "/" ? instance.directory : instance.worktree,
               sessionID,
-            ),
-          ).pipe(Effect.ignoreCause({ log: true }))
-          // Drop this session's proc_notify exit subscriptions: they are
-          // host-local and could only ever inject into this now-removed session.
-          ProcessWatch.releaseForSession(
-            instance.worktree === "/" ? instance.directory : instance.worktree,
-            sessionID,
-          )
-        }
-
-        deleteSessionMemory({ sessionID })
-        yield* sync.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
-        yield* sync.remove(sessionID)
-        // Best-effort: drop the session_diff file (written by summary/revert)
-        // so removed sessions do not leave orphan JSON in storage forever.
-        // Cleanup failure must never break removal.
-        yield* storage.remove(["session_diff", sessionID]).pipe(Effect.ignoreCause({ log: true }))
-      } catch (e) {
-        log.error(e)
-      }
-    })
-
-    const prune: NonNullable<Interface["prune"]> = Effect.fn("Session.prune")(function* (input) {
-      const ctx = yield* InstanceState.context
-      const rows = yield* db((d) =>
-        d
-          .select({
-            id: SessionTable.id,
-            title: SessionTable.title,
-            parentID: SessionTable.parent_id,
-            timeUpdated: SessionTable.time_updated,
-          })
-          .from(SessionTable)
-          .where(eq(SessionTable.project_id, ctx.project.id))
-          .all(),
-      )
-
-      // Active = non-idle in this process, or owns a running background job.
-      // Both are process-local: a session active in another process cannot be
-      // observed here, so pruning keeps the same single-writer assumption as
-      // the rest of the session store.
-      const status = Option.getOrUndefined(yield* Effect.serviceOption(SessionStatus.Service))
-      const active = new Set<SessionID>()
-      if (status) {
-        for (const [id, info] of yield* status.list()) {
-          if (info.type !== "idle") active.add(id)
-        }
-      }
-      if (background) {
-        for (const job of yield* background.list()) {
-          if (job.status !== "running") continue
-          active.add(SessionID.make(job.id))
-          if (job.ownerSessionId) active.add(SessionID.make(job.ownerSessionId))
-        }
-      }
-
-      const parentOf = new Map(rows.map((row) => [row.id, row.parentID]))
-      const childrenOf = new Map<SessionID, SessionID[]>()
-      for (const row of rows) {
-        if (!row.parentID) continue
-        const siblings = childrenOf.get(row.parentID)
-        if (siblings) siblings.push(row.id)
-        else childrenOf.set(row.parentID, [row.id])
-      }
-
-      // Never touch an active session, and never touch one of its ancestors:
-      // remove() cascades downward, so deleting a parent would kill live work.
-      const protectedIDs = new Set<SessionID>()
-      for (const id of active) {
-        for (let current: SessionID | null | undefined = id; current; current = parentOf.get(current)) {
-          if (protectedIDs.has(current)) break
-          protectedIDs.add(current)
-        }
-      }
-
-      const old = rows.filter((row) => row.timeUpdated < input.cutoff)
-      const selected = new Set(old.filter((row) => !protectedIDs.has(row.id)).map((row) => row.id))
-
-      // An old root drags its (possibly newer) descendants into the same
-      // removal, so dry-run totals match what remove() will actually cascade.
-      const queue = [...selected]
-      for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
-        for (const child of childrenOf.get(id) ?? []) {
-          if (protectedIDs.has(child) || selected.has(child)) continue
-          selected.add(child)
-          queue.push(child)
-        }
-      }
-
-      const sessions =
-        selected.size > 0
-          ? yield* db((d) =>
-              d
-                .select({
-                  id: SessionTable.id,
-                  title: SessionTable.title,
-                  timeUpdated: SessionTable.time_updated,
-                  // Correlated subqueries keep message/part counts independent
-                  // (a plain join multiplies them). Columns are qualified by
-                  // hand: inside a `sql` template drizzle emits bare column
-                  // names, which would resolve to the subquery's own table.
-                  messages: sql<number>`(select count(*) from ${MessageTable} where "message"."session_id" = "session"."id")`,
-                  parts: sql<number>`(select count(*) from ${PartTable} where "part"."session_id" = "session"."id")`,
-                  bytes: sql<number>`(select coalesce(sum(length("message"."data")), 0) from ${MessageTable} where "message"."session_id" = "session"."id") + (select coalesce(sum(length("part"."data")), 0) from ${PartTable} where "part"."session_id" = "session"."id")`,
-                })
-                .from(SessionTable)
-                .where(inArray(SessionTable.id, [...selected]))
-                .orderBy(desc(SessionTable.time_updated))
-                .all(),
             )
-          : []
-
-      const result: PruneResult = {
-        cutoff: input.cutoff,
-        dryRun: input.dryRun !== false,
-        sessions,
-        totalMessages: sessions.reduce((sum, session) => sum + session.messages, 0),
-        totalParts: sessions.reduce((sum, session) => sum + session.parts, 0),
-        totalBytes: sessions.reduce((sum, session) => sum + session.bytes, 0),
-        skippedActive: old.filter((row) => protectedIDs.has(row.id)).length,
-        removedSessions: 0,
-        removedOrphanDiffs: 0,
-      }
-      if (result.dryRun) return result
-
-      const candidateIDs = new Set(sessions.map((session) => session.id))
-      const roots = sessions
-        .map((session) => session.id)
-        .filter((id) => {
-          const parent = parentOf.get(id)
-          return !parent || !candidateIDs.has(parent)
-        })
-      yield* Effect.forEach(
-        roots,
-        (id) => remove(id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.void)),
-        { concurrency: 1, discard: true },
-      )
-
-      // Orphan diff GC: session rows are the source of truth, so a diff file
-      // without a row was left behind by an interrupted removal.
-      const existing = new Set(
-        (yield* db((d) => d.select({ id: SessionTable.id }).from(SessionTable).all())).map((row) => row.id as string),
-      )
-      const orphanDiffs = (yield* storage.list(["session_diff"]).pipe(Effect.orDie)).filter(
-        (key) => !existing.has(key[1]),
-      )
-      for (const key of orphanDiffs) {
-        yield* storage.remove(key).pipe(Effect.ignoreCause({ log: true }))
-      }
-
-      return { ...result, removedSessions: sessions.length, removedOrphanDiffs: orphanDiffs.length }
-    })
-
-    const updateMessage = <T extends MessageV2.Info>(msg: T): Effect.Effect<T> =>
-      Effect.gen(function* () {
-        yield* sync.run(MessageV2.Event.Updated, { sessionID: msg.sessionID, info: msg })
-        return msg
-      }).pipe(Effect.withSpan("Session.updateMessage"))
-
-    const updatePart = <T extends MessageV2.Part>(part: T): Effect.Effect<T> =>
-      Effect.gen(function* () {
-        yield* sync.run(MessageV2.Event.PartUpdated, {
-          sessionID: part.sessionID,
-          part: structuredClone(part),
-          time: Date.now(),
-        })
-        return part
-      }).pipe(Effect.withSpan("Session.updatePart"))
-
-    const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
-      const row = Database.use((db) =>
-        db
-          .select()
-          .from(PartTable)
-          .where(
-            and(
-              eq(PartTable.session_id, input.sessionID),
-              eq(PartTable.message_id, input.messageID),
-              eq(PartTable.id, input.partID),
-            ),
-          )
-          .get(),
-      )
-      if (!row) return
-      return {
-        ...row.data,
-        id: row.id,
-        sessionID: row.session_id,
-        messageID: row.message_id,
-      } as MessageV2.Part
-    })
-
-    const create = Effect.fn("Session.create")(function* (input?: {
-      parentID?: SessionID
-      title?: string
-      agent?: string
-      model?: Schema.Schema.Type<typeof Model>
-      permission?: Permission.Ruleset
-      workspaceID?: WorkspaceID
-      client?: Client
-    }) {
-      const ctx = yield* InstanceState.context
-      const workspace = yield* InstanceState.workspaceID
-      return yield* createNext({
-        parentID: input?.parentID,
-        directory: ctx.directory,
-        path: sessionPath(ctx.worktree, ctx.directory),
-        title: input?.title,
-        agent: input?.agent,
-        model: input?.model,
-        permission: input?.permission,
-        client: input?.client,
-        workspaceID: input?.workspaceID ?? workspace,
-      })
-    })
-
-    const fork = Effect.fn("Session.fork")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
-      const ctx = yield* InstanceState.context
-      const original = yield* get(input.sessionID)
-      const title = getForkedTitle(original.title)
-      const session = yield* createNext({
-        directory: ctx.directory,
-        path: sessionPath(ctx.worktree, ctx.directory),
-        workspaceID: original.workspaceID,
-        title,
-        client: original.client,
-      })
-      const msgs = yield* messages({ sessionID: input.sessionID })
-      const idMap = new Map<string, MessageID>()
-
-      for (const msg of msgs) {
-        if (input.messageID && msg.info.id >= input.messageID) break
-        const newID = MessageID.ascending()
-        idMap.set(msg.info.id, newID)
-
-        const parentID = msg.info.role === "assistant" && msg.info.parentID ? idMap.get(msg.info.parentID) : undefined
-        const cloned = yield* updateMessage({
-          ...msg.info,
-          sessionID: session.id,
-          id: newID,
-          ...(parentID && { parentID }),
-        })
-
-        for (const part of msg.parts) {
-          const p: MessageV2.Part = {
-            ...part,
-            id: PartID.ascending(),
-            messageID: cloned.id,
-            sessionID: session.id,
           }
-          if (p.type === "compaction" && p.tail_start_id) {
-            p.tail_start_id = idMap.get(p.tail_start_id)
+
+          deleteSessionMemory({ sessionID })
+          const state = writer(sessionID)
+          if (state) {
+            const data = { sessionID, info: session }
+            const eventId = EventID.ascending()
+            const result = yield* Effect.promise(() =>
+              writeNative(
+                state,
+                { data: "{}", timeUpdated: Date.now(), eventId, eventData: JSON.stringify(data) },
+                state.driver.writerDeleteSession.bind(state.driver),
+                state.driver.writerProbeDeleteSession.bind(state.driver),
+              ),
+            )
+            if (result?.status === "committed") {
+              if (hasInstance) void Bus.publish(Event.Deleted, data, { id: eventId })
+            } else if (result?.status !== "already_committed") {
+              yield* sync.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
+            }
+          } else {
+            yield* sync.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
           }
-          yield* updatePart(p)
+          yield* sync.remove(sessionID)
+          // Best-effort: drop the session_diff file (written by summary/revert)
+          // so removed sessions do not leave orphan JSON in storage forever.
+          // Cleanup failure must never break removal.
+          yield* storage.remove(["session_diff", sessionID]).pipe(Effect.ignoreCause({ log: true }))
+        } catch (e) {
+          log.error(e)
+        }
+      })
+
+      const remove: Interface["remove"] = (sessionID) =>
+        withWriterLock(sessionID, removeUnlocked(sessionID)).pipe(
+          Effect.ensuring(Effect.sync(() => releaseWriter(sessionID))),
+        )
+
+      const prune: NonNullable<Interface["prune"]> = Effect.fn("Session.prune")(function* (input) {
+        const ctx = yield* InstanceState.context
+        const rows = yield* db((d) =>
+          d
+            .select({
+              id: SessionTable.id,
+              title: SessionTable.title,
+              parentID: SessionTable.parent_id,
+              timeUpdated: SessionTable.time_updated,
+            })
+            .from(SessionTable)
+            .where(eq(SessionTable.project_id, ctx.project.id))
+            .all(),
+        )
+
+        // Active = non-idle in this process, or owns a running background job.
+        // Both are process-local: a session active in another process cannot be
+        // observed here, so pruning keeps the same single-writer assumption as
+        // the rest of the session store.
+        const status = Option.getOrUndefined(yield* Effect.serviceOption(SessionStatus.Service))
+        const active = new Set<SessionID>()
+        if (status) {
+          for (const [id, info] of yield* status.list()) {
+            if (info.type !== "idle") active.add(id)
+          }
+        }
+        if (background) {
+          for (const job of yield* background.list()) {
+            if (job.status !== "running") continue
+            active.add(SessionID.make(job.id))
+            if (job.ownerSessionId) active.add(SessionID.make(job.ownerSessionId))
+          }
+        }
+
+        const parentOf = new Map(rows.map((row) => [row.id, row.parentID]))
+        const childrenOf = new Map<SessionID, SessionID[]>()
+        for (const row of rows) {
+          if (!row.parentID) continue
+          const siblings = childrenOf.get(row.parentID)
+          if (siblings) siblings.push(row.id)
+          else childrenOf.set(row.parentID, [row.id])
+        }
+
+        // Never touch an active session, and never touch one of its ancestors:
+        // remove() cascades downward, so deleting a parent would kill live work.
+        const protectedIDs = new Set<SessionID>()
+        for (const id of active) {
+          for (let current: SessionID | null | undefined = id; current; current = parentOf.get(current)) {
+            if (protectedIDs.has(current)) break
+            protectedIDs.add(current)
+          }
+        }
+
+        const old = rows.filter((row) => row.timeUpdated < input.cutoff)
+        const selected = new Set(old.filter((row) => !protectedIDs.has(row.id)).map((row) => row.id))
+
+        // An old root drags its (possibly newer) descendants into the same
+        // removal, so dry-run totals match what remove() will actually cascade.
+        const queue = [...selected]
+        for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
+          for (const child of childrenOf.get(id) ?? []) {
+            if (protectedIDs.has(child) || selected.has(child)) continue
+            selected.add(child)
+            queue.push(child)
+          }
+        }
+
+        const sessions =
+          selected.size > 0
+            ? yield* db((d) =>
+                d
+                  .select({
+                    id: SessionTable.id,
+                    title: SessionTable.title,
+                    timeUpdated: SessionTable.time_updated,
+                    // Correlated subqueries keep message/part counts independent
+                    // (a plain join multiplies them). Columns are qualified by
+                    // hand: inside a `sql` template drizzle emits bare column
+                    // names, which would resolve to the subquery's own table.
+                    messages: sql<number>`(select count(*) from ${MessageTable} where "message"."session_id" = "session"."id")`,
+                    parts: sql<number>`(select count(*) from ${PartTable} where "part"."session_id" = "session"."id")`,
+                    bytes: sql<number>`(select coalesce(sum(length("message"."data")), 0) from ${MessageTable} where "message"."session_id" = "session"."id") + (select coalesce(sum(length("part"."data")), 0) from ${PartTable} where "part"."session_id" = "session"."id")`,
+                  })
+                  .from(SessionTable)
+                  .where(inArray(SessionTable.id, [...selected]))
+                  .orderBy(desc(SessionTable.time_updated))
+                  .all(),
+              )
+            : []
+
+        const result: PruneResult = {
+          cutoff: input.cutoff,
+          dryRun: input.dryRun !== false,
+          sessions,
+          totalMessages: sessions.reduce((sum, session) => sum + session.messages, 0),
+          totalParts: sessions.reduce((sum, session) => sum + session.parts, 0),
+          totalBytes: sessions.reduce((sum, session) => sum + session.bytes, 0),
+          skippedActive: old.filter((row) => protectedIDs.has(row.id)).length,
+          removedSessions: 0,
+          removedOrphanDiffs: 0,
+        }
+        if (result.dryRun) return result
+
+        const candidateIDs = new Set(sessions.map((session) => session.id))
+        const roots = sessions
+          .map((session) => session.id)
+          .filter((id) => {
+            const parent = parentOf.get(id)
+            return !parent || !candidateIDs.has(parent)
+          })
+        yield* Effect.forEach(
+          roots,
+          (id) => remove(id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.void)),
+          { concurrency: 1, discard: true },
+        )
+
+        // Orphan diff GC: session rows are the source of truth, so a diff file
+        // without a row was left behind by an interrupted removal.
+        const existing = new Set(
+          (yield* db((d) => d.select({ id: SessionTable.id }).from(SessionTable).all())).map((row) => row.id as string),
+        )
+        const orphanDiffs = (yield* storage.list(["session_diff"]).pipe(Effect.orDie)).filter(
+          (key) => !existing.has(key[1]),
+        )
+        for (const key of orphanDiffs) {
+          yield* storage.remove(key).pipe(Effect.ignoreCause({ log: true }))
+        }
+
+        return { ...result, removedSessions: sessions.length, removedOrphanDiffs: orphanDiffs.length }
+      })
+
+      type WriterState = {
+        key: string
+        dbPath: string
+        sessionID: string
+        driver: SessionDataPlane.WriterDriver
+        handle: number
+      }
+
+      const writers = new Map<string, WriterState | null>()
+      const writerLocks = new Map<string, Semaphore.Semaphore>()
+
+      function withWriterLock<A, E, R>(sessionID: SessionID, effect: Effect.Effect<A, E, R>) {
+        const key = `${Database.Path}\0${sessionID}`
+        const existing = writerLocks.get(key)
+        if (existing) return existing.withPermits(1)(effect)
+        const lock = Semaphore.makeUnsafe(1)
+        writerLocks.set(key, lock)
+        return lock.withPermits(1)(effect)
+      }
+
+      function dropWriter(state: WriterState) {
+        writers.set(state.key, null)
+        state.driver.writerDrop(state.handle)
+        SessionDataPlane.disableNativeHistory(state.dbPath, state.sessionID)
+      }
+
+      function releaseWriter(sessionID: SessionID) {
+        const state = writers.get(`${Database.Path}\0${sessionID}`)
+        if (state) dropWriter(state)
+      }
+
+      function writer(sessionID: SessionID) {
+        if (process.env.CHIMERA_SESSION_DATA_WRITER !== "1") return
+        if (Database.Path === ":memory:" && !SessionDataPlane.isWriterDriverTestDouble()) return
+        if (Flag.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM || Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) return
+const key = `${Database.Path}\0${sessionID}`
+        const existing = writers.get(key)
+        if (SessionDataPlane.isNativeWriterDisabled(Database.Path, sessionID)) {
+          if (existing) dropWriter(existing)
+          return
+        }
+if (existing !== undefined) return existing ?? undefined
+        const driver = SessionDataPlane.getWriterDriver()
+        if (!driver) {
+          writers.set(key, null)
+          return
+        }
+        try {
+          const state = {
+            key,
+            dbPath: Database.Path,
+            sessionID,
+            driver,
+            handle: driver.writerNew({
+              dbPath: Database.Path,
+              sessionId: sessionID,
+              eventV2: false,
+              workspaces: false,
+            }),
+          }
+          writers.set(key, state)
+          return state
+        } catch {
+          writers.set(key, null)
+          return
         }
       }
-      copySessionState({ sourceSessionID: original.id, targetSessionID: session.id, watermark: session.time.updated })
-      return session
-    })
 
-    const patch = (sessionID: SessionID, info: Patch) => sync.run(Event.Updated, { sessionID, info })
-
-    const recordUsage = Effect.fn("Session.recordUsage")(function* (input: {
-      sessionID: SessionID
-      tokens: MessageV2.TokenUsage
-      cost: number
-      modelContextWindow?: number
-    }) {
-      const session = yield* get(input.sessionID)
-      yield* patch(input.sessionID, {
-        usage: appendUsage(session.usage, input),
-      })
-    })
-
-    const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
-      yield* patch(sessionID, { time: { updated: Date.now() } })
-    })
-
-    const setTitle = Effect.fn("Session.setTitle")(function* (input: { sessionID: SessionID; title: string }) {
-      yield* patch(input.sessionID, { title: input.title })
-    })
-
-    const updateClient = Effect.fn("Session.updateClient")(function* (input: {
-      sessionID: SessionID
-      client: Client
-    }) {
-      // A client resync is metadata-only: carry the current timestamp through
-      // explicitly so the `time_updated` $onUpdate default does not make the
-      // resync look like activity in the session list.
-      const session = yield* get(input.sessionID).pipe(Effect.orDie)
-      yield* patch(input.sessionID, { client: input.client, time: { updated: session.time.updated } })
-    })
-
-    const setArchived = Effect.fn("Session.setArchived")(function* (input: {
-      sessionID: SessionID
-      time?: number | null
-    }) {
-      yield* patch(input.sessionID, { time: { archived: input.time ?? null } })
-    })
-
-    const setCompacting = Effect.fn("Session.setCompacting")(function* (input: {
-      sessionID: SessionID
-      time?: number | null
-    }) {
-      yield* patch(input.sessionID, { time: { compacting: input.time ?? null } })
-    })
-
-    const setPermission = Effect.fn("Session.setPermission")(function* (input: {
-      sessionID: SessionID
-      permission: Permission.Ruleset
-    }) {
-      yield* patch(input.sessionID, { permission: input.permission, time: { updated: Date.now() } })
-    })
-
-    const updatePermissionSlots = Effect.fn("Session.updatePermissionSlots")(function* (input: {
-      sessionID: SessionID
-      rules: Permission.Ruleset
-    }) {
-      yield* get(input.sessionID)
-      const normalized = normalizePermissionSlots(input.rules)
-      if (normalized.length === 0) return
-      const timestamp = Date.now()
-      yield* sync.run(Event.PermissionSlot, { sessionID: input.sessionID, rules: normalized, timestamp })
-      // The complete session.updated is published once by the sync layer's
-      // derived-event hook after the permission slot is projected.
-    })
-
-    const setRevert = Effect.fn("Session.setRevert")(function* (input: {
-      sessionID: SessionID
-      revert: Info["revert"]
-      summary: Info["summary"]
-    }) {
-      yield* patch(input.sessionID, { summary: input.summary, time: { updated: Date.now() }, revert: input.revert })
-    })
-
-    const clearRevert = Effect.fn("Session.clearRevert")(function* (sessionID: SessionID) {
-      yield* patch(sessionID, { time: { updated: Date.now() }, revert: null })
-    })
-
-    const setSummary = Effect.fn("Session.setSummary")(function* (input: {
-      sessionID: SessionID
-      summary: Info["summary"]
-    }) {
-      yield* patch(input.sessionID, { time: { updated: Date.now() }, summary: input.summary })
-    })
-
-    const diff = Effect.fn("Session.diff")(function* (sessionID: SessionID) {
-      return yield* storage
-        .read<Snapshot.FileDiff[]>(["session_diff", sessionID])
-        .pipe(Effect.orElseSucceed((): Snapshot.FileDiff[] => []))
-    })
-
-    const messages = Effect.fn("Session.messages")(function* (input: { sessionID: SessionID; limit?: number }) {
-      if (input.limit) {
-        return MessageV2.page({ sessionID: input.sessionID, limit: input.limit }).items
+      async function writeNative<I>(
+        state: WriterState,
+        input: I,
+        write: (id: number, input: I) => Promise<SessionDataPlane.WriterResult>,
+        probe: (id: number, input: I) => Promise<SessionDataPlane.WriterResult>,
+      ) {
+        try {
+          const result = await write(state.handle, input)
+          if (result.status === "revision_conflict") dropWriter(state)
+          return result
+        } catch {
+          try {
+            const probed = await probe(state.handle, input)
+            if (probed.status === "already_committed" || probed.status === "committed") {
+              // The response was lost after commit. Publishing is still required:
+              // the database committed, while the legacy post-commit publication
+              // could not have run in this invocation.
+              return { ...probed, status: "committed" as const, changed: true }
+            }
+          } catch {
+            // A mismatch proves the requested final state is not present. The
+            // original error is handled by the same legacy operation below.
+          }
+          dropWriter(state)
+          return
+        }
       }
-      return Array.from(MessageV2.stream(input.sessionID)).reverse()
-    })
 
-    const removeMessage = Effect.fn("Session.removeMessage")(function* (input: {
-      sessionID: SessionID
-      messageID: MessageID
-    }) {
-      yield* sync.run(MessageV2.Event.Removed, {
-        sessionID: input.sessionID,
-        messageID: input.messageID,
-      })
-      return input.messageID
-    })
-
-    const removePart = Effect.fn("Session.removePart")(function* (input: {
-      sessionID: SessionID
-      messageID: MessageID
-      partID: PartID
-    }) {
-      yield* sync.run(MessageV2.Event.PartRemoved, {
-        sessionID: input.sessionID,
-        messageID: input.messageID,
-        partID: input.partID,
-      })
-      return input.partID
-    })
-
-    const updatePartDelta = Effect.fnUntraced(function* (input: {
-      sessionID: SessionID
-      messageID: MessageID
-      partID: PartID
-      field: string
-      delta: string
-    }) {
-      yield* bus.publish(MessageV2.Event.PartDelta, input)
-    })
-
-    /** Finds the first message matching the predicate, searching newest-first. */
-    const findMessage = Effect.fn("Session.findMessage")(function* (
-      sessionID: SessionID,
-      predicate: (msg: MessageV2.WithParts) => boolean,
-    ) {
-      for (const item of MessageV2.stream(sessionID)) {
-        if (predicate(item)) return Option.some(item)
+      async function recordHistory(
+        state: WriterState,
+        result: SessionDataPlane.WriterResult,
+        write: () => Promise<boolean>,
+      ) {
+        if (process.env.CHIMERA_SESSION_DATA_READER !== "1") return
+        if (result.status === "committed" && !result.changed) return
+        if (await write()) return
+        SessionDataPlane.disableNativeHistory(state.dbPath, state.sessionID)
       }
-      return Option.none<MessageV2.WithParts>()
-    })
 
-    const remoteCompactionLock = Effect.fn("Session.remoteCompactionLock")(function* (sessionID: SessionID) {
-      const match = yield* findMessage(sessionID, (msg) =>
-        msg.parts.some((part) => part.type === "compaction" && part.remote),
-      )
-      if (Option.isNone(match)) return undefined
-      const part = match.value.parts.find((item) => item.type === "compaction" && item.remote)
-      if (!part || part.type !== "compaction" || !part.remote) return undefined
-      const source = { messageID: part.messageID, partID: part.id }
-      if (part.remote.endpoint === "codex") {
+      const updateMessage = <T extends MessageV2.Info>(msg: T): Effect.Effect<T> =>
+        withWriterLock(
+          msg.sessionID,
+          Effect.gen(function* () {
+            const state = writer(msg.sessionID)
+            if (state) {
+              const { id, sessionID, ...rest } = msg
+              const info = { sessionID, info: msg }
+              const eventId = EventID.ascending()
+              const input = {
+                id,
+                timeCreated: msg.time.created,
+                timeUpdated: Date.now(),
+                data: JSON.stringify(rest),
+                eventId,
+                eventData: JSON.stringify(info),
+              }
+              const result = yield* Effect.promise(() =>
+                writeNative(
+                  state,
+                  input,
+                  state.driver.writerUpsertMessage.bind(state.driver),
+                  state.driver.writerProbeMessage.bind(state.driver),
+                ),
+              )
+              if (result?.status === "committed" || result?.status === "already_committed") {
+                yield* Effect.promise(() =>
+                  recordHistory(state, result, () =>
+                    SessionDataPlane.recordNativeMessage(state.dbPath, state.sessionID, input, result.historyHash),
+                  ),
+                )
+                if (result.status === "committed") void Bus.publish(MessageV2.Event.Updated, info, { id: eventId })
+                return msg
+              }
+            }
+            yield* sync.run(MessageV2.Event.Updated, { sessionID: msg.sessionID, info: msg })
+            return msg
+          }),
+        ).pipe(Effect.withSpan("Session.updateMessage"))
+
+      const updatePart = <T extends MessageV2.Part>(part: T): Effect.Effect<T> =>
+        withWriterLock(
+          part.sessionID,
+          Effect.gen(function* () {
+            const state = writer(part.sessionID)
+            if (state) {
+              const cloned = structuredClone(part)
+              const { id, sessionID, messageID, ...rest } = cloned
+              const info = { sessionID, part: cloned, time: Date.now() }
+              const eventId = EventID.ascending()
+              const input = {
+                id,
+                messageId: messageID,
+                timeCreated: info.time,
+                timeUpdated: Date.now(),
+                data: JSON.stringify(rest),
+                eventId,
+                eventData: JSON.stringify(info),
+              }
+              const result = yield* Effect.promise(() =>
+                writeNative(
+                  state,
+                  input,
+                  state.driver.writerUpsertPart.bind(state.driver),
+                  state.driver.writerProbePart.bind(state.driver),
+                ),
+              )
+              if (result?.status === "committed" || result?.status === "already_committed") {
+                yield* Effect.promise(() =>
+                  recordHistory(state, result, () =>
+                    SessionDataPlane.recordNativePart(state.dbPath, state.sessionID, input, result.historyHash),
+                  ),
+                )
+                if (result.status === "committed") void Bus.publish(MessageV2.Event.PartUpdated, info, { id: eventId })
+                return part
+              }
+            }
+            yield* sync.run(MessageV2.Event.PartUpdated, {
+              sessionID: part.sessionID,
+              part: structuredClone(part),
+              time: Date.now(),
+            })
+            return part
+          }),
+        ).pipe(Effect.withSpan("Session.updatePart"))
+
+      const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
+        const row = Database.use((db) =>
+          db
+            .select()
+            .from(PartTable)
+            .where(
+              and(
+                eq(PartTable.session_id, input.sessionID),
+                eq(PartTable.message_id, input.messageID),
+                eq(PartTable.id, input.partID),
+              ),
+            )
+            .get(),
+        )
+        if (!row) return
+        return {
+          ...row.data,
+          id: row.id,
+          sessionID: row.session_id,
+          messageID: row.message_id,
+        } as MessageV2.Part
+      })
+
+      const create = Effect.fn("Session.create")(function* (input?: {
+        parentID?: SessionID
+        title?: string
+        agent?: string
+        model?: Schema.Schema.Type<typeof Model>
+        permission?: Permission.Ruleset
+        workspaceID?: WorkspaceID
+        client?: Client
+      }) {
+        const ctx = yield* InstanceState.context
+        const workspace = yield* InstanceState.workspaceID
+        return yield* createNext({
+          parentID: input?.parentID,
+          directory: ctx.directory,
+          path: sessionPath(ctx.worktree, ctx.directory),
+          title: input?.title,
+          agent: input?.agent,
+          model: input?.model,
+          permission: input?.permission,
+          client: input?.client,
+          workspaceID: input?.workspaceID ?? workspace,
+        })
+      })
+
+      const fork = Effect.fn("Session.fork")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
+        const ctx = yield* InstanceState.context
+        const original = yield* get(input.sessionID)
+        const title = getForkedTitle(original.title)
+        const session = yield* createNext({
+          directory: ctx.directory,
+          path: sessionPath(ctx.worktree, ctx.directory),
+          workspaceID: original.workspaceID,
+          title,
+          client: original.client,
+        })
+        const msgs = yield* messages({ sessionID: input.sessionID })
+        const idMap = new Map<string, MessageID>()
+
+        for (const msg of msgs) {
+          if (input.messageID && msg.info.id >= input.messageID) break
+          const newID = MessageID.ascending()
+          idMap.set(msg.info.id, newID)
+
+          const parentID = msg.info.role === "assistant" && msg.info.parentID ? idMap.get(msg.info.parentID) : undefined
+          const cloned = yield* updateMessage({
+            ...msg.info,
+            sessionID: session.id,
+            id: newID,
+            ...(parentID && { parentID }),
+          })
+
+          for (const part of msg.parts) {
+            const p: MessageV2.Part = {
+              ...part,
+              id: PartID.ascending(),
+              messageID: cloned.id,
+              sessionID: session.id,
+            }
+            if (p.type === "compaction" && p.tail_start_id) {
+              p.tail_start_id = idMap.get(p.tail_start_id)
+            }
+            yield* updatePart(p)
+          }
+        }
+        copySessionState({ sourceSessionID: original.id, targetSessionID: session.id, watermark: session.time.updated })
+        return session
+      })
+
+      const patch = (sessionID: SessionID, info: Patch) =>
+        withWriterLock(
+          sessionID,
+          Effect.gen(function* () {
+            const state = writer(sessionID)
+            if (state) {
+              const data = { sessionID, info }
+              const eventId = EventID.ascending()
+              const result = yield* Effect.promise(() =>
+                writeNative(
+                  state,
+                  {
+                    data: JSON.stringify(toPartialRow(info)),
+                    timeUpdated: Date.now(),
+                    eventId,
+                    eventData: JSON.stringify(data),
+                  },
+                  state.driver.writerPatchSession.bind(state.driver),
+                  state.driver.writerProbePatchSession.bind(state.driver),
+                ),
+              )
+              if (result?.status === "committed") {
+                const current = yield* get(sessionID)
+                void Bus.publish(Event.Updated, { sessionID, info: current }, { id: eventId })
+                return
+              }
+              if (result?.status === "already_committed") return
+            }
+            yield* sync.run(Event.Updated, { sessionID, info })
+          }),
+        ).pipe(Effect.orDie)
+
+      const recordUsage = Effect.fn("Session.recordUsage")(function* (input: {
+        sessionID: SessionID
+        tokens: MessageV2.TokenUsage
+        cost: number
+        modelContextWindow?: number
+      }) {
+        const session = yield* get(input.sessionID)
+        yield* patch(input.sessionID, {
+          usage: appendUsage(session.usage, input),
+        })
+      })
+
+      const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
+        yield* patch(sessionID, { time: { updated: Date.now() } })
+      })
+
+      const setTitle = Effect.fn("Session.setTitle")(function* (input: { sessionID: SessionID; title: string }) {
+        yield* patch(input.sessionID, { title: input.title })
+      })
+
+      const updateClient = Effect.fn("Session.updateClient")(function* (input: {
+        sessionID: SessionID
+        client: Client
+      }) {
+        // A client resync is metadata-only: carry the current timestamp through
+        // explicitly so the `time_updated` $onUpdate default does not make the
+        // resync look like activity in the session list.
+        const session = yield* get(input.sessionID).pipe(Effect.orDie)
+        yield* patch(input.sessionID, { client: input.client, time: { updated: session.time.updated } })
+      })
+
+      const setArchived = Effect.fn("Session.setArchived")(function* (input: {
+        sessionID: SessionID
+        time?: number | null
+      }) {
+        yield* patch(input.sessionID, { time: { archived: input.time ?? null } })
+      })
+
+      const setCompacting = Effect.fn("Session.setCompacting")(function* (input: {
+        sessionID: SessionID
+        time?: number | null
+      }) {
+        yield* patch(input.sessionID, { time: { compacting: input.time ?? null } })
+      })
+
+      const setPermission = Effect.fn("Session.setPermission")(function* (input: {
+        sessionID: SessionID
+        permission: Permission.Ruleset
+      }) {
+        yield* patch(input.sessionID, { permission: input.permission, time: { updated: Date.now() } })
+      })
+
+      const updatePermissionSlots = Effect.fn("Session.updatePermissionSlots")(function* (input: {
+        sessionID: SessionID
+        rules: Permission.Ruleset
+      }) {
+        yield* get(input.sessionID)
+        const normalized = normalizePermissionSlots(input.rules)
+        if (normalized.length === 0) return
+        const timestamp = Date.now()
+        yield* sync.run(Event.PermissionSlot, { sessionID: input.sessionID, rules: normalized, timestamp })
+        // The complete session.updated is published once by the sync layer's
+        // derived-event hook after the permission slot is projected.
+      })
+
+      const setRevert = Effect.fn("Session.setRevert")(function* (input: {
+        sessionID: SessionID
+        revert: Info["revert"]
+        summary: Info["summary"]
+      }) {
+        yield* patch(input.sessionID, { summary: input.summary, time: { updated: Date.now() }, revert: input.revert })
+      })
+
+      const clearRevert = Effect.fn("Session.clearRevert")(function* (sessionID: SessionID) {
+        yield* patch(sessionID, { time: { updated: Date.now() }, revert: null })
+      })
+
+      const setSummary = Effect.fn("Session.setSummary")(function* (input: {
+        sessionID: SessionID
+        summary: Info["summary"]
+      }) {
+        yield* patch(input.sessionID, { time: { updated: Date.now() }, summary: input.summary })
+      })
+
+      const diff = Effect.fn("Session.diff")(function* (sessionID: SessionID) {
+        return yield* storage
+          .read<Snapshot.FileDiff[]>(["session_diff", sessionID])
+          .pipe(Effect.orElseSucceed((): Snapshot.FileDiff[] => []))
+      })
+
+      const messages = Effect.fn("Session.messages")(function* (input: { sessionID: SessionID; limit?: number }) {
+        if (input.limit) {
+          return MessageV2.page({ sessionID: input.sessionID, limit: input.limit }).items
+        }
+        return Array.from(MessageV2.stream(input.sessionID)).reverse()
+      })
+
+      const removeMessage: Interface["removeMessage"] = (input) =>
+        withWriterLock(
+          input.sessionID,
+          Effect.gen(function* () {
+            const state = writer(input.sessionID)
+            if (state) {
+              const info = { sessionID: input.sessionID, messageID: input.messageID }
+              const eventId = EventID.ascending()
+              const nativeInput = {
+                messageId: input.messageID,
+                timeUpdated: Date.now(),
+                eventId,
+                eventData: JSON.stringify(info),
+              }
+              const result = yield* Effect.promise(() =>
+                writeNative(
+                  state,
+                  nativeInput,
+                  state.driver.writerRemoveMessage.bind(state.driver),
+                  state.driver.writerProbeRemoveMessage.bind(state.driver),
+                ),
+              )
+              if (result?.status === "committed" || result?.status === "already_committed") {
+                yield* Effect.promise(() =>
+                  recordHistory(state, result, () =>
+                    SessionDataPlane.recordNativeRemoveMessage(
+                      state.dbPath,
+                      state.sessionID,
+                      input.messageID,
+                      result.historyHash,
+                    ),
+                  ),
+                )
+                if (result.status === "committed") void Bus.publish(MessageV2.Event.Removed, info, { id: eventId })
+                return input.messageID
+              }
+            }
+            yield* sync.run(MessageV2.Event.Removed, {
+              sessionID: input.sessionID,
+              messageID: input.messageID,
+            })
+            return input.messageID
+          }),
+        ).pipe(Effect.withSpan("Session.removeMessage"))
+
+      const removePart: Interface["removePart"] = (input) =>
+        withWriterLock(
+          input.sessionID,
+          Effect.gen(function* () {
+            const state = writer(input.sessionID)
+            if (state) {
+              const info = { sessionID: input.sessionID, messageID: input.messageID, partID: input.partID }
+              const eventId = EventID.ascending()
+              const nativeInput = {
+                partId: input.partID,
+                messageId: input.messageID,
+                timeUpdated: Date.now(),
+                eventId,
+                eventData: JSON.stringify(info),
+              }
+              const result = yield* Effect.promise(() =>
+                writeNative(
+                  state,
+                  nativeInput,
+                  state.driver.writerRemovePart.bind(state.driver),
+                  state.driver.writerProbeRemovePart.bind(state.driver),
+                ),
+              )
+              if (result?.status === "committed" || result?.status === "already_committed") {
+                yield* Effect.promise(() =>
+                  recordHistory(state, result, () =>
+                    SessionDataPlane.recordNativeRemovePart(
+                      state.dbPath,
+                      state.sessionID,
+                      input.partID,
+                      result.historyHash,
+                    ),
+                  ),
+                )
+                if (result.status === "committed") void Bus.publish(MessageV2.Event.PartRemoved, info, { id: eventId })
+                return input.partID
+              }
+            }
+            yield* sync.run(MessageV2.Event.PartRemoved, {
+              sessionID: input.sessionID,
+              messageID: input.messageID,
+              partID: input.partID,
+            })
+            return input.partID
+          }),
+        ).pipe(Effect.withSpan("Session.removePart"))
+
+      const updatePartDelta = Effect.fnUntraced(function* (input: {
+        sessionID: SessionID
+        messageID: MessageID
+        partID: PartID
+        field: string
+        delta: string
+      }) {
+        yield* bus.publish(MessageV2.Event.PartDelta, input)
+      })
+
+      /** Finds the first message matching the predicate, searching newest-first. */
+      const findMessage = Effect.fn("Session.findMessage")(function* (
+        sessionID: SessionID,
+        predicate: (msg: MessageV2.WithParts) => boolean,
+      ) {
+        for (const item of MessageV2.stream(sessionID)) {
+          if (predicate(item)) return Option.some(item)
+        }
+        return Option.none<MessageV2.WithParts>()
+      })
+
+      const remoteCompactionLock = Effect.fn("Session.remoteCompactionLock")(function* (sessionID: SessionID) {
+        const match = yield* findMessage(sessionID, (msg) =>
+          msg.parts.some((part) => part.type === "compaction" && part.remote),
+        )
+        if (Option.isNone(match)) return undefined
+        const part = match.value.parts.find((item) => item.type === "compaction" && item.remote)
+        if (!part || part.type !== "compaction" || !part.remote) return undefined
+        const source = { messageID: part.messageID, partID: part.id }
+        if (part.remote.endpoint === "codex") {
+          return {
+            providerID: ProviderID.make(part.remote.providerID),
+            modelID: ModelID.make(part.remote.modelID),
+            endpoint: "codex" as const,
+            ...source,
+          }
+        }
         return {
           providerID: ProviderID.make(part.remote.providerID),
           modelID: ModelID.make(part.remote.modelID),
-          endpoint: "codex" as const,
+          endpoint: "provider" as const,
+          wireModelID: part.remote.wireModelID,
+          driver: part.remote.driver,
+          format: part.remote.replay.format,
+          wireAPI: part.remote.replay.wire_api,
+          compatibilityKey: part.remote.replay.compatibility_key,
           ...source,
         }
-      }
-      return {
-        providerID: ProviderID.make(part.remote.providerID),
-        modelID: ModelID.make(part.remote.modelID),
-        endpoint: "provider" as const,
-        wireModelID: part.remote.wireModelID,
-        driver: part.remote.driver,
-        format: part.remote.replay.format,
-        wireAPI: part.remote.replay.wire_api,
-        compatibilityKey: part.remote.replay.compatibility_key,
-        ...source,
-      }
-    })
+      })
 
-    return Service.of({
-      list,
-      create,
-      fork,
-      touch,
-      get,
-      setTitle,
-      updateClient,
-      setArchived,
-      setCompacting,
-      setPermission,
-      updatePermissionSlots,
-      setRevert,
-      clearRevert,
-      recordUsage,
-      setSummary,
-      diff,
-      messages,
-      children,
-      childrenIDs,
-      remove,
-      prune,
-      updateMessage,
-      removeMessage,
-      removePart,
-      updatePart,
-      getPart,
-      updatePartDelta,
-      findMessage,
-      remoteCompactionLock,
-    })
-  }),
-)
+      return Service.of({
+        list,
+        create,
+        fork,
+        touch,
+        get,
+        setTitle,
+        updateClient,
+        setArchived,
+        setCompacting,
+        setPermission,
+        updatePermissionSlots,
+        setRevert,
+        clearRevert,
+        recordUsage,
+        setSummary,
+        diff,
+        messages,
+        children,
+        childrenIDs,
+        remove,
+        prune,
+        updateMessage,
+        removeMessage,
+        removePart,
+        updatePart,
+        getPart,
+        updatePartDelta,
+        findMessage,
+        remoteCompactionLock,
+      })
+    }),
+  )
 
 export const defaultLayer = layer.pipe(
   Layer.provide(BackgroundJob.defaultLayer),

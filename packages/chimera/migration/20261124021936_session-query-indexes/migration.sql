@@ -1,0 +1,5 @@
+CREATE INDEX `message_session_summary_time_created_idx` ON `message` (`session_id`,`time_created`) WHERE json_extract(data, '$.summary') = 1;--> statement-breakpoint
+CREATE INDEX `part_session_step_snapshot_idx` ON `part` (`session_id`,json_extract(data, '$.snapshot'),`message_id`,`id`) WHERE (json_extract(data, '$.type') = 'step-start' OR json_extract(data, '$.type') = 'step-finish') AND json_extract(data, '$.snapshot') IS NOT NULL;--> statement-breakpoint
+CREATE INDEX `session_project_time_updated_id_idx` ON `session` (`project_id`,`time_updated`,`id`) WHERE time_archived IS NULL;--> statement-breakpoint
+CREATE INDEX `session_project_directory_time_updated_id_idx` ON `session` (`project_id`,`directory`,`time_updated`,`id`) WHERE time_archived IS NULL;--> statement-breakpoint
+CREATE INDEX `session_time_updated_id_idx` ON `session` (`time_updated`,`id`) WHERE time_archived IS NULL;

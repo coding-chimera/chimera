@@ -1,8 +1,9 @@
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect, afterEach } from "bun:test"
 import { NodeFileSystem } from "@effect/platform-node"
 import { Effect, FileSystem, Layer } from "effect"
 import { Truncate } from "@/tool/truncate"
 import { Config } from "@/config/config"
+import { SessionDataPlane } from "@/session/data-plane"
 import { Identifier } from "../../src/id/id"
 import { Process } from "@/util/process"
 import { Filesystem } from "@/util/filesystem"
@@ -19,6 +20,8 @@ const it = testEffect(Layer.mergeAll(Truncate.defaultLayer, NodeFileSystem.layer
 const configuredLayer = (cfg: Config.Info) =>
   Layer.mergeAll(Truncate.defaultLayer, NodeFileSystem.layer, TestConfig.layer({ get: () => Effect.succeed(cfg) }))
 const configuredIt = (cfg: Config.Info) => testEffect(configuredLayer(cfg))
+
+afterEach(() => SessionDataPlane.setSpoolDriverForTests(undefined))
 
 describe("Truncate", () => {
   describe("output", () => {
@@ -232,7 +235,55 @@ describe("Truncate", () => {
 
       expect(out.code).toBe(0)
     }, 20000)
+    it.live("uses the session-data spool without changing the public result shape", () =>
+      Effect.gen(function* () {
+        const lines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
+        SessionDataPlane.setSpoolDriverForTests({
+          contractInfo: () => ({ abiMajor: 1, abiMinor: 0, capabilities: ["tool-output.spool.v1"] }),
+          spoolStart: () => 41,
+          spoolAppend: async () => {},
+          spoolFinish: async () => ({
+            content: "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9",
+            truncated: true,
+            outputPath: "/tmp/native-tool-output",
+            removed: 90,
+            unit: "lines",
+            totalBytes: lines.length,
+            totalLines: 100,
+          }),
+          spoolAbort: () => {},
+        })
+        const result = yield* (yield* Truncate.Service).output(lines, { maxLines: 10 })
+        expect(result).toEqual({
+          content:
+            "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\n\n...90 lines truncated...\n\nThe tool call succeeded but the output was truncated. Full output saved to: /tmp/native-tool-output\nUse Grep to search the full content or Read with offset/limit to view specific sections.",
+          truncated: true,
+          outputPath: "/tmp/native-tool-output",
+        })
+      }),
+    )
+
+    it.live("falls back to the legacy implementation when the spool fails", () =>
+      Effect.gen(function* () {
+        const lines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
+        SessionDataPlane.setSpoolDriverForTests({
+          contractInfo: () => ({ abiMajor: 1, abiMinor: 0, capabilities: ["tool-output.spool.v1"] }),
+          spoolStart: () => {
+            throw new Error("native spool unavailable")
+          },
+          spoolAppend: async () => {},
+          spoolFinish: async () => {
+            throw new Error("unreachable")
+          },
+          spoolAbort: () => {},
+        })
+        const result = yield* (yield* Truncate.Service).output(lines, { maxLines: 10 })
+        expect(result.truncated).toBe(true)
+        expect(result.content).toContain("...90 lines truncated...")
+      }),
+    )
   })
+
 
   describe("cleanup", () => {
     const DAY_MS = 24 * 60 * 60 * 1000
@@ -256,4 +307,4 @@ describe("Truncate", () => {
       }),
     )
   })
-})
+  })

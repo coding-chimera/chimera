@@ -3,6 +3,7 @@ import { Database } from "@/storage/db"
 import { StorageMaintenanceTable } from "@/storage/maintenance.sql"
 import { MessageTable, PartTable, SessionPartReconcileTable } from "@/storage/tables/session.sql"
 import { SessionTurnLease } from "./turn-lease"
+import { SessionDataPlane } from "./data-plane"
 import type { SessionID } from "@/contracts/session-ids"
 import type { MessageV2 } from "./message-v2"
 
@@ -130,6 +131,7 @@ function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: str
       .where(eq(MessageTable.session_id, sessionID))
       .get()?.max ?? null
 
+  let repaired = false
   const partRows = tx
     .select()
     .from(PartTable)
@@ -157,8 +159,8 @@ function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: str
       // the end time in the same situation.
       time: { start: state.status === "running" ? state.time.start : now, end: now },
     }
-    tx
-      .update(PartTable)
+    repaired = true
+    tx.update(PartTable)
       .set({ data: { ...row.data, state: errorState } as typeof row.data })
       .where(eq(PartTable.id, row.id))
       .run()
@@ -180,8 +182,8 @@ function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: str
     const data = row.data as MessageV2.Info
     if (data.role !== "assistant") continue
     if (data.time.completed !== undefined) continue
-    tx
-      .update(MessageTable)
+    repaired = true
+    tx.update(MessageTable)
       .set({ data: { ...row.data, time: { ...data.time, completed: now } } as typeof row.data })
       .where(eq(MessageTable.id, row.id))
       .run()
@@ -198,10 +200,7 @@ function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: str
   }
 
   const key = markerKey(sessionID, bootID)
-  tx.insert(StorageMaintenanceTable)
-    .values({ key, time_created: now })
-    .onConflictDoNothing()
-    .run()
+  tx.insert(StorageMaintenanceTable).values({ key, time_created: now }).onConflictDoNothing().run()
   // One marker row per session: drop markers other boots left behind (each new
   // boot rescans once anyway). The LIKE pattern can over-match on `_`
   // wildcards inside the id, so filter with an exact prefix check before
@@ -216,6 +215,7 @@ function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: str
     if (!row.key.startsWith(prefix)) continue
     tx.delete(StorageMaintenanceTable).where(eq(StorageMaintenanceTable.key, row.key)).run()
   }
+  return repaired
 }
 
 /**
@@ -241,7 +241,11 @@ export function ensureOrphansReconciled(sessionID: SessionID, options?: { bootID
   const key = markerKey(sessionID, bootID)
   if (reconciledKeys.has(key)) return
   const marked = Database.use((db) =>
-    db.select({ key: StorageMaintenanceTable.key }).from(StorageMaintenanceTable).where(eq(StorageMaintenanceTable.key, key)).get(),
+    db
+      .select({ key: StorageMaintenanceTable.key })
+      .from(StorageMaintenanceTable)
+      .where(eq(StorageMaintenanceTable.key, key))
+      .get(),
   )
   if (marked) {
     rememberReconciled(key)
@@ -255,13 +259,15 @@ export function ensureOrphansReconciled(sessionID: SessionID, options?: { bootID
       // BEGIN IMMEDIATE another process may have claimed the session. The
       // busy registry needs no recheck — this whole path is synchronous, so
       // no in-process state can interleave.
-      if (SessionTurnLease.liveHolder(sessionID, { bootID, now })) return false
-      reconcileOrphans(tx, sessionID, bootID, now)
-      return true
+      if (SessionTurnLease.liveHolder(sessionID, { bootID, now })) return
+      return { repaired: reconcileOrphans(tx, sessionID, bootID, now) }
     },
     { behavior: "immediate" },
   )
   if (scanned) rememberReconciled(key)
+  const repaired = scanned?.repaired === true
+  if (repaired) SessionDataPlane.disableNativeWriter(Database.Path, sessionID)
+  return repaired
 }
 
 /**
@@ -279,13 +285,10 @@ export function ensureOrphansReconciled(sessionID: SessionID, options?: { bootID
 export function reconcileOrphansNow(sessionID: SessionID, options?: { bootID?: string; now?: number }) {
   const bootID = options?.bootID ?? SessionTurnLease.currentBootID()
   const now = options?.now ?? Date.now()
-  Database.transaction(
-    (tx) => {
-      reconcileOrphans(tx, sessionID, bootID, now)
-    },
-    { behavior: "immediate" },
-  )
+const repaired = Database.transaction((tx) => reconcileOrphans(tx, sessionID, bootID, now), { behavior: "immediate" })
   rememberReconciled(markerKey(sessionID, bootID))
+  if (repaired) SessionDataPlane.disableNativeWriter(Database.Path, sessionID)
+return repaired
 }
 
 export * as SessionPartReconcile from "./part-reconcile"

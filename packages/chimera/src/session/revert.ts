@@ -145,7 +145,7 @@ export const layer = Layer.effect(
         remove.push(msg)
       }
       for (const msg of remove) {
-        yield* sync.run(MessageV2.Event.Removed, {
+        yield* sessions.removeMessage({
           sessionID,
           messageID: msg.info.id,
         })
@@ -157,7 +157,7 @@ export const layer = Layer.effect(
           const removeParts = target.parts.slice(idx)
           target.parts = target.parts.slice(0, idx)
           for (const part of removeParts) {
-            yield* sync.run(MessageV2.Event.PartRemoved, {
+            yield* sessions.removePart({
               sessionID,
               messageID: target.info.id,
               partID: part.id,

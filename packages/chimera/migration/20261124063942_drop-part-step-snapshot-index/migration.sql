@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS `part_session_step_snapshot_idx`;

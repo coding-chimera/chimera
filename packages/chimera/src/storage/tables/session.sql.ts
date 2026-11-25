@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core"
+import { sql } from "drizzle-orm"
 import type { SystemContext } from "@opencode-ai/core/system-context"
 import { ProjectTable } from "../../project/project.sql"
 import type { MessageV2 } from "../../session/message-v2"
@@ -56,6 +57,20 @@ export const SessionTable = sqliteTable(
     index("session_project_idx").on(table.project_id),
     index("session_workspace_idx").on(table.workspace_id),
     index("session_parent_idx").on(table.parent_id),
+    // Session list/keyset queries filter `time_archived IS NULL` and order by
+    // `time_updated DESC, id DESC`. Partial indexes keep the archive predicate
+    // inside the index so the scan never walks archived rows; `id` is the
+    // keyset tie-breaker. Archived listings and root-only filters stay on the
+    // legacy indexes (low frequency, not worth extra write amplification).
+    index("session_project_time_updated_id_idx")
+      .on(table.project_id, table.time_updated, table.id)
+      .where(sql`time_archived IS NULL`),
+    index("session_project_directory_time_updated_id_idx")
+      .on(table.project_id, table.directory, table.time_updated, table.id)
+      .where(sql`time_archived IS NULL`),
+    index("session_time_updated_id_idx")
+      .on(table.time_updated, table.id)
+      .where(sql`time_archived IS NULL`),
   ],
 )
 
@@ -76,6 +91,14 @@ export const MessageTable = sqliteTable(
     // time_updated >= watermark`; without the composite index SQLite still
     // reads every row of the session (see src/session/part-reconcile.ts).
     index("message_session_time_updated_idx").on(table.session_id, table.time_updated),
+    // Partial index backing ContextEpoch.latestCompaction: `MAX(time_created)`
+    // over summary rows only. The query filters the same literal expression, so
+    // the planner can use this index as a covering max lookup.
+    index("message_session_summary_time_created_idx")
+      .on(table.session_id, table.time_created)
+      // Unqualified `data` is required: SQLite forbids the "." operator in
+      // index expressions, and drizzle would otherwise render `"message"."data"`.
+      .where(sql.raw(`json_extract(data, '$.summary') = 1`)),
   ],
 )
 
