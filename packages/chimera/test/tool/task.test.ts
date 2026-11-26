@@ -1531,8 +1531,10 @@ describe("tool.task", () => {
       expect(description).toContain("Direct model selection:")
       expect(description).toContain("- Pass model as an exact provider/model route.")
       expect(description).toContain(
-        "- Use subagent_model_routes to inspect concrete current routes for a model identity (if not in your tool list, reveal them with `tool_search`).",
+        "- Use subagent_model_routes to inspect concrete current routes for a model identity: call it directly by its exact id when it is in your tool list or listed under `Revealed Deferred Tools`; only when it is in neither, reveal it once with `tool_search`, then call it by name. Never call `tool_search` again for a tool that is already revealed.",
       )
+      // regression anchor: the old permanent reveal condition must not return
+      expect(description).not.toContain("if not in your tool list, reveal")
     }),
     { config: delegationConfig },
 

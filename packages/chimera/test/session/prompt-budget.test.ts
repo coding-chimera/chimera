@@ -22,13 +22,13 @@ const BASELINE = {
   // drops "CLI" from the identity and line 15 drops the CLI render claim (the
   // render surface now lives in the environment block). Re-recorded from the
   // live tree for every variant.
-  generic: 23251,
-  deepseek: 25859,
-  deepseekUltra: 34937,
-  kimi: 25226,
-  gpt55: 28263,
-  claude: 27326,
-  gemini: 24609,
+  generic: 24438,
+  deepseek: 27046,
+  deepseekUltra: 36169,
+  kimi: 26413,
+  gpt55: 29450,
+  claude: 28513,
+  gemini: 25796,
 } as const
 
 // Per-tool description budgets for the top offenders; the total budget below
@@ -38,10 +38,10 @@ const BASELINE = {
 const TOOL_BUDGETS = {
   "todowrite.txt": 9183,
   "ast_edit.txt": 10984,
-  "task.txt": 8380, // 2026-11-18 re-record (tool-selection semantics)
-  "swarm.txt": 10985, // 2026-11-18 re-record (tool-selection semantics; +1 for the swarm.txt EOF newline)
+  "task.txt": 8579, // 2026-11-26 re-record (reveal-aware direct-call guidance)
+  "swarm.txt": 11185, // 2026-11-26 re-record (reveal-aware direct-call guidance)
   "workbrief.txt": 6546,
-  "orchestrate.txt": 7361, // 2026-11-18 re-record #2 (plan-and-handoff gate + background-first dispatch)
+  "orchestrate.txt": 7832, // 2026-11-26 re-record (pre-existing description drift)
   "shell/shell.txt": 7852,
 } as const
 
@@ -131,7 +131,13 @@ const TOOL_BUDGETS = {
 // notification-driven waiting (no sleep/poll); orchestrate.txt (6620 -> 7361)
 // carries the same gate and background contract, so the total floor
 // 116559 -> 117300 and the deepseekUltra skeleton 34217 -> 34974.
-const TOOL_TOTAL_BUDGET = 117300
+// 2026-11-26 re-record: default.txt dimension-coherence and user-cancellation
+// guidance adds 948 chars per skeleton; chimera.txt reveal-aware oracle guidance
+// adds another 239. deepseekUltra also folds 45 chars of prior drift. task.txt
+// (8380 -> 8579), swarm.txt (10985 -> 11185), and tool_search.txt (2069 -> 2467)
+// grow for explicit direct-call/no-research rules; the total floor also folds
+// 1720 chars of pre-existing tool-description drift.
+const TOOL_TOTAL_BUDGET = 119817
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the
@@ -139,7 +145,7 @@ const TOOL_TOTAL_BUDGET = 117300
 // full-registration floor recorded above.
 const DEFERRED_TXT_BUDGET = 16131
 
-const TOOL_SEARCH_TXT_BUDGET = 2069
+const TOOL_SEARCH_TXT_BUDGET = 2467
 
 const CAPABILITY_TOOLS = { chimera_search: {}, workbrief: {}, browser_open: {}, read: {}, bash: {} }
 

@@ -310,7 +310,8 @@ export const withPreferences = Effect.fn("SubagentModelCatalog.withPreferences")
 export function disclosure(snap: Snapshot, maxChars = DISCLOSURE_MAX_CHARS): string | undefined {
   if (snap.identities.length === 0) return undefined
   const prefix = "## Available Subagent Model Identities\n\n"
-  const footer = "\nUse `subagent_model_routes` to inspect current concrete routes before choosing a provider."
+  const footer =
+    "\nUse `subagent_model_routes` for routes: call it directly by exact id when in your tool list or `Revealed Deferred Tools`; else reveal it once with `tool_search`, then call by name. Never re-search a revealed tool."
   const lines = snap.identities.map((identity) => {
     const preferred = identity.preferredProviderID ? `; preferred ${identity.preferredProviderID}` : ""
     const variants = identity.variants.length > 0 ? `; variants: ${identity.variants.join(", ")}` : ""

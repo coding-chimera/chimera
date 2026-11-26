@@ -377,6 +377,9 @@ describe("compact disclosure", () => {
     expect(first?.length).toBeLessThanOrEqual(SubagentModelCatalog.DISCLOSURE_MAX_CHARS)
     expect(first).toContain("## Available Subagent Model Identities")
     expect(first).toContain("Use `subagent_model_routes`")
+    expect(first).toContain("Revealed Deferred Tools")
+    expect(first).toContain("Never re-search a revealed tool")
+    expect(first).not.toContain("if not in your tool list")
   })
 
   test("reports a stable omitted count without slicing a selector", () => {

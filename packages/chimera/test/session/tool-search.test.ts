@@ -285,6 +285,9 @@ test("the unknown-tool hint mentions tool_search", () => {
   expect(ToolSearch.DEFERRED_TOOL_HINT).toContain("tool_search")
   expect(ToolSearch.DEFERRED_TOOL_HINT).toContain("call it directly by name")
   expect(ToolSearch.DEFERRED_TOOL_HINT.startsWith(" ")).toBe(true)
+  // the hint must distinguish revealed from unrevealed without session state
+  expect(ToolSearch.DEFERRED_TOOL_HINT).toContain("Revealed Deferred Tools")
+  expect(ToolSearch.DEFERRED_TOOL_HINT).toContain("do NOT call `tool_search` again")
 })
 
 test("tool_search is never deferred and its call aliases are recognized", () => {
@@ -307,7 +310,7 @@ test("unknown-tool guidance for a tool_search miss is not self-referential", () 
   expect(guidance).toContain('"query"')
   // deferred ids keep the reveal guidance, unknown ids get a plain message
   expect(ToolSearch.unknownToolGuidance("lsp")).toBe(
-    "Unknown tool: lsp It is registered but deferred — reveal it with `tool_search`, then call it directly by name.",
+    "Unknown tool: lsp It is registered but deferred. If it appears under `Revealed Deferred Tools`, call it directly by its exact id and do NOT call `tool_search` again for it; otherwise reveal it with `tool_search` once, then call it directly by name.",
   )
   expect(ToolSearch.unknownToolGuidance("bashh")).toBe("Unknown tool: bashh")
 })
@@ -374,12 +377,17 @@ describe("session.tool-search prompt loop (phase 2)", () => {
         const search = outputs.find((part) => part.type === "tool" && part.tool === "tool_search")
         if (search?.type !== "tool" || search.state.status !== "completed") throw new Error("missing tool_search part")
         expect(search.state.output).toContain("callable by name immediately")
+        expect(search.state.output).toContain("NOT call `tool_search` again for these tools")
         // the full .txt description ships inside the tool_search result
         expect(search.state.output).toContain("Interact with Language Server Protocol")
 
         const contexts = runtimeContextTexts(yield* sessions.messages({ sessionID: session.id }))
         const section = contexts.find((text) => text.includes("## Revealed Deferred Tools"))
         expect(section).toBeDefined()
+        // the section leads with direct callability and forbids re-searching
+        expect(section).toContain("directly callable now")
+        expect(section).toContain("Do NOT call `tool_search` again")
+        expect(section).not.toContain("NOT in your tool list")
         // compact signature is present: lsp requires operation, filePath, line, character
         expect(section).toContain("- `lsp(operation: string, filePath: string, line: integer, character: integer")
         expect(section).toContain("Language-server code intelligence")
@@ -622,7 +630,9 @@ describe("session.tool-search prompt loop (phase 2)", () => {
         expect(outputs.length).toBe(3)
         expect(outputs[0]).toContain("callable by name immediately")
         expect(outputs[0]).toContain("browser_open")
+        expect(outputs[0]).toContain("NOT call `tool_search` again for these tools")
         expect(outputs[1]).toContain("Already revealed in this session (still callable by name)")
+        expect(outputs[1]).toContain("NOT call `tool_search` again for these tools")
         expect(outputs[1]).not.toContain("Revealed tools (")
         expect(outputs[2]).toContain('No deferred tools matched "zzz-not-a-tool"')
         expect(outputs[2]).toContain("Deferred categories: browser_*")
@@ -758,7 +768,7 @@ describe("session.tool-search unknown tool", () => {
     const events = await drive({})
     const failure = events.find((event) => event.type === "tool-error")
     expect(failure?.error.message).toBe(
-      "Unknown tool: lsp It is registered but deferred — reveal it with `tool_search`, then call it directly by name.",
+      "Unknown tool: lsp It is registered but deferred. If it appears under `Revealed Deferred Tools`, call it directly by its exact id and do NOT call `tool_search` again for it; otherwise reveal it with `tool_search` once, then call it directly by name.",
     )
   })
 

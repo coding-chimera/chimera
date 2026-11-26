@@ -522,7 +522,7 @@ export const layer = Layer.effect(
       return [
         "## Revealed Deferred Tools",
         "",
-        "These tools were revealed for this session via `tool_search`. They are NOT in your tool list, but you can call them directly by name with arguments matching the signature below — revealed calls are executed through the normal path. They join the tool list automatically at the next compaction.",
+        "The tools below were revealed for this session via `tool_search` and are directly callable now: call each by its exact id with arguments matching the signature below — revealed calls are executed through the normal path. Do NOT call `tool_search` again for a tool listed here. They join the tool list automatically at the next compaction.",
         "",
         ...lines,
       ].join("\n")

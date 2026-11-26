@@ -83,6 +83,14 @@ describe("session.system", () => {
       expect(unknown).toContain("tool results, injected context")
       expect(unknown).toContain("You are Chimera")
       expect(unknown).toContain("# Response contract")
+      expect(unknown).toContain("distinct dimensions of what the user actually asked")
+      expect(unknown).toContain("avoid unrelated tangents")
+      // Cancellation semantics: a cancelled task/subagent is a user stop
+      // signal, never an infrastructure failure to retry or reroute.
+      expect(unknown).toContain("# Autonomy and scope fidelity")
+      expect(unknown).toContain("is a user-initiated stop signal")
+      expect(unknown).toContain("switch to a different delegation surface")
+      expect(unknown).toContain("resume only after the user explains and explicitly asks you to resume")
       expect(unknown).toContain("# Planning and task tracking")
       expect(unknown).toContain("# Procedure proportionality")
       expect(unknown).toContain("# Repository evidence")

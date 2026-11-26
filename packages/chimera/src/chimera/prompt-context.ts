@@ -265,7 +265,7 @@ function closeoutGate(
       : undefined,
     obligations.length ? "all active obligations must be resolved or ignored" : undefined,
     linkedOracles.length
-      ? "linked failing/unknown oracle evidence must be addressed; the summaries inlined above are usually sufficient — full output via `chimera_oracle_get` (a deferred tool: reveal it with `tool_search`, then pass the oracle ref)"
+      ? "linked failing/unknown oracle evidence must be addressed; the summaries inlined above are usually sufficient — for full output via `chimera_oracle_get`, pass the oracle ref and call it directly by its exact id when it is in your tool list or listed under `Revealed Deferred Tools`; only when it is in neither, reveal it once with `tool_search`, then call it directly. Never call `tool_search` again for a tool that is already revealed"
       : undefined,
     latest && audit
       ? undefined

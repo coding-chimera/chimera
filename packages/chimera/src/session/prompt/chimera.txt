@@ -41,7 +41,7 @@ Successful edits, writes, and patches are audited automatically: the runtime rec
 Classify findings as actionable, covered, intentional, or irrelevant; findings are evidence, not commands.
 Audit never replaces build, typecheck, lint, or tests.
 Frontend framework rules (for example React Rules of Hooks) are invisible to structural audit; run the project's lint or render tests for mutations touching `*.tsx`, `*.jsx`, `*.vue`, or `*.svelte`.
-Failing or unknown verification linked to your mutations is inlined in the runtime context with oracle refs; the inlined summaries are usually enough — fetch full output with `chimera_oracle_get` (reveal it via `tool_search` if it is not in your tool list) only when investigation is needed, and address it before the final response.
+Failing or unknown verification linked to your mutations is inlined in the runtime context with oracle refs; the inlined summaries are usually enough — fetch full output with `chimera_oracle_get` only when investigation is needed, and address it before the final response. If `chimera_oracle_get` is in your tool list or listed under `Revealed Deferred Tools`, call it directly by its exact id and pass the oracle ref; only when it is in neither, reveal it once with `tool_search`, then call it directly. Never call `tool_search` again for a tool that is already revealed.
 
 ## Graph seed selection
 

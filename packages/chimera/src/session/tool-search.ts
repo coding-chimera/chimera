@@ -146,7 +146,7 @@ export function isDeferredTool(id: string) {
 }
 
 export const DEFERRED_TOOL_HINT =
-  " It is registered but deferred — reveal it with `tool_search`, then call it directly by name."
+  " It is registered but deferred. If it appears under `Revealed Deferred Tools`, call it directly by its exact id and do NOT call `tool_search` again for it; otherwise reveal it with `tool_search` once, then call it directly by name."
 
 // tool_search is the gateway to the deferred catalog: it must never be
 // deferred itself, it must never leave the model-visible tool set (llm.ts

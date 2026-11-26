@@ -988,6 +988,9 @@ describe("tool.chimera", () => {
       expect(context).toContain("Linked Verification Evidence")
       expect(context).toContain("shell exit 1: bun typecheck")
       expect(context).toContain("apocalypse: block")
+      expect(context).toContain(
+        "for full output via `chimera_oracle_get`, pass the oracle ref and call it directly by its exact id when it is in your tool list or listed under `Revealed Deferred Tools`; only when it is in neither, reveal it once with `tool_search`, then call it directly. Never call `tool_search` again for a tool that is already revealed",
+      )
       expect(context).toContain("ordinary: warn")
       expect(context).not.toContain("ordinary: block")
     }),

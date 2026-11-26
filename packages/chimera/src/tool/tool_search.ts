@@ -69,7 +69,7 @@ export const ToolSearchTool = Tool.define<
                   ToolSearch.DEFERRED_DESCRIPTIONS[match.id] ??
                     "(description unavailable — call the tool and inspect its error guidance)",
                 ]),
-                "Call a revealed tool directly by name with arguments matching its schema; the runtime executes revealed calls through the normal path. The Revealed Deferred Tools section of the runtime context lists them with compact signatures. Reveals persist for this session and the tools join the tool list automatically at the next compaction.",
+                "Call each revealed tool directly by its exact id with arguments matching its schema; the runtime executes revealed calls through the normal path. Do NOT call `tool_search` again for these tools — they are already revealed. The Revealed Deferred Tools section of the runtime context lists them with compact signatures. Reveals persist for this session and the tools join the tool list automatically at the next compaction.",
               ].join("\n"),
             )
           if (already.length > 0)
@@ -77,6 +77,7 @@ export const ToolSearchTool = Tool.define<
               [
                 "Already revealed in this session (still callable by name):",
                 ...already.map((match) => `- \`${match.id}\`: ${summary(match.id)}`),
+                "Call each of these directly by its exact id — do NOT call `tool_search` again for these tools.",
               ].join("\n"),
             )
           return {

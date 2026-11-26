@@ -632,6 +632,64 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.instance("appends exact Next Read JSON for Kimi line-limit truncation", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "many-lines.txt")
+      const lines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
+      yield* put(filepath, lines)
+      const next = { ...ctx, extra: { model: { id: "kimi-k3.1-pro-prime" } } }
+
+      const result = yield* run({ filePath: filepath, limit: 10 }, next)
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("Use offset=11")
+      expect(result.output).toContain(
+        `Next Read: ${JSON.stringify({ filePath: filepath, offset: 11, limit: 10 })}`,
+      )
+      expect(result.output).toContain(
+        'IMPORTANT: Your next read tool call must copy the Next Read parameters verbatim into its actual tool-call JSON, including the top-level "offset"; do not merely state them in prose or change only "limit".',
+      )
+    }),
+  )
+
+  it.instance("omits an unspecified limit from Kimi Next Read after byte-cap truncation", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const base = yield* load(path.join(FIXTURES_DIR, "models-api.json"))
+      const target = 60 * 1024
+      const content = base.length >= target ? base : base.repeat(Math.ceil(target / base.length))
+      const filepath = path.join(test.directory, "large.json")
+      yield* put(filepath, content)
+      const next = { ...ctx, extra: { model: { id: "kimi-k3.1-pro-prime" } } }
+
+      const result = yield* run({ filePath: filepath }, next)
+      const continuation = result.output.match(/Showing lines 1-(\d+)\. Use offset=(\d+) to continue/)
+      expect(continuation).not.toBeNull()
+      const last = Number(continuation![1])
+      const offset = Number(continuation![2])
+      expect(offset).toBe(last + 1)
+      const match = result.output.match(/Next Read: (\{[^\n]+\})/)
+      expect(match).not.toBeNull()
+      const nextRead = JSON.parse(match![1])
+      expect(nextRead).toEqual({ filePath: filepath, offset })
+      expect(nextRead).not.toHaveProperty("limit")
+    }),
+  )
+
+  it.instance("does not append Next Read for non-Kimi truncation", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "many-lines.txt")
+      const lines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
+      yield* put(filepath, lines)
+      const next = { ...ctx, extra: { model: { id: "gpt-5.4" } } }
+
+      const result = yield* run({ filePath: filepath, limit: 10 }, next)
+      expect(result.output).toContain("Use offset=11")
+      expect(result.output).not.toContain("Next Read")
+    }),
+  )
+
   it.instance("does not truncate small file", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

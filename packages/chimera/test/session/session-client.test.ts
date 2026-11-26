@@ -139,6 +139,10 @@ describe("default prompt client-neutral identity", () => {
       "You are Chimera, an interactive coding agent that helps users with software engineering tasks on their computer. Chimera is the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime.",
     )
     expect(lines[14]?.startsWith("Be concise and direct; use GitHub-flavored Markdown when it helps.")).toBe(true)
+    // Dimension coherence: the answer must stay aligned with the dimensions of
+    // the user's question instead of drifting into unrelated findings.
+    expect(file).toContain("distinct dimensions of what the user actually asked")
+    expect(file).toContain("avoid unrelated tangents")
     expect(file).not.toContain("interactive CLI coding agent")
     expect(file).not.toContain("your output renders in a CLI")
   })

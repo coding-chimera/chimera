@@ -39,6 +39,10 @@ export function isKimiSwarmAutoBackground(model: ModelPolicyRef | undefined) {
   return primaryModelID(model) === "kimi-k3.1-pro-prime"
 }
 
+export function isKimiNextRead(model: ModelPolicyRef | undefined) {
+  return primaryModelID(model) === "kimi-k3.1-pro-prime"
+}
+
 export function astraReadDedupEnabled(config: AstraReadDedupConfig | undefined) {
   return config?.gpt_6_astra !== false
 }

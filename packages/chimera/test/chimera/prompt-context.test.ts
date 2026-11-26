@@ -8,6 +8,7 @@ import { ModelID, ProviderID } from "@/provider/schema"
 import { MessageID, PartID, SessionID } from "@/contracts/session-ids"
 import { Session } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
+import PROMPT_CHIMERA from "../../src/session/prompt/chimera.txt"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
 import { disposeAllInstances, provideTmpdirServer } from "../fixture/fixture"
 import { recordOracleResult, recordPredesignRun } from "@/chimera/store"
@@ -480,6 +481,12 @@ describe("chimera prompt-context linked verification evidence", () => {
 
         expect(context).toContain("Linked Verification Evidence")
         expect(context).toContain(`- [fail] lsp: 1 diagnostic(s) in surface.ts (oracle:${oracle.id})`)
+        expect(PROMPT_CHIMERA).toContain(
+          "If `chimera_oracle_get` is in your tool list or listed under `Revealed Deferred Tools`, call it directly by its exact id and pass the oracle ref; only when it is in neither, reveal it once with `tool_search`, then call it directly. Never call `tool_search` again for a tool that is already revealed.",
+        )
+        expect(context).toContain(
+          "for full output via `chimera_oracle_get`, pass the oracle ref and call it directly by its exact id when it is in your tool list or listed under `Revealed Deferred Tools`; only when it is in neither, reveal it once with `tool_search`, then call it directly. Never call `tool_search` again for a tool that is already revealed",
+        )
         expect(context ?? "").not.toContain("unlinked")
       }),
       { git: true, config: (url) => testProviderConfig(url) },

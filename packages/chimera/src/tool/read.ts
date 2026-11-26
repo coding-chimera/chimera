@@ -775,6 +775,14 @@ export const ReadTool = Tool.define(
       } else {
         output += `\n\n(End of file - total ${file.count} lines)`
       }
+      if (truncated && ModelPolicy.isKimiNextRead(ctx.extra?.model as ModelPolicy.ModelPolicyRef | undefined)) {
+        const nextRead = {
+          filePath: filepath,
+          offset: next,
+          ...(params.limit === undefined ? {} : { limit: params.limit }),
+        }
+        output += `\n\nNext Read: ${JSON.stringify(nextRead)}\nIMPORTANT: Your next read tool call must copy the Next Read parameters verbatim into its actual tool-call JSON, including the top-level "offset"; do not merely state them in prose or change only "limit".`
+      }
       output += "\n</content>"
       const dedupBlock = readDedupBlock(dedupHits, file.offset, last, newSpans)
       if (dedupBlock.length > 0) output += `\n\n${dedupBlock}`
